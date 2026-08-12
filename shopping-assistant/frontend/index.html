@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shopping Assistant - Assistant d'Achat IA</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="navbar">
+    <div class="nav-container">
+      <div class="logo">
+        <span class="logo-icon">🛒</span>
+        <span class="logo-text">Shopping Assistant</span>
+      </div>
+      <div class="nav-menu" id="navMenu">
+        <a href="#" class="nav-link active" data-page="lists">Mes Listes</a>
+        <a href="#" class="nav-link" data-page="history">Historique</a>
+        <a href="#" class="nav-link" data-page="profile">Profil</a>
+        <button class="btn-logout" id="logoutBtn">Déconnexion</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container">
+    <!-- Auth Pages -->
+    <div id="authPage" class="page">
+      <div class="auth-container">
+        <!-- Login Form -->
+        <div id="loginForm" class="auth-form active">
+          <h1>Bienvenue</h1>
+          <p class="auth-subtitle">Connectez-vous à votre compte</p>
+          <form id="loginFormElement">
+            <div class="form-group">
+              <label for="loginEmail">Email</label>
+              <input type="email" id="loginEmail" placeholder="votre@email.com" required>
+            </div>
+            <div class="form-group">
+              <label for="loginPassword">Mot de passe</label>
+              <input type="password" id="loginPassword" placeholder="••••••••" required>
+            </div>
+            <button type="submit" class="btn-primary btn-large">Connexion</button>
+          </form>
+          <p class="auth-toggle">Pas de compte? <a href="#" id="toggleRegister">Créer un compte</a></p>
+        </div>
+
+        <!-- Register Form -->
+        <div id="registerForm" class="auth-form">
+          <h1>Créer un compte</h1>
+          <p class="auth-subtitle">Rejoignez-nous pour gérer vos achats</p>
+          <form id="registerFormElement">
+            <div class="form-group">
+              <label for="registerEmail">Email</label>
+              <input type="email" id="registerEmail" placeholder="votre@email.com" required>
+            </div>
+            <div class="form-group">
+              <label for="registerUsername">Nom d'utilisateur</label>
+              <input type="text" id="registerUsername" placeholder="votrenomutilisateur" required>
+            </div>
+            <div class="form-group">
+              <label for="registerFullName">Nom complet</label>
+              <input type="text" id="registerFullName" placeholder="Votre nom complet">
+            </div>
+            <div class="form-group">
+              <label for="registerPassword">Mot de passe</label>
+              <input type="password" id="registerPassword" placeholder="••••••••" required>
+            </div>
+            <button type="submit" class="btn-primary btn-large">Créer un compte</button>
+          </form>
+          <p class="auth-toggle">Vous avez un compte? <a href="#" id="toggleLogin">Se connecter</a></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="appPage" class="page" style="display: none;">
+      <!-- Lists Page -->
+      <div id="listsPage" class="page-content active">
+        <div class="page-header">
+          <div>
+            <h1>Mes Listes de Courses</h1>
+            <p class="subtitle">Gérez et optimisez vos achats</p>
+          </div>
+          <button class="btn-primary" id="newListBtn">+ Nouvelle Liste</button>
+        </div>
+
+        <div id="listsList" class="lists-grid">
+          <!-- Les listes seront ajoutées ici -->
+        </div>
+      </div>
+
+      <!-- List Details Page -->
+      <div id="listDetailsPage" class="page-content">
+        <div class="page-header">
+          <div>
+            <button class="btn-back" id="backListBtn">← Retour</button>
+            <h1 id="listTitle">Ma Liste</h1>
+            <div class="list-stats">
+              <span id="itemCount">0 articles</span>
+              <span id="checkedCount">0 coché(s)</span>
+              <span id="totalCost">Total: 0€</span>
+            </div>
+          </div>
+          <button class="btn-secondary" id="recommendationsBtn">✨ Recommandations</button>
+        </div>
+
+        <div class="list-details-container">
+          <div class="items-section">
+            <div class="section-header">
+              <h2>Articles</h2>
+              <div class="section-controls">
+                <input type="text" id="itemInput" placeholder="Ajouter un article..." class="input-add">
+                <button class="btn-small" id="addItemBtn">+</button>
+              </div>
+            </div>
+
+            <div id="itemsList" class="items-list">
+              <!-- Les articles seront ajoutés ici -->
+            </div>
+          </div>
+
+          <div class="sidebar">
+            <div class="sidebar-card">
+              <h3>📊 Résumé</h3>
+              <div class="summary-stat">
+                <span>Prix estimé</span>
+                <span id="estimatedTotal" class="price">0€</span>
+              </div>
+              <div class="summary-stat">
+                <span>Prix réel</span>
+                <span id="actualTotal" class="price">0€</span>
+              </div>
+              <div class="summary-stat">
+                <span>Économies</span>
+                <span id="savingsAmount" class="price savings">0€</span>
+              </div>
+            </div>
+
+            <button class="btn-primary btn-full" id="completeListBtn">✓ Marquer comme complétée</button>
+            <button class="btn-danger btn-full" id="deleteListBtn">Supprimer la liste</button>
+          </div>
+        </div>
+
+        <!-- Recommendations Modal -->
+        <div id="recommendationsModal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <button class="modal-close" id="closeRecommendationsBtn">&times;</button>
+            <h2>✨ Recommandations Intelligentes</h2>
+            <div id="recommendationsContent" class="recommendations-content">
+              <!-- Les recommandations seront ajoutées ici -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- History Page -->
+      <div id="historyPage" class="page-content">
+        <div class="page-header">
+          <h1>Historique d'Achat</h1>
+          <p class="subtitle">Vos précédentes listes et achats</p>
+        </div>
+        <div id="historyList" class="history-list">
+          <!-- L'historique sera ajouté ici -->
+        </div>
+      </div>
+
+      <!-- Profile Page -->
+      <div id="profilePage" class="page-content">
+        <div class="page-header">
+          <h1>Mon Profil</h1>
+        </div>
+        <div class="profile-container">
+          <div class="profile-card">
+            <h2>Informations Personnelles</h2>
+            <div class="profile-info">
+              <div class="info-item">
+                <span class="label">Email</span>
+                <span id="profileEmail">-</span>
+              </div>
+              <div class="info-item">
+                <span class="label">Nom d'utilisateur</span>
+                <span id="profileUsername">-</span>
+              </div>
+              <div class="info-item">
+                <span class="label">Nom complet</span>
+                <span id="profileName">-</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="profile-card">
+            <h2>Préférences</h2>
+            <div class="form-group">
+              <label for="budgetInput">Budget par défaut (€)</label>
+              <input type="number" id="budgetInput" placeholder="0" min="0">
+              <button class="btn-small" id="saveBudgetBtn">Enregistrer</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notification Toast -->
+  <div id="notification" class="notification"></div>
+
+  <!-- Scripts -->
+  <script src="js/app.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/shopping.js"></script>
+  <script src="js/recommendations.js"></script>
+</body>
+</html>

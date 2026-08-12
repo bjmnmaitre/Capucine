@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Capucine — Ton assistante d'achat</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: #FAFAF8; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  .header { background: #fff; border-bottom: 1px solid #E8E7E2; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 8px rgba(0,0,0,0.04); }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .logo-icon { width: 40px; height: 40px; background: linear-gradient(135deg, #1D9E75, #157a5c); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; box-shadow: 0 2px 8px rgba(29,158,117,0.3); }
+  .logo-text h1 { font-family: 'Poppins', sans-serif; font-size: 18px; font-weight: 700; color: #1A1A18; }
+  .logo-text p { font-size: 11px; color: #6B6B66; margin-top: 1px; }
+  .header-badge { background: #E1F5EE; color: #1D9E75; font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 20px; border: 1px solid #b8e8d4; }
+
+  .chat-area { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+  .chat-area::-webkit-scrollbar { width: 4px; }
+  .chat-area::-webkit-scrollbar-thumb { background: #E8E7E2; border-radius: 4px; }
+
+  .message { display: flex; align-items: flex-end; gap: 10px; max-width: 80%; animation: fadeUp 0.3s ease; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .message.user { align-self: flex-end; flex-direction: row-reverse; }
+  .message.capucine { align-self: flex-start; }
+
+  .avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+  .avatar.cap { background: linear-gradient(135deg, #1D9E75, #157a5c); }
+  .avatar.usr { background: linear-gradient(135deg, #2563EB, #1d4ed8); color: white; font-size: 11px; font-weight: 700; }
+
+  .bubble { padding: 12px 16px; border-radius: 18px; font-size: 14px; line-height: 1.6; max-width: 100%; }
+  .bubble.user { background: linear-gradient(135deg, #1D9E75, #17896A); color: white; border-bottom-right-radius: 4px; box-shadow: 0 2px 8px rgba(29,158,117,0.25); }
+  .bubble.capucine { background: white; color: #1A1A18; border: 1px solid #E8E7E2; border-bottom-left-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+
+  .step-indicator { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #6B6B66; background: #F5F5F3; padding: 6px 12px; border-radius: 20px; align-self: center; margin: 4px 0; }
+  .step-dot { width: 6px; height: 6px; border-radius: 50%; background: #1D9E75; }
+
+  .typing { display: flex; align-items: center; gap: 4px; padding: 12px 16px; }
+  .typing span { width: 7px; height: 7px; border-radius: 50%; background: #C0BEB9; display: inline-block; animation: bounce 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+
+  .suggestions-area { padding: 0 24px 8px; flex-shrink: 0; }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { background: white; border: 1px solid #E8E7E2; border-radius: 20px; padding: 6px 14px; font-size: 12px; color: #6B6B66; cursor: pointer; transition: all 0.2s; font-family: 'Inter', sans-serif; }
+  .chip:hover { border-color: #1D9E75; color: #1D9E75; background: #E1F5EE; }
+
+  .input-area { background: white; border-top: 1px solid #E8E7E2; padding: 16px 24px; flex-shrink: 0; box-shadow: 0 -2px 12px rgba(0,0,0,0.04); }
+  .input-row { display: flex; gap: 10px; align-items: center; background: #FAFAF8; border: 1.5px solid #E8E7E2; border-radius: 14px; padding: 10px 14px; transition: border-color 0.2s; }
+  .input-row:focus-within { border-color: #1D9E75; }
+  #userInput { flex: 1; border: none; background: transparent; font-family: 'Inter', sans-serif; font-size: 14px; color: #1A1A18; resize: none; outline: none; max-height: 100px; line-height: 1.5; }
+  #userInput::placeholder { color: #A0A09A; }
+  .send-btn { width: 36px; height: 36px; background: #1D9E75; border: none; border-radius: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; flex-shrink: 0; }
+  .send-btn:hover { background: #17896A; transform: scale(1.05); }
+  .send-btn:disabled { background: #C0BEB9; cursor: not-allowed; transform: none; }
+  .send-btn svg { width: 16px; height: 16px; fill: white; }
+
+  .link-btn { display: flex; align-items: center; justify-content: center; gap: 8px; background: linear-gradient(135deg, #1D9E75, #17896A); color: white; border: none; border-radius: 12px; padding: 14px 20px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 10px; transition: all 0.2s; box-shadow: 0 4px 12px rgba(29,158,117,0.3); font-family: 'Inter', sans-serif; }
+  .link-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(29,158,117,0.4); }
+
+  .error-note { font-size: 12px; color: #E24B4A; background: #fff0f0; border: 1px solid #fcd5d5; border-radius: 10px; padding: 10px 14px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo-icon">🛍️</div>
+    <div class="logo-text">
+      <h1>Capucine</h1>
+      <p>Ton assistante d'achat personnelle</p>
+    </div>
+  </div>
+  <div class="header-badge">✦ IA Active</div>
+</div>
+
+<div class="chat-area" id="chatArea">
+  <div class="step-indicator"><div class="step-dot"></div>Nouvelle conversation</div>
+  <div class="message capucine">
+    <div class="avatar cap">🛍️</div>
+    <div class="bubble capucine">
+      Bonjour ! Je suis <strong>Capucine</strong>, ton assistante d'achat personnelle. 👋<br><br>
+      Dis-moi ce que tu cherches — un produit précis, une idée vague, un budget, une contrainte — je fouille l'ensemble du web et je te trouve le meilleur prix.<br><br>
+      <em>Qu'est-ce que tu recherches aujourd'hui ?</em>
+    </div>
+  </div>
+</div>
+
+<div class="suggestions-area" id="suggestionsArea">
+  <div class="suggestions">
+    <button class="chip" onclick="useSuggestion('AirPods Pro moins chers')">🎧 AirPods Pro moins chers</button>
+    <button class="chip" onclick="useSuggestion('Nike Air Max taille 42 blanc')">👟 Nike Air Max taille 42</button>
+    <button class="chip" onclick="useSuggestion('iPhone 15 reconditionné')">📱 iPhone reconditionné</button>
+    <button class="chip" onclick="useSuggestion('Machine à café budget 150 euros')">☕ Machine à café &lt; 150€</button>
+  </div>
+</div>
+
+<div class="input-area">
+  <div class="input-row">
+    <textarea id="userInput" placeholder="Dis-moi ce que tu cherches..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+      <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+    </button>
+  </div>
+</div>
+
+<script>
+const SYSTEM_PROMPT = `Tu es Capucine, une assistante IA d'achat personnelle. Tu es efficace, directe, chaleureuse — jamais robotique. Tu réponds en français sauf si l'utilisateur écrit dans une autre langue.
+
+Tu suis un flux en 5 étapes séquentielles :
+
+ÉTAPE 1 — QUALIFICATION : Quand l'utilisateur exprime un besoin, pose TOUTES les questions nécessaires EN UN SEUL message groupé (jamais une par une). Demande : produit exact, budget max, neuf/reconditionné/occasion, délai livraison, pays livraison (suppose France si non précisé), critère prioritaire (prix le plus bas / qualité-prix / autre). Affiche ensuite une fiche récapitulative formatée et demande confirmation.
+
+ÉTAPE 2 — RÉSULTATS : Après confirmation, dis "Je cherche..." puis présente 2 à 3 options avec ce format pour chacune :
+🥇 Option 1 — [Nom produit exact]
+🏪 Marchand : [nom] — Note : X/5
+💰 Prix produit : X€
+🚚 Livraison : [gratuite / X€] — Délai : X jours ouvrés
+💳 TOTAL : X€ TTC
+🎁 Code promo : [CODE → économie X€] ou [Aucun trouvé]
+⭐ Pourquoi : [1 phrase précise]
+
+Termine par "💡 Je recommande l'Option N parce que [raison]" et "→ Quelle option tu choisis ?"
+
+Invente des prix réalistes et plausibles pour la démo (ex: AirPods Pro ~219€ Amazon, ~229€ Fnac, etc.)
+
+ÉTAPE 3 — INFOS UTILISATEUR : Après sélection, propose la création de compte puis demande prénom, nom, email, adresse de livraison.
+
+ÉTAPE 4 — PANIER : Affiche le récapitulatif final avec code promo appliqué, total et économies.
+
+ÉTAPE 5 — LIEN : Annonce que le lien de panier est prêt. Dis que l'utilisateur doit valider le paiement lui-même sur le site du marchand. Capucine ne finalise jamais un achat.
+
+RÈGLES : Ne finalise jamais un achat. N'invente pas de vrais codes (utilise des codes fictifs réalistes comme CAPUCINE10). Affiche toujours prix + livraison = total TTC. Sois concise.`;
+
+let history = [];
+let busy = false;
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function useSuggestion(text) {
+  document.getElementById('suggestionsArea').style.display = 'none';
+  document.getElementById('userInput').value = text;
+  sendMessage();
+}
+
+function fmt(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/\n/g, '<br>');
+}
+
+function addMsg(role, content) {
+  const area = document.getElementById('chatArea');
+  const wrap = document.createElement('div');
+  wrap.className = 'message ' + (role === 'user' ? 'user' : 'capucine');
+  const av = document.createElement('div');
+  av.className = 'avatar ' + (role === 'user' ? 'usr' : 'cap');
+  av.textContent = role === 'user' ? 'Toi' : '🛍️';
+  const bub = document.createElement('div');
+  bub.className = 'bubble ' + (role === 'user' ? 'user' : 'capucine');
+  bub.innerHTML = fmt(content);
+  wrap.appendChild(av);
+  wrap.appendChild(bub);
+  area.appendChild(wrap);
+  area.scrollTop = area.scrollHeight;
+}
+
+function showTyping() {
+  const area = document.getElementById('chatArea');
+  const wrap = document.createElement('div');
+  wrap.className = 'message capucine'; wrap.id = 'typing';
+  const av = document.createElement('div'); av.className = 'avatar cap'; av.textContent = '🛍️';
+  const bub = document.createElement('div'); bub.className = 'bubble capucine';
+  bub.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+  wrap.appendChild(av); wrap.appendChild(bub);
+  area.appendChild(wrap); area.scrollTop = area.scrollHeight;
+}
+
+function removeTyping() {
+  const el = document.getElementById('typing'); if (el) el.remove();
+}
+
+function addLinkButton() {
+  const area = document.getElementById('chatArea');
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'align-self:flex-start;max-width:80%;margin-left:42px;width:calc(80% - 42px);animation:fadeUp 0.3s ease';
+  wrap.innerHTML = '<button class="link-btn" onclick="simulateLink()">🔗 Accéder à mon panier — Lien sécurisé Capucine</button>';
+  area.appendChild(wrap); area.scrollTop = area.scrollHeight;
+}
+
+function simulateLink() {
+  addMsg('capucine', '✅ **Lien de panier ouvert !**\n\nDans la version finale, ce bouton t\'emmènerait directement sur la page panier du marchand avec :\n✓ Le produit déjà ajouté\n✓ Le code promo appliqué automatiquement\n✓ L\'adresse de livraison pré-remplie\n\nTu n\'aurais plus qu\'à confirmer ton paiement. 🎉\n\nCapucine ne touche jamais à ton paiement — tu gardes le contrôle total.');
+}
+
+async function sendMessage() {
+  const input = document.getElementById('userInput');
+  const text = input.value.trim();
+  if (!text || busy) return;
+  document.getElementById('suggestionsArea').style.display = 'none';
+  input.value = ''; input.style.height = 'auto';
+  addMsg('user', text);
+  history.push({ role: 'user', content: text });
+  busy = true;
+  document.getElementById('sendBtn').disabled = true;
+  showTyping();
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: history
+      })
+    });
+    const data = await res.json();
+    removeTyping();
+    const reply = data.content?.[0]?.text || 'Je rencontre une difficulté technique. Réessaie dans un instant.';
+    history.push({ role: 'assistant', content: reply });
+    addMsg('capucine', reply);
+    if (reply.toLowerCase().includes('lien') && (reply.toLowerCase().includes('prêt') || reply.toLowerCase().includes('pret'))) {
+      addLinkButton();
+    }
+  } catch(e) {
+    removeTyping();
+    addMsg('capucine', '⚠️ Problème de connexion à l\'API.\n\nPour faire fonctionner Capucine, ouvre ce fichier HTML dans ton navigateur et assure-toi que la clé API Anthropic est configurée dans le code (variable ANTHROPIC_API_KEY).\n\nLe flux complet en 5 étapes est prêt — il ne manque que la connexion API.');
+  }
+  busy = false;
+  document.getElementById('sendBtn').disabled = false;
+}
+</script>
+</body>
+</html>
