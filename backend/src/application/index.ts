@@ -49,6 +49,18 @@ export * from './model-router';
 // No Results Analyzer
 export * from './no-results-analyzer';
 
+// Search Provider Orchestrator (multi-source search)
+export * from './search-provider-orchestrator';
+
+// Promotion Engine (codes promos, discounts)
+export * from './promotion-engine';
+
+// Cart Preparation Engine (checkout coordination)
+export * from './cart-preparation-engine';
+
+// AI Usage Tracking (budget, tokens, costs)
+export * from './ai-usage-tracking';
+
 // Conflict Resolver
 export * from './conflict-resolver';
 
