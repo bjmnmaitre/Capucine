@@ -10,203 +10,234 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
+  <!-- Skip Link - Accessibilité P0 -->
+  <a href="#main-content" class="skip-link">Aller au contenu principal</a>
+
   <!-- Navigation -->
-  <nav class="navbar">
+  <nav class="navbar" role="navigation" aria-label="Navigation principale">
     <div class="nav-container">
-      <div class="logo">
-        <span class="logo-icon">🛒</span>
+      <div class="logo" aria-label="Shopping Assistant - Accueil">
+        <span class="logo-icon" aria-hidden="true">🛒</span>
         <span class="logo-text">Shopping Assistant</span>
       </div>
-      <div class="nav-menu" id="navMenu">
-        <a href="#" class="nav-link active" data-page="lists">Mes Listes</a>
-        <a href="#" class="nav-link" data-page="history">Historique</a>
-        <a href="#" class="nav-link" data-page="profile">Profil</a>
-        <button class="btn-logout" id="logoutBtn">Déconnexion</button>
-      </div>
+      <ul class="nav-menu" id="navMenu" role="menubar">
+        <li role="none"><a href="#" class="nav-link active" data-page="lists" role="menuitem">Mes Listes</a></li>
+        <li role="none"><a href="#" class="nav-link" data-page="history" role="menuitem">Historique</a></li>
+        <li role="none"><a href="#" class="nav-link" data-page="profile" role="menuitem">Profil</a></li>
+        <li role="none"><button class="btn-logout" id="logoutBtn" role="menuitem">Déconnexion</button></li>
+      </ul>
     </div>
   </nav>
 
   <div class="container">
-    <!-- Auth Pages -->
-    <div id="authPage" class="page">
-      <div class="auth-container">
-        <!-- Login Form -->
-        <div id="loginForm" class="auth-form active">
-          <h1>Bienvenue</h1>
-          <p class="auth-subtitle">Connectez-vous à votre compte</p>
-          <form id="loginFormElement">
-            <div class="form-group">
-              <label for="loginEmail">Email</label>
-              <input type="email" id="loginEmail" placeholder="votre@email.com" required>
-            </div>
-            <div class="form-group">
-              <label for="loginPassword">Mot de passe</label>
-              <input type="password" id="loginPassword" placeholder="••••••••" required>
-            </div>
-            <button type="submit" class="btn-primary btn-large">Connexion</button>
-          </form>
-          <p class="auth-toggle">Pas de compte? <a href="#" id="toggleRegister">Créer un compte</a></p>
-        </div>
+    <!-- Main Content Landmark -->
+    <main id="main-content" role="main">
+      <!-- Auth Pages -->
+      <section id="authPage" class="page" aria-labelledby="auth-heading">
+        <div class="auth-container">
+          <!-- Login Form -->
+          <section id="loginForm" class="auth-form active" aria-labelledby="login-heading">
+            <h1 id="login-heading">Bienvenue</h1>
+            <p class="auth-subtitle">Connectez-vous à votre compte</p>
+            <form id="loginFormElement" novalidate>
+              <div class="form-group">
+                <label for="loginEmail">Email <span class="required" aria-hidden="true">*</span></label>
+                <input type="email" id="loginEmail" autocomplete="email" required aria-required="true" aria-describedby="loginEmail-error">
+                <div id="loginEmail-error" class="error-message" role="alert" aria-live="polite"></div>
+              </div>
+              <div class="form-group">
+                <label for="loginPassword">Mot de passe <span class="required" aria-hidden="true">*</span></label>
+                <input type="password" id="loginPassword" autocomplete="current-password" required aria-required="true" aria-describedby="loginPassword-error">
+                <div id="loginPassword-error" class="error-message" role="alert" aria-live="polite"></div>
+              </div>
+              <button type="submit" class="btn-primary btn-large">Connexion</button>
+            </form>
+            <p class="auth-toggle">Pas de compte? <a href="#" id="toggleRegister">Créer un compte</a></p>
+          </section>
 
-        <!-- Register Form -->
-        <div id="registerForm" class="auth-form">
-          <h1>Créer un compte</h1>
-          <p class="auth-subtitle">Rejoignez-nous pour gérer vos achats</p>
-          <form id="registerFormElement">
-            <div class="form-group">
-              <label for="registerEmail">Email</label>
-              <input type="email" id="registerEmail" placeholder="votre@email.com" required>
-            </div>
-            <div class="form-group">
-              <label for="registerUsername">Nom d'utilisateur</label>
-              <input type="text" id="registerUsername" placeholder="votrenomutilisateur" required>
-            </div>
-            <div class="form-group">
-              <label for="registerFullName">Nom complet</label>
-              <input type="text" id="registerFullName" placeholder="Votre nom complet">
-            </div>
-            <div class="form-group">
-              <label for="registerPassword">Mot de passe</label>
-              <input type="password" id="registerPassword" placeholder="••••••••" required>
-            </div>
-            <button type="submit" class="btn-primary btn-large">Créer un compte</button>
-          </form>
-          <p class="auth-toggle">Vous avez un compte? <a href="#" id="toggleLogin">Se connecter</a></p>
+          <!-- Register Form -->
+          <section id="registerForm" class="auth-form" aria-labelledby="register-heading" hidden>
+            <h1 id="register-heading">Créer un compte</h1>
+            <p class="auth-subtitle">Rejoignez-nous pour gérer vos achats</p>
+            <form id="registerFormElement" novalidate>
+              <div class="form-group">
+                <label for="registerEmail">Email <span class="required" aria-hidden="true">*</span></label>
+                <input type="email" id="registerEmail" autocomplete="email" required aria-required="true" aria-describedby="registerEmail-error">
+                <div id="registerEmail-error" class="error-message" role="alert" aria-live="polite"></div>
+              </div>
+              <div class="form-group">
+                <label for="registerUsername">Nom d'utilisateur <span class="required" aria-hidden="true">*</span></label>
+                <input type="text" id="registerUsername" autocomplete="username" required aria-required="true" aria-describedby="registerUsername-error">
+                <div id="registerUsername-error" class="error-message" role="alert" aria-live="polite"></div>
+              </div>
+              <div class="form-group">
+                <label for="registerFullName">Nom complet</label>
+                <input type="text" id="registerFullName" autocomplete="name" aria-describedby="registerFullName-error">
+                <div id="registerFullName-error" class="error-message" role="alert" aria-live="polite"></div>
+              </div>
+              <div class="form-group">
+                <label for="registerPassword">Mot de passe <span class="required" aria-hidden="true">*</span></label>
+                <input type="password" id="registerPassword" autocomplete="new-password" required aria-required="true" aria-describedby="registerPassword-error">
+                <div id="registerPassword-error" class="error-message" role="alert" aria-live="polite"></div>
+              </div>
+              <button type="submit" class="btn-primary btn-large">Créer un compte</button>
+            </form>
+            <p class="auth-toggle">Vous avez un compte? <a href="#" id="toggleLogin">Se connecter</a></p>
+          </section>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <!-- Main App -->
-    <div id="appPage" class="page" style="display: none;">
-      <!-- Lists Page -->
-      <div id="listsPage" class="page-content active">
-        <div class="page-header">
-          <div>
-            <h1>Mes Listes de Courses</h1>
-            <p class="subtitle">Gérez et optimisez vos achats</p>
+      <!-- Main App -->
+      <section id="appPage" class="page" style="display: none;" aria-labelledby="app-heading">
+        <h1 id="app-heading" class="visually-hidden">Application Shopping Assistant</h1>
+
+        <!-- Lists Page -->
+        <section id="listsPage" class="page-content active" aria-labelledby="lists-heading">
+          <header class="page-header">
+            <div>
+              <h1 id="lists-heading">Mes Listes de Courses</h1>
+              <p class="subtitle">Gérez et optimisez vos achats</p>
+            </div>
+            <button class="btn-primary" id="newListBtn" aria-label="Créer une nouvelle liste">Nouvelle Liste</button>
+          </header>
+
+          <section aria-labelledby="lists-list-heading">
+            <h2 id="lists-list-heading" class="visually-hidden">Vos listes</h2>
+            <div id="listsList" class="lists-grid" role="list">
+              <!-- Les listes seront ajoutées ici -->
+            </div>
+          </section>
+        </section>
+
+        <!-- List Details Page -->
+        <section id="listDetailsPage" class="page-content" aria-labelledby="list-details-heading">
+          <header class="page-header">
+            <div>
+              <button class="btn-back" id="backListBtn" aria-label="Retour aux listes">← Retour</button>
+              <h1 id="list-details-heading" id="listTitle">Ma Liste</h1>
+              <div class="list-stats" aria-live="polite">
+                <span id="itemCount">0 articles</span>
+                <span id="checkedCount">0 coché(s)</span>
+                <span id="totalCost">Total: 0€</span>
+              </div>
+            </div>
+            <button class="btn-secondary" id="recommendationsBtn" aria-label="Voir les recommandations intelligentes">Recommandations</button>
+          </header>
+
+          <div class="list-details-container">
+            <section class="items-section" aria-labelledby="items-heading">
+              <header class="section-header">
+                <h2 id="items-heading">Articles</h2>
+                <div class="section-controls">
+                  <label for="itemInput" class="visually-hidden">Ajouter un article</label>
+                  <input type="text" id="itemInput" placeholder="Ajouter un article..." class="input-add" aria-describedby="itemInput-error">
+                  <div id="itemInput-error" class="error-message" role="alert" aria-live="polite"></div>
+                  <button class="btn-small" id="addItemBtn" aria-label="Ajouter l'article">+</button>
+                </div>
+              </header>
+
+              <section aria-labelledby="items-list-heading">
+                <h2 id="items-list-heading" class="visually-hidden">Liste des articles</h2>
+                <ul id="itemsList" class="items-list" role="list">
+                  <!-- Les articles seront ajoutés ici -->
+                </ul>
+              </section>
+            </section>
+
+            <aside class="sidebar" aria-labelledby="sidebar-heading">
+              <h2 id="sidebar-heading" class="visually-hidden">Résumé de la liste</h2>
+              <section class="sidebar-card" aria-labelledby="summary-heading">
+                <h3 id="summary-heading">Résumé</h3>
+                <div class="summary-stat">
+                  <span>Prix estimé</span>
+                  <span id="estimatedTotal" class="price">0€</span>
+                </div>
+                <div class="summary-stat">
+                  <span>Prix réel</span>
+                  <span id="actualTotal" class="price">0€</span>
+                </div>
+                <div class="summary-stat">
+                  <span>Économies</span>
+                  <span id="savingsAmount" class="price savings">0€</span>
+                </div>
+              </section>
+
+              <button class="btn-primary btn-full" id="completeListBtn" aria-label="Marquer la liste comme complétée">Marquer comme complétée</button>
+              <button class="btn-danger btn-full" id="deleteListBtn" aria-label="Supprimer la liste">Supprimer la liste</button>
+            </aside>
           </div>
-          <button class="btn-primary" id="newListBtn">+ Nouvelle Liste</button>
-        </div>
 
-        <div id="listsList" class="lists-grid">
-          <!-- Les listes seront ajoutées ici -->
-        </div>
-      </div>
-
-      <!-- List Details Page -->
-      <div id="listDetailsPage" class="page-content">
-        <div class="page-header">
-          <div>
-            <button class="btn-back" id="backListBtn">← Retour</button>
-            <h1 id="listTitle">Ma Liste</h1>
-            <div class="list-stats">
-              <span id="itemCount">0 articles</span>
-              <span id="checkedCount">0 coché(s)</span>
-              <span id="totalCost">Total: 0€</span>
-            </div>
-          </div>
-          <button class="btn-secondary" id="recommendationsBtn">✨ Recommandations</button>
-        </div>
-
-        <div class="list-details-container">
-          <div class="items-section">
-            <div class="section-header">
-              <h2>Articles</h2>
-              <div class="section-controls">
-                <input type="text" id="itemInput" placeholder="Ajouter un article..." class="input-add">
-                <button class="btn-small" id="addItemBtn">+</button>
-              </div>
-            </div>
-
-            <div id="itemsList" class="items-list">
-              <!-- Les articles seront ajoutés ici -->
-            </div>
-          </div>
-
-          <div class="sidebar">
-            <div class="sidebar-card">
-              <h3>📊 Résumé</h3>
-              <div class="summary-stat">
-                <span>Prix estimé</span>
-                <span id="estimatedTotal" class="price">0€</span>
-              </div>
-              <div class="summary-stat">
-                <span>Prix réel</span>
-                <span id="actualTotal" class="price">0€</span>
-              </div>
-              <div class="summary-stat">
-                <span>Économies</span>
-                <span id="savingsAmount" class="price savings">0€</span>
-              </div>
-            </div>
-
-            <button class="btn-primary btn-full" id="completeListBtn">✓ Marquer comme complétée</button>
-            <button class="btn-danger btn-full" id="deleteListBtn">Supprimer la liste</button>
-          </div>
-        </div>
-
-        <!-- Recommendations Modal -->
-        <div id="recommendationsModal" class="modal" style="display: none;">
-          <div class="modal-content">
-            <button class="modal-close" id="closeRecommendationsBtn">&times;</button>
-            <h2>✨ Recommandations Intelligentes</h2>
-            <div id="recommendationsContent" class="recommendations-content">
-              <!-- Les recommandations seront ajoutées ici -->
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- History Page -->
-      <div id="historyPage" class="page-content">
-        <div class="page-header">
-          <h1>Historique d'Achat</h1>
-          <p class="subtitle">Vos précédentes listes et achats</p>
-        </div>
-        <div id="historyList" class="history-list">
-          <!-- L'historique sera ajouté ici -->
-        </div>
-      </div>
-
-      <!-- Profile Page -->
-      <div id="profilePage" class="page-content">
-        <div class="page-header">
-          <h1>Mon Profil</h1>
-        </div>
-        <div class="profile-container">
-          <div class="profile-card">
-            <h2>Informations Personnelles</h2>
-            <div class="profile-info">
-              <div class="info-item">
-                <span class="label">Email</span>
-                <span id="profileEmail">-</span>
-              </div>
-              <div class="info-item">
-                <span class="label">Nom d'utilisateur</span>
-                <span id="profileUsername">-</span>
-              </div>
-              <div class="info-item">
-                <span class="label">Nom complet</span>
-                <span id="profileName">-</span>
+          <!-- Recommendations Modal -->
+          <div id="recommendationsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-hidden="true" style="display: none;">
+            <div class="modal-overlay" aria-hidden="true"></div>
+            <div class="modal-content">
+              <button class="modal-close" id="closeRecommendationsBtn" aria-label="Fermer la fenêtre des recommandations">×</button>
+              <h2 id="modalTitle">Recommandations Intelligentes</h2>
+              <div id="recommendationsContent" class="recommendations-content">
+                <!-- Les recommandations seront ajoutées ici -->
               </div>
             </div>
           </div>
+        </section>
 
-          <div class="profile-card">
-            <h2>Préférences</h2>
-            <div class="form-group">
-              <label for="budgetInput">Budget par défaut (€)</label>
-              <input type="number" id="budgetInput" placeholder="0" min="0">
-              <button class="btn-small" id="saveBudgetBtn">Enregistrer</button>
-            </div>
+        <!-- History Page -->
+        <section id="historyPage" class="page-content" aria-labelledby="history-heading">
+          <header class="page-header">
+            <h1 id="history-heading">Historique d'Achat</h1>
+            <p class="subtitle">Vos précédentes listes et achats</p>
+          </header>
+          <section aria-labelledby="history-list-heading">
+            <h2 id="history-list-heading" class="visually-hidden">Votre historique</h2>
+            <ul id="historyList" class="history-list" role="list">
+              <!-- L'historique sera ajouté ici -->
+            </ul>
+          </section>
+        </section>
+
+        <!-- Profile Page -->
+        <section id="profilePage" class="page-content" aria-labelledby="profile-heading">
+          <header class="page-header">
+            <h1 id="profile-heading">Mon Profil</h1>
+          </header>
+          <div class="profile-container">
+            <section class="profile-card" aria-labelledby="personal-info-heading">
+              <h2 id="personal-info-heading">Informations Personnelles</h2>
+              <dl class="profile-info">
+                <div class="info-item">
+                  <dt class="label">Email</dt>
+                  <dd id="profileEmail">-</dd>
+                </div>
+                <div class="info-item">
+                  <dt class="label">Nom d'utilisateur</dt>
+                  <dd id="profileUsername">-</dd>
+                </div>
+                <div class="info-item">
+                  <dt class="label">Nom complet</dt>
+                  <dd id="profileName">-</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="profile-card" aria-labelledby="preferences-heading">
+              <h2 id="preferences-heading">Préférences</h2>
+              <div class="form-group">
+                <label for="budgetInput">Budget par défaut (€)</label>
+                <input type="number" id="budgetInput" placeholder="0" min="0" aria-describedby="budgetInput-error">
+                <div id="budgetInput-error" class="error-message" role="alert" aria-live="polite"></div>
+                <button class="btn-small" id="saveBudgetBtn" aria-label="Enregistrer le budget">Enregistrer</button>
+              </div>
+            </section>
           </div>
-        </div>
-      </div>
-    </div>
+        </section>
+      </section>
+    </main>
   </div>
 
-  <!-- Notification Toast -->
-  <div id="notification" class="notification"></div>
+  <!-- Notification Toast - ARIA Live Region P0 -->
+  <div id="notification" class="notification" role="alert" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Status region for loading announcements -->
+  <div id="status-region" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Scripts -->
   <script src="js/app.js"></script>
