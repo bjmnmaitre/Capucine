@@ -32,6 +32,8 @@
 import { Offer, DataPoint } from '../domain/types';
 import { IDiscoveryStrategy, DiscoveryCriteria, DiscoveryResult } from './discovery';
 import { WebSearchAdapter, WebSearchOutput, WebSearchResult, ToolRegistry } from './tools';
+import { ProductPageExtractor } from './product-page-extractor';
+import { classifyMatchQuality } from './match-quality';
 
 // ============================================================================
 // REAL WEB DISCOVERY STRATEGY
@@ -56,6 +58,12 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
 
   private readonly adapter: WebSearchAdapter | null;
   private readonly registry: ToolRegistry | null;
+  private readonly pageExtractor: ProductPageExtractor | null;
+
+  /** How many top candidates get a real page-fetch enrichment attempt per search. */
+  private static readonly MAX_ENRICHED_CANDIDATES = 5;
+  /** Hard budget for the whole enrichment phase, so a slow/unreachable site never stalls the pipeline. */
+  private static readonly ENRICHMENT_BUDGET_MS = 6000;
 
   get isReady(): boolean {
     if (this.registry) {
@@ -66,8 +74,12 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
 
   /**
    * @param adapterOrRegistry - Either a WebSearchAdapter (direct mode) or a ToolRegistry (registry mode)
+   * @param pageExtractor - Optional. When provided, the top candidates from
+   *   each search are enriched with real page data (JSON-LD) after the
+   *   snippet-based skeleton is built. Omitted by default so existing
+   *   callers/tests are entirely unaffected (opt-in, non-breaking).
    */
-  constructor(adapterOrRegistry: WebSearchAdapter | ToolRegistry) {
+  constructor(adapterOrRegistry: WebSearchAdapter | ToolRegistry, pageExtractor?: ProductPageExtractor) {
     if (adapterOrRegistry instanceof ToolRegistry) {
       this.registry = adapterOrRegistry;
       this.adapter = null;
@@ -75,6 +87,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
       this.adapter = adapterOrRegistry;
       this.registry = null;
     }
+    this.pageExtractor = pageExtractor ?? null;
   }
 
   async discover(criteria: DiscoveryCriteria): Promise<DiscoveryResult> {
@@ -152,6 +165,16 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     // Convert search results → offer candidates
     const candidates = this.buildCandidates(allResults, criteria);
 
+    // Optional enrichment: fetch the actual page for the top candidates and
+    // extract structured Product/Offer data (JSON-LD) to replace the
+    // fragile snippet-regex price with a real published price when possible.
+    // Best-effort only: never blocks, never overwrites good data with worse
+    // data, never invents anything when extraction fails.
+    let enrichedCount = 0;
+    if (this.pageExtractor) {
+      enrichedCount = await this.enrichTopCandidates(candidates);
+    }
+
     return {
       id: resultId,
       timestamp: new Date(),
@@ -163,9 +186,72 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         candidatesFiltered: allResults.length - candidates.length,
         searchTimeMs: Date.now() - start,
         relevanceEstimate: candidates.length > 0 ? 'medium' : 'low',
+        pageEnrichedCount: enrichedCount,
       },
       strategy: this.name,
     };
+  }
+
+  /**
+   * Attempts to enrich the top N candidates with real page data. Runs all
+   * fetches concurrently but respects a hard overall time budget — slow or
+   * unreachable pages are simply left as snippet-only skeletons, never
+   * retried, never blocking the rest of the pipeline.
+   *
+   * INVARIANT: a candidate's existing DataPoint is only replaced when the
+   * extractor returns status='known' — a failed/partial extraction never
+   * downgrades a value that was already known from the snippet.
+   */
+  private async enrichTopCandidates(
+    candidates: DiscoveryResult['candidates']
+  ): Promise<number> {
+    const targets = candidates.slice(0, RealWebDiscoveryStrategy.MAX_ENRICHED_CANDIDATES);
+    if (targets.length === 0 || !this.pageExtractor) return 0;
+
+    const withTimeout = async <T,>(promise: Promise<T | null>): Promise<T | null> => {
+      const timeout = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), RealWebDiscoveryStrategy.ENRICHMENT_BUDGET_MS)
+      );
+      return Promise.race([promise, timeout]);
+    };
+
+    let enrichedCount = 0;
+
+    await Promise.all(
+      targets.map(async (candidate) => {
+        const url = candidate.offer.characteristics['url']?.value;
+        if (typeof url !== 'string') return;
+
+        const extracted = await withTimeout(this.pageExtractor!.extract(url));
+        if (!extracted) return; // fetch/parse failed — leave snippet-only skeleton untouched
+
+        let changed = false;
+
+        if (extracted.price.status === 'known') {
+          candidate.offer.price = extracted.price;
+          changed = true;
+        }
+        if (extracted.currency) {
+          candidate.offer.currency = extracted.currency;
+          changed = true;
+        }
+        if (extracted.merchantName.status === 'known' && extracted.merchantName.value) {
+          candidate.offer.merchant = {
+            ...candidate.offer.merchant,
+            name: extracted.merchantName.value,
+          };
+          changed = true;
+        }
+        if (extracted.productName.status === 'known' && extracted.productName.value) {
+          candidate.offer.characteristics['title'] = extracted.productName;
+          changed = true;
+        }
+
+        if (changed) enrichedCount += 1;
+      })
+    );
+
+    return enrichedCount;
   }
 
   /**
@@ -258,9 +344,23 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
 
       // Build a minimal offer from the search result
       const offer = this.buildOfferSkeleton(result, price);
-      const matchScore = this.estimateMatchScore(result, criteria);
+      const keywords = criteria.keywords ?? [];
+      const text = `${result.title} ${result.snippet}`.toLowerCase();
+      const keywordsMatched = keywords.filter((kw) => text.includes(kw.toLowerCase())).length;
+      const matchScore = keywords.length > 0 ? keywordsMatched / keywords.length : 0.5;
+      const matchQuality = classifyMatchQuality({
+        text,
+        exactRefs: criteria.exactRefs ?? [],
+        keywordsMatched,
+        keywordsTotal: keywords.length,
+      });
 
-      candidates.push({ offer, matchScore, matchReason: `Web result: "${result.title}"` });
+      candidates.push({
+        offer: { ...offer, matchQuality },
+        matchScore,
+        matchReason: `Web result: "${result.title}"`,
+        matchQuality,
+      });
     }
 
     // Sort by match score descending, then by position ascending (lower position = more relevant)
@@ -300,6 +400,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         description: { value: result.snippet, status: 'known', provenance: prov },
         url: { value: result.url, status: 'known', provenance: prov },
       },
+      executionUrl: result.url,
       provenance: prov,
       createdAt: now,
       retrievedAt: now,
@@ -327,15 +428,5 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     }
 
     return null;
-  }
-
-  /** Rough relevance score (0-1) based on keyword overlap with snippet/title */
-  private estimateMatchScore(result: WebSearchResult, criteria: DiscoveryCriteria): number {
-    const keywords = criteria.keywords ?? [];
-    if (keywords.length === 0) return 0.5;
-
-    const text = `${result.title} ${result.snippet}`.toLowerCase();
-    const matchCount = keywords.filter(kw => text.includes(kw.toLowerCase())).length;
-    return matchCount / keywords.length;
   }
 }

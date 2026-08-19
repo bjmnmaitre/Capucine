@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Capucine — Votre agent d'achat</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="app">
+
+    <header class="header">
+      <h1>Capucine</h1>
+      <p class="tagline">Décrivez ce que vous cherchez. Capucine recherche, compare et vous explique pourquoi.</p>
+    </header>
+
+    <section id="search-view" class="view">
+      <form id="search-form" class="search-form">
+        <textarea
+          id="query-input"
+          placeholder="Ex : « Je cherche un ordinateur portable pour travailler et jouer, moins de 1000 € »"
+          rows="3"
+          required
+        ></textarea>
+        <button type="submit" id="search-button">Rechercher</button>
+      </form>
+      <p class="examples">
+        Exemples :
+        « un casque bluetooth avec réduction de bruit » ·
+        « une tablette à moins de 500 € » ·
+        « un cadeau pour quelqu'un qui aime la photographie »
+      </p>
+    </section>
+
+    <section id="status-view" class="view hidden">
+      <div class="status-box">
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="status-text">Je précise votre demande…</p>
+      </div>
+    </section>
+
+    <section id="clarify-view" class="view hidden">
+      <div class="clarify-box">
+        <p id="clarify-question" class="clarify-question"></p>
+        <form id="clarify-form" class="clarify-form">
+          <input type="text" id="clarify-answer" placeholder="Votre réponse" required />
+          <button type="submit">Continuer</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="results-view" class="view hidden">
+      <div class="results-header">
+        <p id="results-summary"></p>
+        <button id="new-search-button" class="link-button">Nouvelle recherche</button>
+      </div>
+      <div id="no-results-box" class="no-results-box hidden"></div>
+      <ul id="results-list" class="results-list"></ul>
+    </section>
+
+    <section id="error-view" class="view hidden">
+      <div class="error-box">
+        <p id="error-text"></p>
+        <button id="error-retry-button" class="link-button">Réessayer</button>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p id="config-status"></p>
+    </footer>
+
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

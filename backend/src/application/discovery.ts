@@ -10,7 +10,7 @@
  * DETERMINISTIC: Same criteria = same results (required for testing)
  */
 
-import { Product, Offer } from '../domain/types';
+import { Product, Offer, SearchMatchQuality } from '../domain/types';
 
 // ============================================================================
 // DISCOVERY CRITERIA
@@ -41,6 +41,13 @@ export interface DiscoveryCriteria {
   // Merchants
   allowedMerchants?: string[];
   excludedMerchants?: string[];
+
+  /**
+   * Exact reference terms (model number/SKU) identified upstream, if any.
+   * Used to enable strict exact_match classification — see match-quality.ts.
+   * Absent for generic/descriptive searches with no identifiable reference.
+   */
+  exactRefs?: string[];
 
   // Sorting
   sortBy?: 'price_asc' | 'price_desc' | 'relevance' | 'rating' | 'recency';
@@ -111,6 +118,13 @@ export interface DiscoveryResult {
     offer: Offer;
     matchScore: number; // 0-1: how well does this match criteria
     matchReason?: string;
+    /**
+     * Categorical match classification, distinct from matchScore.
+     * Optional: only populated by strategies that implement it
+     * (RealWebDiscoveryStrategy). Never influences PriorityEngine ranking —
+     * descriptive metadata only, exactly like provenance.
+     */
+    matchQuality?: SearchMatchQuality;
   }>;
 
   // Statistics
@@ -120,6 +134,10 @@ export interface DiscoveryResult {
     candidatesFiltered: number;
     searchTimeMs: number;
     relevanceEstimate: 'high' | 'medium' | 'low';
+    /** Number of candidates whose data was upgraded via real page-fetch
+     *  enrichment (JSON-LD). Optional — only present when a ProductPageExtractor
+     *  was provided to the discovery strategy. */
+    pageEnrichedCount?: number;
   };
 
   // Metadata

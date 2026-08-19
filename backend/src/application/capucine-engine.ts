@@ -48,6 +48,7 @@ import { InterpretedRequest } from './request';
 import { RealWebDiscoveryStrategy } from './real-web-discovery';
 import { detectWebSearchAdapter } from './web-search-adapters';
 import { ToolRegistry, buildDefaultToolRegistry } from './tools';
+import { ProductPageExtractor } from './product-page-extractor';
 
 // ============================================================================
 // ENGINE INPUT / OUTPUT
@@ -183,6 +184,15 @@ export interface CapucineEngineOptions {
    * Default: true in production, false when discoveryOrchestrator is injected.
    */
   enableWebDiscovery?: boolean;
+
+  /**
+   * Whether RealWebDiscoveryStrategy should attempt to enrich top candidates
+   * with real page data (JSON-LD) after the snippet-based skeleton is built.
+   * Default: true when web discovery is enabled. Independent flag so page
+   * enrichment can be disabled (e.g. for latency-sensitive tests) without
+   * disabling web search entirely.
+   */
+  enablePageEnrichment?: boolean;
 }
 
 // ============================================================================
@@ -257,8 +267,13 @@ export class CapucineEngine {
       //   - availability check (isAvailable('web_search'))
       const enableWeb = options.enableWebDiscovery ?? true;
       if (enableWeb && this.toolRegistry.isAvailable('web_search')) {
-        // Pass ToolRegistry — strategy routes through it, not the raw adapter
-        const webStrategy = new RealWebDiscoveryStrategy(this.toolRegistry);
+        // Pass ToolRegistry — strategy routes through it, not the raw adapter.
+        // Also pass a ProductPageExtractor so top candidates get real page
+        // enrichment (JSON-LD) instead of relying solely on the snippet-regex
+        // price heuristic. Independently toggleable via enablePageEnrichment.
+        const enrichPages = options.enablePageEnrichment ?? true;
+        const pageExtractor = enrichPages ? new ProductPageExtractor() : undefined;
+        const webStrategy = new RealWebDiscoveryStrategy(this.toolRegistry, pageExtractor);
         this.discoveryOrchestrator.registerStrategy(webStrategy, true);
       }
     }
@@ -267,6 +282,7 @@ export class CapucineEngine {
       maxCandidates: options.maxCandidates ?? 100,
       proceedDespiteClarifications: options.proceedDespiteClarifications ?? true,
       enableWebDiscovery: options.enableWebDiscovery ?? true,
+      enablePageEnrichment: options.enablePageEnrichment ?? true,
     };
   }
 
@@ -824,6 +840,13 @@ export class CapucineEngine {
     }
     if (keywords.length > 0) {
       criteria.keywords = keywords;
+    }
+
+    // Exact reference terms, when identified, enable strict exact_match
+    // classification downstream (see match-quality.ts). Absent for
+    // generic/descriptive searches with no identifiable model reference.
+    if (phaseTerms && phaseTerms.exactRefs.length > 0) {
+      criteria.exactRefs = phaseTerms.exactRefs;
     }
 
     // Categories

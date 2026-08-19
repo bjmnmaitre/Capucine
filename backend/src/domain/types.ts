@@ -262,11 +262,34 @@ export interface Offer {
   executionCapability?: ExecutionCapabilityType;
   executionUrl?: string;
 
+  /**
+   * Categorical match classification (exact/close/partial/alternative/unknown),
+   * distinct from the ranking score. Set at discovery time (see
+   * application/match-quality.ts). Descriptive metadata only — NEVER read by
+   * PriorityEngine, NEVER a ranking input. Optional: only web-search-derived
+   * offers currently set it.
+   */
+  matchQuality?: SearchMatchQuality;
+
   // Metadata
   createdAt: Date;
   retrievedAt: Date;
   provenance: DataProvenance;
 }
+
+/**
+ * How closely a discovered candidate matches what the user actually asked
+ * for. See application/match-quality.ts for the classification logic.
+ * Defined here (domain layer) so Offer can carry it without application/
+ * depending on domain/ backwards.
+ *
+ * NAMED "SearchMatchQuality" (not "MatchQuality") to avoid collision with
+ * the unrelated MatchQuality type already defined in
+ * application/deduplication.ts (duplicate-confidence classification —
+ * a different concept: "are these two candidates the same product?" vs.
+ * "how well does this candidate match what the user searched for?").
+ */
+export type SearchMatchQuality = 'exact_match' | 'close_match' | 'partial_match' | 'alternative' | 'unknown';
 
 // ============================================================================
 // RANKING & RESULTS

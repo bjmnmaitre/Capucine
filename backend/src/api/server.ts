@@ -1,259 +1,580 @@
-import express, { Request, Response } from 'express';
-import { CapucineEngine, SearchRequest } from '../application/capucine-engine';
-import { CapucineEngineOptions } from '../application/capucine-engine';
-import { ToolRegistry } from '../application/tools';
+/**
+ * Capucine — HTTP API Layer
+ *
+ * Minimal Express server exposing the Capucine search pipeline via HTTP.
+ *
+ * Routes:
+ *   POST /search     → Full pipeline → SearchEngineResult (JSON)
+ *   GET  /health     → Service status
+ *   GET  /tools      → List of registered tools and their availability
+ *
+ * SECURITY INVARIANTS:
+ * - No API keys in this file. Keys are read from env by adapters.
+ * - Request body is validated before entering the pipeline.
+ * - AI responses NEVER reach PriorityEngine (enforced by CapucineEngine).
+ * - All errors return structured JSON (never raw stack traces in production).
+ *
+ * NOT in scope for this layer:
+ * - Authentication / authorization (caller's responsibility)
+ * - Rate limiting (use a reverse proxy / API gateway)
+ * - HTTPS (use a reverse proxy)
+ * - Payment, purchase, affiliate — NEVER
+ */
+
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
+import { CapucineEngine, SearchRequest } from '../application/capucine-engine';
+import { buildDefaultToolRegistry } from '../application/tools';
+import { detectWebSearchAdapter } from '../application/web-search-adapters';
+import { buildAIOrchestrator } from '../application/ai-providers';
+import { InMemoryProfileStore } from '../application/profile-store';
+import { ConversationManager } from '../application/conversation-manager';
+import { PreferenceCriterion, SearchMatchQuality } from '../domain/types';
 
 // ============================================================================
-// CONFIGURATION
-// ============================================================================
-
-// Environment variables for API keys
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const SERPER_API_KEY = process.env.SERPER_API_KEY;
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
-
-// ============================================================================
-// TOOL REGISTRY SETUP
+// APP FACTORY
 // ============================================================================
 
 /**
- * Build and configure the tool registry.
- * Registers all available discovery adapters based on environment variables.
- * ADAPTER REGISTRATION LINE IS THE KEY TO ENABLE WEBSERCH SUPPORT.
- * All adapter registration occurs here before engine instantiation.
- * The registry manages audit logging, rate limiting, and availability checks.
+ * Build and configure the Express application.
+ * Separated from listen() so the app can be tested without starting a server.
  */
-function buildToolRegistry(): ToolRegistry {
-  const registry = buildDefaultToolRegistry({
-    // These registrations happen automatically via detectWebSearchAdapter().
-    // We check availability here to avoid runtime errors.
-    // If no keys are set, adapters will be marked as unavailable but still registered.
-    braveSearch: detectWebSearchAdapter(BRAVE_API_KEY),
-    serperSearch: detectWebSearchAdapter(SERPER_API_KEY)
-  });
+export function buildApp(): express.Application {
+  const app = express();
 
-  // Force-register in_memory strategy first for safety (used in tests)
-  registry.registerTool('in_memory');
+  // Parse JSON bodies
+  app.use(express.json({ limit: '64kb' }));
 
-  return registry;
-}
+  // Serve the minimal first-version frontend (public/) from the same
+  // server/port as the API — avoids CORS and avoids requiring a second
+  // process to run the app. Resolved from process.cwd() (not
+  // import.meta.url) because import.meta is not supported by ts-jest's
+  // transform — this keeps behavior identical whether the server is run
+  // via `npm run dev` (tsx) or invoked from an integration test (jest),
+  // both of which run with cwd = backend/.
+  app.use(express.static(path.join(process.cwd(), 'public')));
 
-// ============================================================================
-// ENGINE INSTANTIATION
-// ============================================================================
-
-/**
- * Orchestrator setup — injects AI options dynamically from env vars.
- * Selects the correct AI provider(s) at runtime based on available keys.
- * NEVER hardcodes model names or provider logic in this layer.
- * Provider selection is purely runtime-driven.
- */
-function buildAIOrchestrator(): AIOrchestrator | undefined {
-  // NOTE: This exact provider detection list MUST match the exact provider types
-  // expected by CapucineEngine's configureAIOrchestrator() method.
-  // Any mismatch here breaks the engine initialization.
-  if (process.env.USE_CLAUDE === '1') {
-    return buildClaudeOrchestratorWithKey();
-  } else if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
-    // No AI keys set — return undefined to use mock or skip AI steps
-    return undefined;
+  // AI orchestrator — uses real providers if keys are set, MockAI otherwise
+  const aiSetup = buildAIOrchestrator();
+  if (aiSetup.status === 'real') {
+    console.log(`[CapucineAPI] AI providers: ${aiSetup.configured.join(', ')}`);
   } else {
-    return buildDefaultOrchestratorWithKey();
+    console.log(`[CapucineAPI] AI providers: MockAI (set ANTHROPIC_API_KEY or OPENAI_API_KEY for real AI)`);
   }
-}
 
-/**
- * Build the main search engine instance with proper configuration.
- * Injected dependencies (tools, orchestrator) ensure consistent access logging.
- * The registry and orchestrator are shared singletons for audit trail consistency.
- *
- * @param options Optional configuration overrides (testing, alternatives)
- * @returns Configured CapucineEngine instance
- */
-function buildCapucineEngine(options?: Partial<CapucineEngineOptions>): CapucineEngine {
-  const toolRegistry = buildToolRegistry();
-  const aiOrchestrator = buildAIOrchestrator();
+  // Web search adapter status
+  const webAdapter = detectWebSearchAdapter();
+  if (webAdapter.isConfigured()) {
+    console.log(`[CapucineAPI] Web search: ${webAdapter.adapterName} (configured)`);
+  } else {
+    console.log(`[CapucineAPI] Web search: NOT_EXECUTABLE (set BRAVE_API_KEY or SERPER_API_KEY)`);
+  }
 
-  // All search routes use the SAME engine instance with shared registry & orchestrator
-  return new CapucineEngine({
+  // Profile store — in-memory for now (swap for PostgresProfileStore in production)
+  // ARCHITECTURAL NOTE: This is a stateless replacement point. The store is injected
+  // here; CapucineEngine itself never touches storage.
+  const profileStore = new InMemoryProfileStore();
+
+  // Conversation manager — tracks multi-turn clarification sessions (30-min TTL)
+  const conversationManager = new ConversationManager();
+
+  // Tool registry — the single registry for this server process.
+  // Shared with the engine so both use the same audit log and rate-limit counters.
+  // In production this is the ONLY path tool calls take (enforces timeout/rate-limit/audit).
+  const toolRegistry = buildDefaultToolRegistry(webAdapter);
+
+  // Engine (one instance per process, shared across requests)
+  // Injecting toolRegistry ensures CapucineEngine routes all web search calls through it.
+  const engine = new CapucineEngine({
+    aiOrchestrator: aiSetup.orchestrator,
     toolRegistry,
-    aiOrchestrator,
-    enableWebDiscovery: process.env.ENABLE_WEB_DISCOVERY === '1',
-    ...options
   });
-}
 
-// ============================================================================
-// MIDDLEWARES
-// ============================================================================
+  // ── Routes ─────────────────────────────────────────────────────────────────
 
-const app = express();
+  /**
+   * GET /health
+   *
+   * Returns service status. Used by load balancers and monitoring.
+   */
+  app.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'ok',
+      service: 'capucine',
+      version: '0.1.0',
+      timestamp: new Date().toISOString(),
+      capabilities: {
+        aiProviders: {
+          status: aiSetup.status,
+          configured: aiSetup.configured,
+          blocked: aiSetup.blocked,
+        },
+        webSearch: {
+          status: webAdapter.isConfigured() ? 'configured' : 'not_configured',
+          adapter: webAdapter.adapterName,
+        },
+      },
+    });
+  });
 
-// Income: Parse JSON bodies (size-limited)
-app.use(express.json({ limit: '64kb' }));
+  /**
+   * GET /tools
+   *
+   * Returns the list of registered tools and their availability.
+   * Useful for debugging whether API keys are configured.
+   */
+  app.get('/tools', (_req: Request, res: Response) => {
+    res.json({
+      tools: toolRegistry.listTools(),
+    });
+  });
 
-// === Security & Validation ===
-// EXPLICITLY BLOCK POTENTIAL EXPLOITS
-app.use((req: Request, _res: Response, next: NextFunction) => {
-  // Nullish coalescing operator aborts further middleware if condition false
-  if (!/^\/(api|static)\//.test(req.path)) {
-    quietSecurePageScan(req.path);
-  }
-  next();
-});
-
-/* Utility functions (see security-best-practices.ts) */
-function quietSecurePageScan(path: string): void {
-  const IS_INJECTABLE = /\.(js|css|svg|xss\.js)$/.test(path) || path.endsWith('.json');
-  const SUSPICIOUS_PATTERNS = [
-    /(\.\.|%2e)/,          // Directory traversal
-    /(%3C|<script|%3Cscript)/i, // Script tags
-    /(<script|javascript:)/i, // More script injection
-  ];
-
-  if (SUSPICIOUS_PATTERNS.some(p => p.test(path))) {
-    return; // Silent quarantine: unknown path scans are forbidden
-  }
-}
-
-/* Auto-generated: security-middlewares.ts */
-// ... other security-related middlewares ...
-
-// === API Versioning ===
-// All routes are prefixed with /api to isolate capabilities
-const apiRouter = express.Router();
-
-/**
- * Search route receives searchRequest and returns SearchEngineResult (JSON).
- * INVARIANT: Always returns structured JSON — no raw stack traces in error responses.
- * Never passes AI output directly to PriorityEngine — clarifications happen below.
- *
- * Input: SearchRequest (from frontend)
- * Output: SearchEngineResult (structured response with ranked results + explanations)
- *
- * Key invariants enforced:
- *   - Results include full provenance summary (where each result came from)
- *   - No-results diagnosis appears only when relevant
- *   - All pricing is normalized and displayed as TOTAL TTC
- */
-apiRouter.post(
-  '/search',
-  async (req: Request, res: Response, next: NextFunction) => {
+  /**
+   * POST /search
+   *
+   * Execute a full Capucine search pipeline.
+   *
+   * Request body:
+   * {
+   *   "query": "je cherche un casque bluetooth pas trop cher",   // required
+   *   "requestId": "req-abc123",                                 // optional
+   *   "userId": "user-xyz",                                      // optional
+   *   "criteria": [...],                                         // optional pre-parsed criteria
+   *   "overrides": [...],                                        // optional temporary overrides
+   *   "skipInterpreter": false                                   // optional (default false)
+   * }
+   *
+   * Response: SearchEngineResult (JSON)
+   */
+  /**
+   * GET /profile/:userId
+   *
+   * Load a user's stored preferences.
+   * Returns empty profile if user not found (not a 404).
+   */
+  app.get('/profile/:userId', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // INPUT VALIDATION — enforce structured schema
-      const searchRequest = validateSearchRequest(req.body);
-      if (!searchRequest) {
-        res.status(400).json({ error: 'INVALID_REQUEST', message: 'Missing or invalid request body' });
-        return;
+      const userId = req.params['userId'] as string;
+      if (!userId || userId.length > 128) {
+        return res.status(400).json({ error: 'INVALID_USER_ID', message: 'userId must be 1-128 chars.' });
+      }
+      const profile = await profileStore.load(userId);
+      return res.json({
+        userId: profile.userId,
+        criteria: profile.preferences.criteria.map(c => ({
+          id: c.id,
+          name: c.name,
+          level: c.level,
+          parameters: c.parameters ?? null,
+        })),
+        updatedAt: profile.updatedAt.toISOString(),
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * PUT /profile/:userId/criterion
+   *
+   * Add or update a single preference criterion for a user.
+   *
+   * Body: { id, name, level, parameters? }
+   *
+   * INVARIANT: This stores permanent preferences.
+   * Temporary overrides go in POST /search, not here.
+   */
+  app.put('/profile/:userId/criterion', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.params['userId'] as string;
+      const { id, name, level, parameters } = req.body as {
+        id?: string;
+        name?: string;
+        level?: string;
+        parameters?: Record<string, unknown>;
+      };
+
+      if (!userId || userId.length > 128) {
+        return res.status(400).json({ error: 'INVALID_USER_ID' });
+      }
+      if (!id || !name || !level) {
+        return res.status(400).json({
+          error: 'INVALID_CRITERION',
+          message: 'criterion requires: id, name, level',
+        });
       }
 
-      // Ensures concurrent tool calls share audit context.
-      // Other agents evaluate later; this is just plumbing.
-      const engine = buildCapucineEngine();
+      const VALID_LEVELS = ['forbidden', 'required', 'very_important', 'important', 'preference', 'low', 'none'];
+      if (!VALID_LEVELS.includes(level)) {
+        return res.status(400).json({
+          error: 'INVALID_LEVEL',
+          message: `level must be one of: ${VALID_LEVELS.join(', ')}`,
+        });
+      }
+
+      await profileStore.updateCriterion(userId, {
+        id,
+        name,
+        level: level as PreferenceCriterion['level'],
+        parameters,
+      });
+
+      return res.json({ ok: true, userId, criterionId: id });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * DELETE /profile/:userId/criterion/:criterionId
+   *
+   * Remove a preference criterion from a user's profile.
+   */
+  app.delete('/profile/:userId/criterion/:criterionId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.params['userId'] as string;
+      const criterionId = req.params['criterionId'] as string;
+      await profileStore.removeCriterion(userId, criterionId);
+      return res.json({ ok: true });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.post('/search', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      // ── Validate ──────────────────────────────────────────────────────────
+      const { query, requestId, userId, criteria, skipInterpreter } = req.body as {
+        query?: string;
+        requestId?: string;
+        userId?: string;
+        criteria?: PreferenceCriterion[];
+        skipInterpreter?: boolean;
+      };
+
+      if (!query || typeof query !== 'string' || query.trim().length === 0) {
+        return res.status(400).json({
+          error: 'INVALID_REQUEST',
+          message: '"query" field is required and must be a non-empty string.',
+          example: { query: 'je cherche un casque bluetooth pas trop cher' },
+        });
+      }
+
+      if (query.length > 2000) {
+        return res.status(400).json({
+          error: 'QUERY_TOO_LONG',
+          message: 'Query must be under 2000 characters.',
+        });
+      }
+
+      // ── Build request ─────────────────────────────────────────────────────
+      // Load profile from store (returns empty profile if user not found).
+      // The store is the single point of truth for persistent preferences.
+      const effectiveUserId = userId ?? 'anonymous';
+      const profile = await profileStore.load(effectiveUserId);
+
+      const searchRequest: SearchRequest = {
+        queryText: query.trim(),
+        requestId: requestId ?? `api-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        profile,
+        preInterpretedCriteria: Array.isArray(criteria) ? criteria : [],
+        skipAIInterpretation: skipInterpreter === true,
+      };
+
+      // ── Execute pipeline ──────────────────────────────────────────────────
       const result = await engine.search(searchRequest);
 
-      // SERIALIZE PROVENLY — response is ~30kb average (~70kb max when ranking).
-      buildResponse(result, res);
-    } catch (err) {
-      const status = ((err as any) as { status?: number }).status ?? 500;
-      res.status(status).json({
-        error: 'INTERNAL_ERROR' + (process.env.DEBUG_MODE === '1' ? `: ${err.message}` : ''),
-        message: 'An error occurred. Please try again.'
-      });
-    }
-  }
-);
+      // ── Create clarification session (if needed) ──────────────────────────
+      // Session is created only when clarification opportunities exist.
+      // The sessionId is returned to the client for use with POST /clarify.
+      const sessionId = conversationManager.createSession(
+        effectiveUserId,
+        query.trim(),
+        profile,
+        result
+      );
 
-/**
- * Clarify route receives clarification action and continues the search.
- * Requires sessionId and questionId to maintain context.
- *
- * Input: Clarification request (sessionId, questionId, answer)
- * Output: Updated SearchEngineResult reflecting the new context.
- *
- * The invariant is maintained: raw AI output is never consumed directly.
- * Clarifications are always routed through the conversation manager.
- */
-apiRouter.post(
-  '/clarify',
-  async (req: Request, res: Response, next: NextFunction) => {
+      // ── Serialize ─────────────────────────────────────────────────────────
+      return res.json(serializeResult(result, sessionId ?? undefined));
+
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * POST /clarify
+   *
+   * Continue a search session by answering a clarification question.
+   *
+   * Request body:
+   * {
+   *   "sessionId": "sess-...",      // required — from a previous POST /search response
+   *   "questionId": "clarif-0",     // required — which question is being answered
+   *   "answer": "500 euros max"     // required — the user's free-text answer
+   * }
+   *
+   * Response: same shape as POST /search, with updated results reflecting the answer.
+   *
+   * INVARIANT 5: The answer is appended to context — the original query is NEVER modified.
+   * The engine re-runs interpretation on the enriched text, which may produce refined criteria.
+   */
+  app.post('/clarify', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { sessionId, questionId, answer } = validateClarifyRequest(req.body);
-      if (!sessionId || !questionId || !answer) {
-        res.status(400).json({ error: 'MISSING_FIELDS', message: 'sessionId, questionId, and answer are required' });
-        return;
+      const { sessionId, questionId, answer } = req.body as {
+        sessionId?: string;
+        questionId?: string;
+        answer?: string;
+      };
+
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'MISSING_SESSION_ID', message: '"sessionId" is required.' });
+      }
+      if (!questionId || typeof questionId !== 'string') {
+        return res.status(400).json({ error: 'MISSING_QUESTION_ID', message: '"questionId" is required.' });
+      }
+      if (!answer || typeof answer !== 'string' || answer.trim().length === 0) {
+        return res.status(400).json({ error: 'MISSING_ANSWER', message: '"answer" is required and must be non-empty.' });
       }
 
-      const engine = buildCapucineEngine();
-      const result = await engine.clarify(sessionId, questionId, answer);
+      // Look up session (validates ownership if userId was set)
+      const session = conversationManager.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({
+          error: 'SESSION_NOT_FOUND',
+          message: 'Session not found or expired. Please start a new search.',
+        });
+      }
 
-      buildResponse(result, res);
+      // Apply the answer → enriched query
+      let applyResult;
+      try {
+        applyResult = conversationManager.applyAnswer(sessionId, questionId, answer);
+      } catch (err) {
+        return res.status(400).json({
+          error: 'INVALID_QUESTION_ID',
+          message: err instanceof Error ? err.message : 'Invalid questionId.',
+        });
+      }
+
+      // Re-run the full search pipeline with the enriched query
+      const searchRequest: SearchRequest = {
+        queryText: applyResult.enrichedQuery,
+        requestId: `clarify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        profile: session.profile,
+        preInterpretedCriteria: [],
+        skipAIInterpretation: false,
+      };
+
+      const result = await engine.search(searchRequest);
+
+      // Update the session with the new result
+      conversationManager.updateResult(sessionId, result);
+
+      // Serialize — same session ID, so client can ask more questions
+      return res.json(serializeResult(result, sessionId, {
+        turn: applyResult.updatedSession.turn,
+        originalQuery: session.originalQuery,
+        answeredQuestions: applyResult.updatedSession.answeredQuestions.map(aq => ({
+          questionId: aq.questionId,
+          question: aq.question,
+          answer: aq.answer,
+        })),
+        remainingQuestions: applyResult.updatedSession.unansweredQuestions.length,
+      }));
+
     } catch (err) {
-      console.error('[CAPUCINE_API] Clarify endpoint error:', err);
-      const status = ((err as any) as { status?: number }).status ?? 500;
-      res.status(status).json({
-        error: 'INTERNAL_ERROR',
-        message: 'Clarification failed.'
-      });
+      return next(err);
     }
+  });
+
+  // ── Error handler ───────────────────────────────────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    // NEVER expose stack traces in responses — log them server-side only
+    console.error('[CapucineAPI] Unhandled error:', err.message);
+    res.status(500).json({
+      error: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred. Please try again.',
+    });
+  });
+
+  return app;
+}
+
+// ============================================================================
+// RESULT SERIALIZER
+// ============================================================================
+
+/**
+ * Serialize SearchEngineResult to a clean JSON-safe structure.
+ *
+ * We don't expose the full internal result to the API consumer — only the
+ * fields relevant to a calling client. Internal timing, raw admissibility
+ * objects, etc. are reduced to summary form.
+ */
+interface ConversationContext {
+  turn: number;
+  originalQuery: string;
+  answeredQuestions: Array<{ questionId: string; question: string; answer: string }>;
+  remainingQuestions: number;
+}
+
+/**
+ * Translates the internal MatchQuality value into a user-facing label.
+ * The interface must NEVER show the raw enum value (e.g. 'exact_match') —
+ * see mégaprompt §9.
+ */
+function describeMatchQuality(quality: SearchMatchQuality | undefined): string {
+  switch (quality) {
+    case 'exact_match':
+      return 'Correspondance exacte';
+    case 'close_match':
+      return 'Très bonne correspondance';
+    case 'partial_match':
+      return 'Correspondance partielle';
+    case 'alternative':
+      return 'Alternative';
+    case 'unknown':
+    default:
+      return 'Informations insuffisantes';
   }
-);
+}
 
-/**
- * Health check endpoint.
- * Used by load balancers and monitoring tools.
- *
- * Returns: JSON status with current service state.
- * Always returns 200 if the service runs — even if some components are disabled.
- * The response explicitly lists which capabilities are available.
- */
-apiRouter.get('/health', (_req: Request, res: Response) => {
-  const status = buildHealthCheckResponse();
-  res.json(status);
-});
+function serializeResult(
+  result: ReturnType<CapucineEngine['searchSync']>,
+  sessionId?: string,
+  conversation?: ConversationContext
+): object {
+  return {
+    requestId: result.requestId,
+    completedAt: result.completedAt.toISOString(),
+    durationMs: result.durationMs,
 
-/**
- * Tools endpoint.
- * Lists all registered tools and their availability.
- *
- * Used for debugging infrastructure configuration.
- * Should never expose API keys.
- */
-apiRouter.get('/tools', (_req: Request, res: Response) => {
-  const toolRegistry = buildToolRegistry();
-  const toolsStatus = toolRegistry.getStatus(); // Returns safe subset of metadata
-  res.json({ tools: toolsStatus });
-});
+    // Multi-turn session (present only when there are/were clarification questions)
+    session: sessionId ? { sessionId, ...(conversation ?? {}) } : null,
+
+    // Ranked results (most relevant first)
+    results: result.ranking.rankedOffers.map((ro, idx) => ({
+      rank: idx + 1,
+      offerId: ro.offer.id,
+      productId: ro.offer.productId,
+      merchant: {
+        id: ro.offer.merchant.id,
+        name: ro.offer.merchant.name,
+      },
+      price: ro.offer.price.value !== null ? {
+        amount: ro.offer.price.value,
+        currency: ro.offer.currency,
+        status: ro.offer.price.status,
+      } : null,
+      score: Math.round(ro.overallScore),
+      satisfiesAllConstraints: ro.satisfiesAllConstraints,
+      explanation: result.explanation.rankedExplanations[idx]?.headline ?? '',
+      matchQuality: describeMatchQuality(ro.offer.matchQuality),
+      offerUrl: ro.offer.executionUrl ?? null,
+      // Provenance: which source(s) contributed to this offer's data.
+      // '+' separator means data was merged from multiple sources.
+      // CONFLICTING fields are tracked here — a '+' in source means multi-source merge occurred.
+      provenance: {
+        source: ro.offer.provenance?.source ?? 'unknown',
+        reliability: ro.offer.provenance?.reliability ?? null,
+      },
+    })),
+
+    // Summary
+    summary: {
+      totalFound: result.ranking.rankedOffers.length,
+      totalRejected: result.admissibility.rejectedOffers.length,
+      resultSummary: result.explanation.resultSummary,
+    },
+
+    // Criteria used (transparency)
+    effectiveCriteria: result.effectiveCriteria.map(c => ({
+      id: c.id,
+      name: c.name,
+      level: c.level,
+    })),
+
+    // If BasicPatternInterpreter ran, expose what it found
+    interpretation: result.interpretedRequest ? {
+      confidence: result.interpretedRequest.confidence,
+      extractedCriteria: result.interpretedRequest.extractedCriteria.map(c => ({
+        id: c.id,
+        name: c.name,
+        level: c.level,
+      })),
+      ambiguities: result.interpretedRequest.ambiguities.length,
+    } : null,
+
+    // Clarification opportunities (if any)
+    clarifications: result.clarifications.opportunities.length > 0 ? {
+      count: result.clarifications.opportunities.length,
+      canProceed: result.clarifications.canProceedWithoutClarification,
+      questions: result.clarifications.recommendedQuestions.map(q => ({
+        id: q.id,
+        urgency: q.urgency,
+        question: q.suggestedQuestion,
+      })),
+    } : null,
+
+    // No-results diagnosis (only present when 0 results)
+    noResultsDiagnosis: result.noResultsDiagnosis ? {
+      primaryCause: result.noResultsDiagnosis.primaryCause,
+      message: result.noResultsDiagnosis.diagnosis,
+      recoveryOptions: result.noResultsDiagnosis.recoveryOptions.map(r => ({
+        type: r.type,
+        description: r.description,
+        requiresConfirmation: r.requiresUserConfirmation,
+      })),
+    } : null,
+
+    // Search plan (what strategy was used, what escalation levels were tried)
+    searchPlan: {
+      rarityLevel: result.searchPlan.rarityLevel,
+      estimatedAvailability: result.searchPlan.estimatedAvailability,
+      escalationLevel: result.searchPlan.expansion.currentLevel,
+      attemptedLevels: result.searchPlan.expansion.attemptedLevels,
+      primaryTerms: result.searchPlan.query.primaryTerms,
+      alternativeTerms: result.searchPlan.query.alternativeTerms ?? [],
+    },
+
+    // Provenance summary — which sources contributed to the ranked results
+    provenanceSummary: result.provenanceSummary,
+
+    // Pipeline timing (for debugging/monitoring)
+    timing: result.timing,
+  };
+}
 
 // ============================================================================
-// MONOREPOSITORY ENTRYPOINT
+// ENTRY POINT
 // ============================================================================
 
-// Always start the HTTP server on available port (3000 by default)
-// The same server also serves the root `index.html` for development convenience.
-// The frontend automatically connects to this server at its host/port.
-// NEVER serve static assets differently in dev vs production.
-// PORT environment variable controls the listening port.
-// Default: 3000 if undefined (common dev port)
-// Port resolution happens here — no configuration elsewhere.
-const PORT = parseInt(process.env.PORT || '3000', 10);
+/**
+ * Start the server.
+ *
+ * Usage:
+ *   PORT=3001 node dist/api/server.js
+ *
+ * The PORT environment variable controls the listening port.
+ * Default: 3001 (avoid conflict with common dev servers on 3000).
+ */
+export function startServer(port?: number): void {
+  const app = buildApp();
+  const listenPort = port ?? parseInt(process.env['PORT'] ?? '3001', 10);
 
-app.use('/api', apiRouter);
-app.use(express.static(path.join(__dirname, '../..', 'frontend', 'build')));
+  app.listen(listenPort, () => {
+    console.log(`[CapucineAPI] Server listening on port ${listenPort}`);
+    console.log(`[CapucineAPI] POST http://localhost:${listenPort}/search`);
+    console.log(`[CapucineAPI] GET  http://localhost:${listenPort}/health`);
+    console.log(`[CapucineAPI] GET  http://localhost:${listenPort}/tools`);
+  });
+}
 
-app.get('/', (_req: Request, res: Response) => {
-  const html = fs.readFileSync(path.join(__dirname, '../..', 'frontend', 'index.html'), 'utf8');
-  res.send(html);
-});
-
-app.listen(PORT, () => {
-  console.log(`[CAPUCINE_API] Server listening on port ${PORT}`);
-  console.log(`[CAPUCINE_API] API available at http://localhost:${PORT}/api/search`);
-  console.log(`[CAPUCINE_API] Health check at http://localhost:${PORT}/api/health`);
-  console.log(`[CAPUCINE_API] Tools list at http://localhost:${PORT}/api/tools`);
-});
-
-/* EXPORTABLE FUNCTIONS (used by tests, CLI, etc.) */
-export { buildCapucineEngine, buildToolRegistry, buildAIOrchestrator, buildHealthCheckResponse, validateSearchRequest, validateClarifyRequest };
-import { NextFunction } from 'express';
+// Auto-start if this file is the entry point
+// ESM equivalent of `if (require.main === module)`
+const isMain = process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.ts');
+if (isMain) {
+  startServer();
+}

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Lumo Status Board",
+  "schemaVersion": 1,
+  "description": "Tableau de bord centralisé Lumo : phases complétées (0–7), branches actives (CI pipeline pushée, agenda WIP), état git détaillé, prochaines étapes minimales pour Benjamin. Mis à jour après chaque session — voir checklist actions Benjamin réduites."
+}
+</script>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lumo — Tableau de Bord Projet</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f9fafb;
+      --surface: #ffffff;
+      --text: #1f2937;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --info: #3b82f6;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 28px; margin-bottom: 8px; font-weight: 700; }
+    .subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
+
+    .section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    .section h2 { font-size: 18px; margin-bottom: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+
+    .phase-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+    .phase-card {
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      transition: all 0.2s;
+    }
+    .phase-card.completed { border-color: var(--success); background: #ecfdf5; }
+    .phase-card.in-progress { border-color: var(--info); background: #eff6ff; }
+    .phase-card.pending { border-color: var(--warning); background: #fffbeb; }
+
+    .phase-number { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
+    .phase-title { font-size: 16px; font-weight: 600; margin: 8px 0 4px 0; }
+    .phase-desc { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
+    .phase-status { display: inline-block; margin-top: 12px; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .status-done { background: var(--success); color: white; }
+    .status-active { background: var(--info); color: white; }
+    .status-waiting { background: var(--warning); color: white; }
+
+    .git-info { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 13px; }
+    .git-item { background: #f3f4f6; border-radius: 4px; padding: 12px; }
+    .git-label { font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+    .git-value { font-family: 'Monaco', 'Courier New', monospace; color: var(--text); word-break: break-all; }
+
+    .branch-badge { display: inline-block; background: #e0e7ff; color: #4f46e5; padding: 4px 8px; border-radius: 3px; font-size: 12px; font-weight: 600; margin: 2px; }
+    .branch-badge.merged { background: #dcfce7; color: #16a34a; }
+    .branch-badge.active { background: #fef08a; color: #b45309; }
+
+    .timeline { position: relative; padding-left: 20px; }
+    .timeline-item { margin-bottom: 16px; position: relative; }
+    .timeline-item::before { content: ''; position: absolute; left: -20px; top: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+    .timeline-item.done::before { background: var(--success); }
+    .timeline-item.active::before { background: var(--info); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .action-needed { background: #fef2f2; border-left: 4px solid var(--error); padding: 12px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+    .action-needed strong { color: var(--error); }
+
+    .last-updated { text-align: center; color: var(--text-muted); font-size: 12px; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🚀 Lumo — Tableau de Bord Projet</h1>
+    <p class="subtitle">État du développement, branches actives, prochaines étapes</p>
+
+    <!-- Phases -->
+    <div class="section">
+      <h2>📊 Phases de Développement (0–10)</h2>
+      <div class="phase-grid">
+        <div class="phase-card completed">
+          <div class="phase-number">Phase 0</div>
+          <div class="phase-title">Scaffold Monorepo</div>
+          <div class="phase-desc">pnpm + Turborepo, structure packages/apps</div>
+          <div class="phase-status status-done">✅ Complète</div>
+        </div>
+        <div class="phase-card completed">
+          <div class="phase-number">Phase 1</div>
+          <div class="phase-title">Schéma PostgreSQL</div>
+          <div class="phase-desc">Prisma + pgvector, migrations</div>
+          <div class="phase-status status-done">✅ Complète</div>
+        </div>
+        <div class="phase-card in-progress">
+          <div class="phase-number">Phase 2</div>
+          <div class="phase-title">Auth Clerk (API + mobile)</div>
+          <div class="phase-desc">Code fait, vérification manuelle en attente</div>
+          <div class="phase-status status-waiting">⏳ Attente validation</div>
+        </div>
+        <div class="phase-card completed">
+          <div class="phase-number">Phase 3–7</div>
+          <div class="phase-title">Orchestrateur IA, Mémoire, Copilote, Aide décision, Écrans mobile</div>
+          <div class="phase-desc">Types/lint/bundling vérifiés, tests Expo Go en attente</div>
+          <div class="phase-status status-done">✅ Complète (fonctionnalité)</div>
+        </div>
+        <div class="phase-card pending">
+          <div class="phase-number">Phase 8–10</div>
+          <div class="phase-title">À définir</div>
+          <div class="phase-desc">Priorisation après Phase 7 validation</div>
+          <div class="phase-status status-waiting">📋 En attente</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Branches & État Git -->
+    <div class="section">
+      <h2>🌿 Branches Actives & État Git</h2>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div>
+          <div style="font-weight: 600; margin-bottom: 12px;">Branche CI Pipeline (Agent 2)</div>
+          <div class="git-info">
+            <div class="git-item">
+              <div class="git-label">Branche</div>
+              <div class="git-value">feature/ci-pipeline</div>
+            </div>
+            <div class="git-item">
+              <div class="git-label">Statut</div>
+              <div class="git-value">✅ Pushée vers origin</div>
+            </div>
+            <div class="git-item">
+              <div class="git-label">Commits</div>
+              <div class="git-value">4 commits (f1c0e1c → 8a2bec4)</div>
+            </div>
+            <div class="git-item">
+              <div class="git-label">Contenu</div>
+              <div class="git-value">.github/workflows/ci.yml, README badge, render.yaml</div>
+            </div>
+          </div>
+          <div style="margin-top: 12px; font-size: 12px; color: var(--text-muted);">
+            <strong>Action :</strong> Créer PR vers <code>ci/tests-and-pipeline</code>
+          </div>
+        </div>
+        <div>
+          <div style="font-weight: 600; margin-bottom: 12px;">Branche Agenda (Agent 1)</div>
+          <div class="git-info">
+            <div class="git-item">
+              <div class="git-label">Branche</div>
+              <div class="git-value">feature/ci-pipeline (locale)</div>
+            </div>
+            <div class="git-item">
+              <div class="git-label">Statut</div>
+              <div class="git-value">🚧 WIP non commité</div>
+            </div>
+            <div class="git-item">
+              <div class="git-label">Changements</div>
+              <div class="git-value">apps/mobile/* (hooks, schema, etc.)</div>
+            </div>
+            <div class="git-item">
+              <div class="git-label">Arbre travail</div>
+              <div class="git-value">Contaminé (partagé avec CI)</div>
+            </div>
+          </div>
+          <div class="action-needed">
+            <strong>⚠️ Attention :</strong> Même branche locale. À coordonner avant merge.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Prochaines étapes -->
+    <div class="section">
+      <h2>🎯 Prochaines Étapes (Minimales)</h2>
+      <div class="timeline">
+        <div class="timeline-item active">
+          <strong>Phase 7 Suite</strong> — Tests mobiles Expo Go<br>
+          <span style="font-size: 12px; color: var(--text-muted);">Valider écrans Chat, Mémoire, Objectifs/Tâches, Profil. Agent à lancer si déjà configuré Expo.</span>
+        </div>
+        <div class="timeline-item">
+          <strong>CI Pipeline</strong> — Créer & valider PR<br>
+          <span style="font-size: 12px; color: var(--text-muted);">Benjamin : créer PR feature/ci-pipeline → ci/tests-and-pipeline sur GitHub. Vérifier workflow lancée.</span>
+        </div>
+        <div class="timeline-item">
+          <strong>Synchronisation Agents</strong> — Coordonner branche agenda<br>
+          <span style="font-size: 12px; color: var(--text-muted);">Agent 1 crée feature/agenda (branche séparée) pour éviter collision avec CI. Puis PR(s) fusionnées séquentiellement.</span>
+        </div>
+        <div class="timeline-item">
+          <strong>Phase 8 Décision</strong> — Benjamin choisit priorité suivante<br>
+          <span style="font-size: 12px; color: var(--text-muted);">Options : Clerk validation réelle, recherche sémantique avancée, notifications push. Mégaprompt généré après décision.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Checklist Automatisation -->
+    <div class="section">
+      <h2>✅ Checklist Automatisation (Benjamin — actions réduites)</h2>
+      <ul style="list-style: none; font-size: 13px;">
+        <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">
+          <input type="checkbox"> PR feature/ci-pipeline pushée → créer via GitHub UI
+        </li>
+        <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">
+          <input type="checkbox"> Vérifier workflow CI lancée sur PR (lint, typecheck, test)
+        </li>
+        <li style="padding: 8px 0; border-bottom: 1px solid var(--border);">
+          <input type="checkbox"> Décider Phase 8 priorité (ou laisser Agent 2 faire tests Expo)
+        </li>
+        <li style="padding: 8px 0;">
+          <input type="checkbox"> Consulter handoff doc (à chaque fin de session) pour prochaines actions
+        </li>
+      </ul>
+    </div>
+
+    <p class="last-updated">Mis à jour : 2026-07-25 · Artifact persistant cross-session</p>
+  </div>
+</body>
+</html>

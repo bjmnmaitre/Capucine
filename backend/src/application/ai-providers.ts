@@ -20,7 +20,7 @@
  * All providers implement the AIProvider interface from ai-orchestrator.ts.
  */
 
-import { AIProvider, AIRequest, AIResponse, AICapability, ModelTier } from './ai-orchestrator';
+import { AIProvider, AIRequest, AIResponse, AICapability, ModelTier, AIOrchestrator, MockAIProvider } from './ai-orchestrator';
 
 // ============================================================================
 // ANTHROPIC PROVIDER
@@ -253,7 +253,6 @@ export function detectAvailableProviders(): {
   configured: string[];
   blocked: string[];
 } {
-  const { MockAIProvider } = require('./ai-orchestrator');
   const providers: AIProvider[] = [];
   const configured: string[] = [];
   const blocked: string[] = [];
@@ -287,12 +286,11 @@ export function detectAvailableProviders(): {
  * Useful for server startup — call once and inject into CapucineEngine.
  */
 export function buildAIOrchestrator(): {
-  orchestrator: import('./ai-orchestrator').AIOrchestrator;
+  orchestrator: AIOrchestrator;
   status: 'real' | 'mock';
   configured: string[];
   blocked: string[];
 } {
-  const { AIOrchestrator } = require('./ai-orchestrator');
   const detection = detectAvailableProviders();
 
   const orchestrator = new AIOrchestrator(detection.providers, {
