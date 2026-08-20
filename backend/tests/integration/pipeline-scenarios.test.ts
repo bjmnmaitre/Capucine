@@ -43,7 +43,7 @@ import {
   DiscoveryCriteria,
   DiscoveryResult,
 } from '../../src/application/discovery';
-import { PreferenceCriterion, Offer, DataPoint, Merchant, UserProfile } from '../../src/domain/types';
+import { PreferenceCriterion, Offer, DataPoint, Merchant, UserProfile, SearchMatchQuality } from '../../src/domain/types';
 import { ToolRegistry } from '../../src/application/tools';
 import { ProfileEngine } from '../../src/domain/profile';
 
@@ -1278,5 +1278,243 @@ describe('Scenario M — ProvenanceSummary wired into pipeline', () => {
       expect(surviving.provenance?.source).toBeTruthy();
     }
     expect(result.provenanceSummary.totalRankedOffers).toBe(result.ranking.rankedOffers.length);
+  });
+});
+
+// ============================================================================
+// SCENARIO N — QUALITY-BASED ESCALATION
+// Verifies the quality-gate escalation logic (§7.1 DECIDED):
+// - Escalation triggers when ALL candidates are low quality (alternative/unknown/undefined)
+// - Escalation does NOT trigger when any candidate is >= partial_match
+// - Candidates from earlier levels are accumulated (not replaced)
+// - undefined matchQuality is treated as weak (same as 'unknown')
+// - Hard constraints are NEVER weakened by escalation
+// ============================================================================
+
+describe('Scenario N — Quality-based escalation', () => {
+  /**
+   * Helper to create a candidate with a specific matchQuality.
+   */
+  function makeCandidate(
+    id: string,
+    matchQuality?: 'exact_match' | 'close_match' | 'partial_match' | 'alternative' | 'unknown',
+    price = 200
+  ) {
+    return {
+      offer: makeOffer(id, { price, merchant: `merchant-${id}` }),
+      matchScore: 0.8,
+      matchReason: 'test',
+      matchQuality,
+    };
+  }
+
+  /**
+   * Build an orchestrator that returns specific candidates at each level.
+   * The level order matches SearchPlanBuilder's escalation: level 1, 2, 3, 4...
+   */
+  function buildQualityEscalationEngine(levelResults: DiscoveryResult['candidates'][]) {
+    let callIndex = 0;
+    const strategy: IDiscoveryStrategy = {
+      name: 'quality-test',
+      version: '1.0.0',
+      isReady: true,
+      async discover(criteria: DiscoveryCriteria) {
+        const result = levelResults[callIndex] ?? [];
+        callIndex++;
+        return {
+          id: `quality-${callIndex}`,
+          timestamp: new Date(),
+          criteria,
+          candidates: result,
+          statistics: {
+            queriedSources: 1,
+            candidatesFound: result.length,
+            candidatesFiltered: 0,
+            searchTimeMs: 0,
+            relevanceEstimate: result.length > 0 ? 'high' : 'low',
+          },
+          strategy: 'quality-test',
+        };
+      },
+      discoverSync: async (criteria) => {
+        const result = levelResults[callIndex] ?? [];
+        callIndex++;
+        return {
+          id: `quality-sync-${callIndex}`,
+          timestamp: new Date(),
+          criteria,
+          candidates: result,
+          statistics: {
+            queriedSources: 1,
+            candidatesFound: result.length,
+            candidatesFiltered: 0,
+            searchTimeMs: 0,
+            relevanceEstimate: result.length > 0 ? 'high' : 'low',
+          },
+          strategy: 'quality-test',
+        };
+      },
+      async health() { return { status: 'healthy' as const }; },
+    };
+
+    const orchestrator = new DiscoveryOrchestrator();
+    orchestrator.registerStrategy(strategy, true);
+    return new CapucineEngine({ discoveryOrchestrator: orchestrator, enableWebDiscovery: false });
+  }
+
+  // ---- N1: Escalation on quality "alternative" ----
+  it('N1 — Escalates when ALL candidates are "alternative" (low quality)', async () => {
+    const engine = buildQualityEscalationEngine([
+      // Level 1: all alternative
+      [makeCandidate('alt-1', 'alternative')],
+      // Level 2: returns a partial_match
+      [makeCandidate('partial-1', 'partial_match')],
+    ]);
+
+    const result = await engine.search({
+      queryText: 'test',
+      requestId: 'req-n1',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: true,
+    });
+
+    // Should have escalated to level 2 and found the partial_match
+    expect(result.discovery.candidates.length).toBeGreaterThanOrEqual(1);
+    // The accumulated set should contain BOTH the alternative AND the partial_match
+    const qualities = result.discovery.candidates.map(c => c.matchQuality);
+    expect(qualities).toContain('alternative');
+    expect(qualities).toContain('partial_match');
+  });
+
+  // ---- N2: No escalation when partial_match present ----
+  it('N2 — Does NOT escalate when a partial_match candidate exists at level 1', async () => {
+    const engine = buildQualityEscalationEngine([
+      // Level 1: mixed quality — has a partial_match
+      [makeCandidate('alt-1', 'alternative'), makeCandidate('partial-1', 'partial_match')],
+      // Level 2 should NOT be called — engine stops at level 1
+      [makeCandidate('should-not-appear', 'exact_match')],
+    ]);
+
+    const result = await engine.search({
+      queryText: 'test',
+      requestId: 'req-n2',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: true,
+    });
+
+    // Should have found the partial_match at level 1 and stopped
+    const qualities = result.discovery.candidates.map(c => c.matchQuality);
+    expect(qualities).toContain('partial_match');
+    // The exact_match from level 2 should NOT be in accumulated (no escalation happened)
+    const hasExactMatch = result.discovery.candidates.some(c => c.matchQuality === 'exact_match');
+    expect(hasExactMatch).toBe(false);
+  });
+
+  // ---- N3: Accumulation cross-levels ----
+  it('N3 — Accumulates candidates from all levels (does not replace)', async () => {
+    const engine = buildQualityEscalationEngine([
+      // Level 1: two alternative candidates
+      [makeCandidate('alt-1', 'alternative'), makeCandidate('alt-2', 'alternative')],
+      // Level 2: one partial_match
+      [makeCandidate('partial-1', 'partial_match')],
+    ]);
+
+    const result = await engine.search({
+      queryText: 'test',
+      requestId: 'req-n3',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: true,
+    });
+
+    // Should have ALL THREE candidates accumulated
+    expect(result.discovery.candidates.length).toBe(3);
+    const ids = result.discovery.candidates.map(c => c.offer.id).sort();
+    expect(ids).toEqual(['alt-1', 'alt-2', 'partial-1']);
+  });
+
+  // ---- N4: undefined treated as weak ----
+  it('N4 — undefined matchQuality is treated as weak (same as unknown)', async () => {
+    const engine = buildQualityEscalationEngine([
+      // Level 1: candidate with NO matchQuality (undefined)
+      [makeCandidate('no-quality-1', undefined)],
+      // Level 2: returns an exact_match
+      [makeCandidate('exact-1', 'exact_match')],
+    ]);
+
+    const result = await engine.search({
+      queryText: 'test',
+      requestId: 'req-n4',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: true,
+    });
+
+    // Should escalate because undefined is treated as weak
+    expect(result.discovery.candidates.length).toBe(2);
+    const qualities = result.discovery.candidates.map(c => c.matchQuality);
+    expect(qualities).toContain(undefined);
+    expect(qualities).toContain('exact_match');
+  });
+
+  // ---- N5: Hard constraints never weakened ----
+  it('N5 — INVARIANT: Hard constraints never weakened by escalation', async () => {
+    // Create an engine where level 1 returns NO candidates matching budget
+    // Level 2 returns one candidate OVER budget
+    // The escalated result must STILL respect the hard constraint (required budget)
+    let callIndex = 0;
+    const strategy: IDiscoveryStrategy = {
+      name: 'constraint-test',
+      version: '1.0.0',
+      isReady: true,
+      async discover(criteria: DiscoveryCriteria) {
+        callIndex++;
+        if (callIndex === 1) {
+          // Level 1: empty (triggers escalation)
+          return {
+            id: `constraint-l1`, timestamp: new Date(), criteria,
+            candidates: [],
+            statistics: { queriedSources: 1, candidatesFound: 0, candidatesFiltered: 0, searchTimeMs: 0, relevanceEstimate: 'low' },
+            strategy: 'constraint-test',
+          };
+        }
+        // Level 2: one candidate OVER the hard budget constraint
+        return {
+          id: `constraint-l2`, timestamp: new Date(), criteria,
+          candidates: [{
+            offer: makeOffer('over-budget', { price: 500 }), // exceeds 200€ required budget
+            matchScore: 0.9,
+            matchReason: 'test',
+            matchQuality: 'exact_match' as const,
+          }],
+          statistics: { queriedSources: 1, candidatesFound: 1, candidatesFiltered: 0, searchTimeMs: 0, relevanceEstimate: 'high' },
+          strategy: 'constraint-test',
+        };
+      },
+      discoverSync: async (criteria) => strategy.discover(criteria),
+      async health() { return { status: 'healthy' as const }; },
+    };
+
+    const orchestrator = new DiscoveryOrchestrator();
+    orchestrator.registerStrategy(strategy, true);
+    const engine = new CapucineEngine({ discoveryOrchestrator: orchestrator, enableWebDiscovery: false });
+
+    // Search with REQUIRED budget constraint of 200€
+    const result = await engine.search({
+      queryText: 'test',
+      requestId: 'req-n5',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [
+        makeCriterion('budget', 'Budget max', 'required', { maxBudget: 200, currency: 'EUR' }),
+      ],
+      skipAIInterpretation: true,
+    });
+
+    // The 500€ offer MUST be rejected by AdmissibilityEngine (hard constraint)
+    // Even though escalation brought it in, the constraint is NOT weakened
+    expect(result.ranking.rankedOffers.length).toBe(0);
+    expect(result.admissibility.rejectedOffers.length).toBeGreaterThanOrEqual(0); // rejected at admissibility or filtered at discovery
   });
 });

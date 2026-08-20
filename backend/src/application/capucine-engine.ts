@@ -752,12 +752,64 @@ export class CapucineEngine {
   // DISCOVERY WITH AUTO-ESCALATION
   // ============================================================================
 
+  // ── Quality-based escalation helpers ──────────────────────────────────────
+
   /**
-   * Discover offers using the search plan, escalating if 0 results.
+   * True when EVERY candidate at the current level is semantically weak.
+   * Weak candidates are those whose match classification is 'alternative',
+   * 'unknown', or unset (undefined). A single 'exact_match' or 'close_match'
+   * candidate is enough to stop escalation — the engine has found something
+   * genuinely relevant and should not keep broadening the query.
+   *
+   * INVARIANT: This is a descriptive gate only. It never modifies ranking,
+   * constraints, or offer data — it only decides whether to try a wider net.
+   */
+  private static allLowQuality(candidates: DiscoveryResult['candidates']): boolean {
+    return candidates.every(
+      c =>
+        c.matchQuality === 'alternative' ||
+        c.matchQuality === 'unknown' ||
+        c.matchQuality === undefined
+    );
+  }
+
+  /**
+   * Merge candidates accumulated across escalation levels into the latest
+   * DiscoveryResult.
+   *
+   * INVARIANT: Candidates from earlier levels are never discarded. When a
+   * later level returns nothing new, the accumulated set is still returned
+   * so the pipeline can rank everything it found rather than only the last
+   * (possibly empty) level.
+   */
+  private static mergeWithAccumulated(
+    latest: DiscoveryResult,
+    accumulated: DiscoveryResult['candidates']
+  ): DiscoveryResult {
+    return {
+      ...latest,
+      candidates: accumulated,
+      statistics: {
+        ...latest.statistics,
+        candidatesFound: accumulated.length,
+      },
+    };
+  }
+
+  /**
+   * Discover offers using the search plan, escalating on low quality.
    *
    * INVARIANT: Hard constraints from SearchPlan.hardConstraints are passed
    * to every discovery call. Escalation only changes search breadth, never
    * weakens constraints.
+   *
+   * Escalation trigger (§7.1 DECIDED): escalate when ALL candidates at the
+   * current level are low quality ('alternative' | 'unknown' | undefined),
+   * not merely when the candidate count is zero. This lets the engine widen
+   * the net even when a broad first level returned loosely-matching items.
+   *
+   * Accumulation: candidates from every level are merged into a single set
+   * so nothing found at an earlier (narrower) level is lost.
    */
   private async discoverWithEscalation(
     initialPlan: SearchPlan,
@@ -765,48 +817,55 @@ export class CapucineEngine {
     phaseTerms?: PhaseTerms
   ): Promise<{ discovery: DiscoveryResult; finalPlan: SearchPlan }> {
     let currentPlan = initialPlan;
+    let accumulated: DiscoveryResult['candidates'] = [];
     let lastResult: DiscoveryResult | undefined;
 
     for (let attempt = 0; attempt <= 4; attempt++) {
       const criteria = this.planToDiscoveryCriteria(currentPlan, queryText, phaseTerms);
       const result = await this.discoveryOrchestrator.discover(criteria);
 
-      // Got results or cannot escalate further
-      if (result.candidates.length > 0) {
-        return { discovery: result, finalPlan: currentPlan };
+      accumulated = [...accumulated, ...result.candidates];
+
+      const hasGoodQuality = accumulated.length > 0 && !CapucineEngine.allLowQuality(accumulated);
+      if (hasGoodQuality || !this.planBuilder.canAutoEscalate(currentPlan)) {
+        return {
+          discovery: CapucineEngine.mergeWithAccumulated(result, accumulated),
+          finalPlan: currentPlan,
+        };
       }
 
-      if (!this.planBuilder.canAutoEscalate(currentPlan)) {
-        return { discovery: result, finalPlan: currentPlan };
-      }
-
-      // Try next escalation level
       const escalated = this.planBuilder.escalate(currentPlan);
       if (!escalated) {
-        return { discovery: result, finalPlan: currentPlan };
+        return {
+          discovery: CapucineEngine.mergeWithAccumulated(result, accumulated),
+          finalPlan: currentPlan,
+        };
       }
 
       lastResult = result;
       currentPlan = escalated;
     }
 
-    // Exhausted escalation — return last result (0 candidates)
+    // Exhausted escalation — return accumulated candidates (may be empty)
     return {
-      discovery: lastResult ?? {
-        id: `discovery-exhausted-${Date.now()}`,
-        timestamp: new Date(),
-        criteria: this.planToDiscoveryCriteria(currentPlan, queryText),
-        candidates: [],
-        statistics: {
-          queriedSources: 0,
-          candidatesFound: 0,
-          candidatesFiltered: 0,
-          searchTimeMs: 0,
-          relevanceEstimate: 'low' as const,
+      discovery: CapucineEngine.mergeWithAccumulated(
+        lastResult ?? {
+          id: `discovery-exhausted-${Date.now()}`,
+          timestamp: new Date(),
+          criteria: this.planToDiscoveryCriteria(currentPlan, queryText),
+          candidates: [],
+          statistics: {
+            queriedSources: 0,
+            candidatesFound: 0,
+            candidatesFiltered: 0,
+            searchTimeMs: 0,
+            relevanceEstimate: 'low' as const,
+          },
+          strategy: 'none',
+          warnings: ['Escalation exhausted all levels without finding candidates'],
         },
-        strategy: 'none',
-        warnings: ['Escalation exhausted all levels without finding candidates'],
-      },
+        accumulated
+      ),
       finalPlan: currentPlan,
     };
   }

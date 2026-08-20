@@ -164,9 +164,6 @@ export interface ExpansionPolicy {
   /** Levels requiring explicit user confirmation */
   requiresConfirmation: SearchLevel[];
 
-  /** Expand to level 2 if level 1 returns fewer than this many results */
-  escalateThreshold: number;
-
   /** Geographic expansion explicitly authorized? */
   geographicExpansionAllowed: boolean;
 
@@ -488,7 +485,6 @@ export class SearchPlanBuilder {
         currentLevel: 1,
         maxAutoLevel,
         requiresConfirmation: expansionAllowed ? [6] : [2, 3, 4, 5, 6],
-        escalateThreshold: rarityLevel === 'common' ? 1 : 0,
         geographicExpansionAllowed: config.geographicExpansionAllowed ?? false,
         secondaryMarketIncluded: config.secondaryMarketIncluded ?? false,
         attemptedLevels: [],

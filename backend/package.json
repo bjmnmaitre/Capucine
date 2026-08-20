@@ -2,7 +2,6 @@
   "name": "capucine-core",
   "version": "0.1.0",
   "description": "Capucine — AI-powered shopping agent core",
-  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
