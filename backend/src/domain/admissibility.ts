@@ -64,6 +64,17 @@ export interface AdmissibilityBatch {
   eligibleCount: number;
   rejectedCount: number;
   processingTimeMs?: number;
+
+  /**
+   * Full per-offer admissibility verdict (eligible + rejected alike), keyed by
+   * offer.id — the same AdmissibilityResult already computed by checkOffer()
+   * for this batch, exposed rather than discarded.
+   *
+   * Lets downstream consumers (PriorityEngine.rankOffers, via CapucineEngine)
+   * reuse THIS engine's verdict as the sole source of truth for "is this offer
+   * admissible?" instead of re-deriving it independently — see priority-engine.ts.
+   */
+  resultsByOfferId: Map<string, AdmissibilityResult>;
 }
 
 export interface RejectedOffer {
@@ -102,6 +113,10 @@ export class AdmissibilityEngine {
 
     // If no hard constraints, everything is eligible
     if (hardConstraints.length === 0) {
+      const resultsByOfferId = new Map<string, AdmissibilityResult>();
+      for (const offer of candidates) {
+        resultsByOfferId.set(offer.id, { offer, eligible: true, violations: [], satisfiedConstraints: [], warnings: [] });
+      }
       return {
         eligibleOffers: [...candidates],
         rejectedOffers: [],
@@ -109,14 +124,17 @@ export class AdmissibilityEngine {
         eligibleCount: candidates.length,
         rejectedCount: 0,
         processingTimeMs: Date.now() - start,
+        resultsByOfferId,
       };
     }
 
     const eligibleOffers: Offer[] = [];
     const rejectedOffers: RejectedOffer[] = [];
+    const resultsByOfferId = new Map<string, AdmissibilityResult>();
 
     for (const offer of candidates) {
       const result = this.checkOffer(offer, hardConstraints);
+      resultsByOfferId.set(offer.id, result);
 
       if (result.eligible) {
         eligibleOffers.push(offer);
@@ -136,6 +154,7 @@ export class AdmissibilityEngine {
       eligibleCount: eligibleOffers.length,
       rejectedCount: rejectedOffers.length,
       processingTimeMs: Date.now() - start,
+      resultsByOfferId,
     };
   }
 
@@ -196,45 +215,28 @@ export class AdmissibilityEngine {
     const dataPoint = this.extractDataPoint(offer, id, constraint);
 
     if (!dataPoint) {
-      // Data not found for this constraint
-      if (level === 'required') {
-        return {
-          violated: true,
-          reason: `Required criterion '${constraint.name}' has no data in this offer`,
-          foundValue: null,
-          expectedCondition: `Data must be present and satisfying`,
-        };
-      }
-      // forbidden with no data → warning (can't verify)
-      return {
-        violated: false,
-        reason: '',
-        foundValue: null,
-        expectedCondition: `Must not violate '${constraint.name}'`,
-        warning: `Forbidden criterion '${constraint.name}' has no data — cannot verify`,
-      };
+      return this.resolveUnknownData(
+        constraint,
+        level,
+        `Required criterion '${constraint.name}' has no data in this offer`,
+        `Data must be present and satisfying`,
+        `Forbidden criterion '${constraint.name}' has no data — cannot verify`,
+        `Must not violate '${constraint.name}'`
+      );
     }
 
     const { value, status } = dataPoint;
 
     // Unknown data
     if (status === 'unknown' || value === null) {
-      if (level === 'required') {
-        return {
-          violated: true,
-          reason: `Required criterion '${constraint.name}' is unknown — cannot confirm satisfaction`,
-          foundValue: null,
-          expectedCondition: 'Data must be known and satisfying',
-        };
-      }
-      // forbidden + unknown → not a violation (could be OK)
-      return {
-        violated: false,
-        reason: '',
-        foundValue: null,
-        expectedCondition: '',
-        warning: `Forbidden criterion '${constraint.name}' is unknown — possible risk`,
-      };
+      return this.resolveUnknownData(
+        constraint,
+        level,
+        `Required criterion '${constraint.name}' is unknown — cannot confirm satisfaction`,
+        'Data must be known and satisfying',
+        `Forbidden criterion '${constraint.name}' is unknown — possible risk`,
+        ''
+      );
     }
 
     // Check price constraint
@@ -245,6 +247,21 @@ export class AdmissibilityEngine {
     // Check boolean constraints
     if (typeof value === 'boolean') {
       return this.checkBooleanConstraint(constraint, value, status);
+    }
+
+    // Generic numeric characteristic constraint (screen_size, ram, storage, ...).
+    // Reuses the same offer.characteristics[id] lookup as every other criterion —
+    // any criterion carrying minValue/maxValue/exactValue in its parameters is
+    // checked numerically, whatever its id. Values may already be numbers
+    // (e.g. screen_size, normalized to inches by NormalizationEngine) or unit-suffixed
+    // strings (e.g. ram/storage normalized to "16GB") — parseNumericCharacteristic
+    // extracts the leading number either way.
+    const minValue = constraint.parameters?.minValue as number | undefined;
+    const maxValue = constraint.parameters?.maxValue as number | undefined;
+    const exactValue = constraint.parameters?.exactValue as number | undefined;
+
+    if (minValue !== undefined || maxValue !== undefined || exactValue !== undefined) {
+      return this.checkNumericConstraint(constraint, value, level, minValue, maxValue, exactValue);
     }
 
     // Check preferredValues string constraint
@@ -295,6 +312,151 @@ export class AdmissibilityEngine {
       foundValue: value,
       expectedCondition: '',
     };
+  }
+
+  /**
+   * Resolve a constraint check when the relevant data point is absent or unknown.
+   *
+   * Makes the SATISFIED / VIOLATED / UNKNOWN distinction explicit and generic
+   * (works for any criterion id — no per-id special-casing here):
+   *
+   * - required, default policy (unchanged from before — budget, ram,
+   *   screen_size, storage, boolean flags, ...): UNKNOWN still blocks. For a
+   *   verifiable spec value, "we don't know" cannot be told apart from "it
+   *   fails" without inventing data, so the offer is rejected.
+   * - required, `parameters.unknownPolicy === 'pass'` (opt-in — e.g. category,
+   *   a best-effort classification hint rather than a strictly verifiable
+   *   spec value): UNKNOWN passes through as eligible, flagged with a
+   *   warning — never silently reported as VIOLATED, never silently
+   *   upgraded to SATISFIED either.
+   * - forbidden + unknown, any criterion: never blocks (can't prove the
+   *   forbidden thing is present), always flagged with a warning.
+   *
+   * Both outcomes below share the same (violated: false, warning: ...) shape
+   * already used elsewhere in this engine for "can't verify" — UNKNOWN is not
+   * a new concept, just applied consistently to the required side too.
+   */
+  private resolveUnknownData(
+    constraint: PreferenceCriterion,
+    level: PreferenceCriterion['level'],
+    requiredRejectReason: string,
+    requiredExpectedCondition: string,
+    forbiddenWarning: string,
+    forbiddenExpectedCondition: string
+  ): ReturnType<AdmissibilityEngine['checkConstraint']> {
+    if (level === 'required') {
+      const unknownPolicy = (constraint.parameters?.unknownPolicy as 'reject' | 'pass' | undefined) ?? 'reject';
+      if (unknownPolicy === 'pass') {
+        return {
+          violated: false,
+          reason: '',
+          foundValue: null,
+          expectedCondition: requiredExpectedCondition,
+          warning: `Required criterion '${constraint.name}' is UNKNOWN (unknownPolicy: 'pass') — not rejected absent contradicting evidence`,
+        };
+      }
+      return {
+        violated: true,
+        reason: requiredRejectReason,
+        foundValue: null,
+        expectedCondition: requiredExpectedCondition,
+      };
+    }
+
+    // forbidden + unknown → not a violation (could be OK either way)
+    return {
+      violated: false,
+      reason: '',
+      foundValue: null,
+      expectedCondition: forbiddenExpectedCondition,
+      warning: forbiddenWarning,
+    };
+  }
+
+  /**
+   * Generic min/max/exact(±tolerance) numeric check against a characteristic value.
+   * Used for screen_size, ram, storage, and any future numeric technical constraint —
+   * shares the exact same eligible/rejected/warning contract as every other
+   * constraint check (required → violated, forbidden → warning-only if unparseable).
+   */
+  private checkNumericConstraint(
+    constraint: PreferenceCriterion,
+    value: unknown,
+    level: PreferenceCriterion['level'],
+    minValue: number | undefined,
+    maxValue: number | undefined,
+    exactValue: number | undefined
+  ): ReturnType<AdmissibilityEngine['checkConstraint']> {
+    const expectedCondition = this.describeNumericExpectation(constraint, minValue, maxValue, exactValue);
+    const numericValue = this.parseNumericCharacteristic(value);
+
+    if (numericValue === null) {
+      // Present but not parseable as a number — cannot verify numerically.
+      if (level === 'required') {
+        return {
+          violated: true,
+          reason: `Required criterion '${constraint.name}' has a non-numeric value: ${JSON.stringify(value)}`,
+          foundValue: value,
+          expectedCondition,
+        };
+      }
+      return { violated: false, reason: '', foundValue: value, expectedCondition };
+    }
+
+    const tolerance = (constraint.parameters?.tolerance as number | undefined) ?? 0;
+    const satisfies =
+      (minValue === undefined || numericValue >= minValue) &&
+      (maxValue === undefined || numericValue <= maxValue) &&
+      (exactValue === undefined || Math.abs(numericValue - exactValue) <= tolerance);
+
+    if (level === 'required' && !satisfies) {
+      return {
+        violated: true,
+        reason: `Required criterion '${constraint.name}': found ${numericValue}, expected ${expectedCondition}`,
+        foundValue: numericValue,
+        expectedCondition,
+      };
+    }
+
+    if (level === 'forbidden' && satisfies) {
+      return {
+        violated: true,
+        reason: `Forbidden criterion '${constraint.name}': found ${numericValue}, which matches the forbidden condition (${expectedCondition})`,
+        foundValue: numericValue,
+        expectedCondition,
+      };
+    }
+
+    return { violated: false, reason: '', foundValue: numericValue, expectedCondition };
+  }
+
+  /** Extract a leading number from a raw or unit-suffixed characteristic value ("16GB" → 16). */
+  private parseNumericCharacteristic(value: unknown): number | null {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string') {
+      const match = value.match(/-?\d+(?:[.,]\d+)?/);
+      if (match) return parseFloat(match[0].replace(',', '.'));
+    }
+    return null;
+  }
+
+  private describeNumericExpectation(
+    constraint: PreferenceCriterion,
+    minValue: number | undefined,
+    maxValue: number | undefined,
+    exactValue: number | undefined
+  ): string {
+    const unit = (constraint.parameters?.unit as string | undefined) ?? '';
+    if (exactValue !== undefined) {
+      const tolerance = (constraint.parameters?.tolerance as number | undefined) ?? 0;
+      return `${constraint.name} ≈ ${exactValue}${unit} (±${tolerance})`;
+    }
+    if (minValue !== undefined && maxValue !== undefined) {
+      return `${minValue}${unit} ≤ ${constraint.name} ≤ ${maxValue}${unit}`;
+    }
+    if (minValue !== undefined) return `${constraint.name} ≥ ${minValue}${unit}`;
+    if (maxValue !== undefined) return `${constraint.name} ≤ ${maxValue}${unit}`;
+    return constraint.name;
   }
 
   private checkPriceConstraint(

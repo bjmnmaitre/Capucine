@@ -37,6 +37,8 @@
  */
 
 import { DataPoint } from '../domain/types';
+import { SUPPORTED_COUNTRIES, SupportedCountry } from './i18n';
+import { COUNTRY_NAMES } from './request-interpreter';
 
 // ============================================================================
 // TYPES
@@ -48,6 +50,66 @@ export interface ExtractedProductData {
   availability: DataPoint<'in_stock' | 'out_of_stock' | 'preorder'>;
   merchantName: DataPoint<string>;
   productName: DataPoint<string>;
+  /**
+   * Raw category string as published by the merchant's own JSON-LD
+   * (schema.org Product.category), e.g. "Ordinateurs portables". NOT mapped
+   * onto Capucine's internal category vocabulary (ordinateur_portable,
+   * smartphone, ...) — merchant category strings vary too widely to map
+   * reliably without guessing, which would violate the "never invent"
+   * invariant. AdmissibilityEngine's category criterion already handles an
+   * honest mismatch here correctly (VIOLATED, not silently accepted) via its
+   * preferredValues equality check.
+   */
+  category: DataPoint<string>;
+  /** Technical specs read from Product.additionalProperty (schema.org PropertyValue list), when present. */
+  ram: DataPoint<string>;
+  screenSize: DataPoint<string>;
+  storage: DataPoint<string>;
+  /**
+   * Universal product identifier — schema.org publishes several possible
+   * fields (gtin13/gtin12/gtin8/gtin/isbn); the first one present is used,
+   * in that order (gtin13 is the modern canonical EAN-13). Feeds
+   * offer.characteristics['ean'] downstream, which is what
+   * DeduplicationEngine's identical_ean/identical_isbn signals already read
+   * — this is what makes an EXACT_MATCH between two DIFFERENT domains
+   * possible for real Web offers (previously only the local catalog fixtures
+   * ever set 'ean', so cross-domain dedup for the Web path had no hard
+   * identifier to work with, only weaker title/model signals).
+   */
+  gtin: DataPoint<string>;
+  /** schema.org Product.sku — merchant-scoped, not universal like gtin, but
+   *  still useful evidence (see DeduplicationEngine's other MatchTypes). */
+  sku: DataPoint<string>;
+  /** schema.org Product.brand (string or {name}). */
+  brand: DataPoint<string>;
+  /**
+   * schema.org Offer.itemCondition — maps to the SAME 'new'/'refurbished'/
+   * 'used' vocabulary RequestInterpreter.extractCondition() produces from a
+   * user's "uniquement du neuf"/"élargis à..." style query, so a
+   * conversational condition follow-up can actually be verified (SATISFIED/
+   * VIOLATED) against a real Web offer instead of always resolving UNKNOWN.
+   */
+  condition: DataPoint<'new' | 'refurbished' | 'used'>;
+  /**
+   * schema.org Offer.shippingDetails (OfferShippingDetails —
+   * https://schema.org/OfferShippingDetails).shippingDestination
+   * (DefinedRegion).addressCountry, normalized to Capucine's
+   * SupportedCountry codes (see normalizeCountryToken()). Feeds
+   * offer.characteristics['deliversTo'] downstream (real-web-discovery.ts),
+   * which is what makes the conversational "livrable en France" criterion
+   * (RequestInterpreter.extractDeliverabilityIntent()) actually resolve
+   * SATISFIED/VIOLATED instead of always UNKNOWN.
+   *
+   * Real merchant pages publish this field in wildly inconsistent shapes —
+   * a single country, an array, a single DefinedRegion object, an array of
+   * DefinedRegion objects, or multiple OfferShippingDetails blocks (one per
+   * shipping zone/rate). ALL of those are handled; a shape this parser
+   * doesn't recognize (or a vague region like "Europe" with no resolvable
+   * country) contributes NOTHING to the result rather than a guess — the
+   * overall DataPoint only becomes 'known' when at least one country was
+   * actually resolved.
+   */
+  shipsToCountries: DataPoint<SupportedCountry[]>;
   sourceUrl: string;
   extractionMethod: 'json_ld_product';
 }
@@ -66,6 +128,15 @@ export interface PageFetcher {
  * without special-casing exceptions.
  */
 export class HttpPageFetcher implements PageFetcher {
+  /**
+   * Hard cap on bytes read from a page's body — the Web is an untrusted
+   * boundary (megaprompt PARTIE 13): a hostile or simply pathologically
+   * large response must never be allowed to exhaust process memory. JSON-LD
+   * product data lives in <head>, always comfortably within this cap for
+   * any legitimate merchant page.
+   */
+  private static readonly MAX_RESPONSE_BYTES = 3 * 1024 * 1024; // 3 MB
+
   async fetch(url: string, timeoutMs = 8000): Promise<string | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -81,13 +152,44 @@ export class HttpPageFetcher implements PageFetcher {
       if (!res.ok) return null;
       const contentType = res.headers.get('content-type') ?? '';
       if (!contentType.includes('text/html')) return null;
-      return await res.text();
+      return await this.readBounded(res);
     } catch {
       // Network error, abort/timeout, or any other failure — never throw.
       return null;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Reads the response body up to MAX_RESPONSE_BYTES, then stops — never
+   * buffers the rest. A truncated page still gets parsed for JSON-LD (which
+   * is near the top of <head> on virtually every real merchant page); a
+   * truncation that happens to cut a JSON-LD block in half simply fails
+   * JSON.parse for that block, which extractJsonLdBlocks already treats as
+   * "skip this block, never guess its content" — no special-casing needed.
+   */
+  private async readBounded(res: Response): Promise<string> {
+    if (!res.body) return await res.text(); // no stream available — fall back (some runtimes/mocks)
+
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > HttpPageFetcher.MAX_RESPONSE_BYTES) {
+          void reader.cancel().catch(() => {});
+          break;
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock?.();
+    }
+    return Buffer.concat(chunks.map(c => Buffer.from(c))).toString('utf-8');
   }
 }
 
@@ -160,6 +262,153 @@ function nowProvenance(): { source: string; retrievedAt: Date } {
   return { source: 'json_ld', retrievedAt: new Date() };
 }
 
+// ============================================================================
+// SHIPPING DESTINATION (OfferShippingDetails.shippingDestination.addressCountry)
+// ============================================================================
+
+// A few common ISO 3166-1 alpha-3 codes merchants sometimes publish instead
+// of alpha-2 — small, controlled, only for the countries Capucine already
+// recognizes (SUPPORTED_COUNTRIES). Not exhaustive on purpose: an alpha-3
+// code outside this map is left unresolved (UNKNOWN) rather than guessed.
+const ALPHA3_TO_ALPHA2: Record<string, SupportedCountry> = {
+  FRA: 'FR', DEU: 'DE', ESP: 'ES', ITA: 'IT', PRT: 'PT', GBR: 'GB',
+  BEL: 'BE', NLD: 'NL', AUT: 'AT', CHE: 'CH', IRL: 'IE',
+  SWE: 'SE', NOR: 'NO', DNK: 'DK', FIN: 'FI', POL: 'PL',
+  USA: 'US', CAN: 'CA',
+};
+
+/**
+ * Normalizes ONE raw country token (whatever shape a merchant's JSON-LD
+ * actually used) into a SupportedCountry code, or null when it can't be
+ * resolved WITHOUT guessing (e.g. a region name like "Europe", an unknown
+ * alpha-3 code, or an empty string). Never fabricates a country.
+ */
+function normalizeCountryToken(raw: unknown): SupportedCountry | null {
+  if (typeof raw !== 'string') return null;
+  const token = raw.trim();
+  if (!token) return null;
+
+  const upper = token.toUpperCase();
+  if (upper.length === 2 && (SUPPORTED_COUNTRIES as readonly string[]).includes(upper)) {
+    return upper as SupportedCountry;
+  }
+  if (upper.length === 3 && ALPHA3_TO_ALPHA2[upper]) {
+    return ALPHA3_TO_ALPHA2[upper];
+  }
+  // Reuses RequestInterpreter's OWN controlled country-name dictionary
+  // (COUNTRY_NAMES) — the same "France"/"Germany"/"Allemagne" mapping
+  // conversational intents already use, so a merchant that publishes a
+  // spelled-out country name is understood consistently everywhere in
+  // Capucine, not via a second dictionary.
+  const byName = COUNTRY_NAMES[token.toLowerCase()];
+  if (byName) return byName;
+
+  return null; // e.g. "Europe", "Worldwide", or anything not resolvable — never guessed
+}
+
+/**
+ * Recursively pulls every resolvable country out of a DefinedRegion (or
+ * array of them) — `addressCountry` may itself be a string, an array of
+ * strings, or (rarely) a nested Country object with a `name` — WITHOUT ever
+ * assuming a single canonical shape, since real merchant markup varies.
+ */
+function countriesFromRegion(region: unknown, into: Set<SupportedCountry>): void {
+  if (region === null || region === undefined) return;
+  if (Array.isArray(region)) {
+    for (const r of region) countriesFromRegion(r, into);
+    return;
+  }
+  if (typeof region === 'string') {
+    const c = normalizeCountryToken(region);
+    if (c) into.add(c);
+    return;
+  }
+  if (typeof region === 'object') {
+    const obj = region as Record<string, unknown>;
+    const addressCountry = obj['addressCountry'];
+    if (typeof addressCountry === 'string') {
+      const c = normalizeCountryToken(addressCountry);
+      if (c) into.add(c);
+    } else if (Array.isArray(addressCountry)) {
+      for (const entry of addressCountry) countriesFromRegion(entry, into);
+    } else if (typeof addressCountry === 'object' && addressCountry !== null) {
+      // e.g. { "@type": "Country", "name": "France" }
+      const name = (addressCountry as Record<string, unknown>)['name'];
+      const c = normalizeCountryToken(name);
+      if (c) into.add(c);
+    }
+  }
+}
+
+/**
+ * Extracts every country an offer ships to from Offer.shippingDetails
+ * (OfferShippingDetails — possibly an array of several, one per shipping
+ * zone/rate). Returns 'unknown' when the field is absent OR present but
+ * unresolvable (e.g. only a vague region name) — never a fabricated guess.
+ */
+function extractShippingDestinations(offerNode: Record<string, unknown> | null): DataPoint<SupportedCountry[]> {
+  const shippingDetailsRaw = offerNode?.['shippingDetails'];
+  if (!shippingDetailsRaw) return { value: null, status: 'unknown' };
+
+  const detailsList = Array.isArray(shippingDetailsRaw) ? shippingDetailsRaw : [shippingDetailsRaw];
+  const countries = new Set<SupportedCountry>();
+
+  for (const details of detailsList) {
+    if (typeof details !== 'object' || details === null) continue;
+    const destination = (details as Record<string, unknown>)['shippingDestination'];
+    if (destination === undefined) continue;
+    const destinationList = Array.isArray(destination) ? destination : [destination];
+    for (const region of destinationList) countriesFromRegion(region, countries);
+  }
+
+  if (countries.size === 0) return { value: null, status: 'unknown' };
+  return { value: [...countries], status: 'known', provenance: nowProvenance() };
+}
+
+/**
+ * Read a single spec value from Product.additionalProperty — schema.org's
+ * standard mechanism for arbitrary technical specs (PropertyValue list:
+ * [{ "@type": "PropertyValue", "name": "RAM", "value": "16GB" }, ...]).
+ *
+ * `nameSynonyms` is a small, controlled, deterministic list of the property
+ * names merchants commonly use for the same spec (French + English) — NOT a
+ * fuzzy/ML match. If no entry's name matches (case-insensitively) any
+ * synonym, the spec is honestly unknown; nothing is guessed from adjacent
+ * fields (title, description, etc.).
+ */
+function extractAdditionalProperty(
+  product: Record<string, unknown>,
+  nameSynonyms: string[]
+): DataPoint<string> {
+  const raw = product['additionalProperty'];
+  const entries = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const lowerSynonyms = nameSynonyms.map(s => s.toLowerCase());
+
+  for (const entry of entries) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    const name = typeof e['name'] === 'string' ? (e['name'] as string).toLowerCase() : '';
+    if (!lowerSynonyms.includes(name)) continue;
+
+    const value = e['value'];
+    if (typeof value === 'string' && value.trim() !== '') {
+      return { value: value.trim(), status: 'known', provenance: nowProvenance() };
+    }
+    if (typeof value === 'number') {
+      return { value: String(value), status: 'known', provenance: nowProvenance() };
+    }
+  }
+
+  return { value: null, status: 'unknown' };
+}
+
+/** Property-name synonyms (French + English) for each spec — same idea as the
+ * controlled synonym lists already used in BasicPatternInterpreter, kept local
+ * here since it's specific to how merchants label additionalProperty entries. */
+const RAM_PROPERTY_NAMES = ['ram', 'mémoire', 'memoire', 'mémoire vive', 'memory'];
+const STORAGE_PROPERTY_NAMES = ['storage', 'stockage', 'capacité de stockage', 'capacite de stockage', 'disque', 'ssd', 'capacity'];
+const SCREEN_SIZE_PROPERTY_NAMES = ['screen size', 'screensize', 'taille écran', 'taille de l\'écran', 'taille ecran', 'diagonale', 'display size'];
+
 function mapToExtractedData(product: Record<string, unknown>, sourceUrl: string): ExtractedProductData {
   const offerNode = normalizeOfferNode(product['offers']);
 
@@ -205,12 +454,74 @@ function mapToExtractedData(product: Record<string, unknown>, sourceUrl: string)
       ? { value: nameRaw, status: 'known', provenance: nowProvenance() }
       : { value: null, status: 'unknown' };
 
+  const categoryRaw = product['category'];
+  const category: DataPoint<string> =
+    typeof categoryRaw === 'string' && categoryRaw.trim() !== ''
+      ? { value: categoryRaw.trim(), status: 'known', provenance: nowProvenance() }
+      : { value: null, status: 'unknown' };
+
+  const ram = extractAdditionalProperty(product, RAM_PROPERTY_NAMES);
+  const storage = extractAdditionalProperty(product, STORAGE_PROPERTY_NAMES);
+  const screenSize = extractAdditionalProperty(product, SCREEN_SIZE_PROPERTY_NAMES);
+
+  // GTIN: try the modern canonical field first, then older/narrower
+  // variants, then ISBN (books use isbn instead of gtin) — first present
+  // wins, nothing is combined or guessed across fields.
+  const gtinField = ['gtin13', 'gtin', 'gtin12', 'gtin8', 'isbn']
+    .map(key => product[key])
+    .find(v => typeof v === 'string' && v.trim() !== '');
+  const gtin: DataPoint<string> =
+    typeof gtinField === 'string'
+      ? { value: gtinField.trim(), status: 'known', provenance: nowProvenance() }
+      : { value: null, status: 'unknown' };
+
+  const skuRaw = product['sku'];
+  const sku: DataPoint<string> =
+    typeof skuRaw === 'string' && skuRaw.trim() !== ''
+      ? { value: skuRaw.trim(), status: 'known', provenance: nowProvenance() }
+      : { value: null, status: 'unknown' };
+
+  const brandRaw = product['brand'];
+  const brandName =
+    typeof brandRaw === 'string'
+      ? brandRaw
+      : typeof brandRaw === 'object' && brandRaw !== null && typeof (brandRaw as Record<string, unknown>)['name'] === 'string'
+        ? ((brandRaw as Record<string, unknown>)['name'] as string)
+        : null;
+  const brand: DataPoint<string> =
+    brandName !== null && brandName.trim() !== ''
+      ? { value: brandName.trim(), status: 'known', provenance: nowProvenance() }
+      : { value: null, status: 'unknown' };
+
+  // schema.org Offer.itemCondition is a full URL (schema.org/NewCondition)
+  // or sometimes just the trailing token — matched loosely on the
+  // distinguishing word, never on the whole URL, so either form works.
+  const conditionRaw = typeof offerNode?.['itemCondition'] === 'string' ? (offerNode['itemCondition'] as string) : '';
+  const condition: DataPoint<'new' | 'refurbished' | 'used'> = /NewCondition/i.test(conditionRaw)
+    ? { value: 'new', status: 'known', provenance: nowProvenance() }
+    : /RefurbishedCondition/i.test(conditionRaw)
+      ? { value: 'refurbished', status: 'known', provenance: nowProvenance() }
+      : /UsedCondition|DamagedCondition/i.test(conditionRaw)
+        ? { value: 'used', status: 'known', provenance: nowProvenance() }
+        : { value: null, status: 'unknown' };
+
+  const shipsToCountries = extractShippingDestinations(offerNode);
+
   return {
     price,
     currency,
     availability,
     merchantName,
     productName,
+    category,
+    ram,
+    screenSize,
+    storage,
+    gtin,
+    sku,
+    brand,
+    condition,
+    shipsToCountries,
     sourceUrl,
     extractionMethod: 'json_ld_product',
   };

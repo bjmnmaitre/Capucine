@@ -12,6 +12,72 @@
  */
 
 import { Offer, PreferenceCriterion, PreferenceLevel } from '../domain/types';
+import { translate, registerCatalog } from './i18n';
+
+// ============================================================================
+// MESSAGE CATALOGS — same (code, params) + backward-compatible French `text`
+// split as explanation-engine.ts's buildHeadline()/buildResultSummary().
+// ============================================================================
+
+registerCatalog('fr', {
+  DIAG_BUDGET_TOO_STRICT: '{totalCandidates} offre(s) trouvée(s), mais toutes dépassent le budget. Critère bloquant : {topCriteria}.',
+  DIAG_FORBIDDEN_VIOLATED: '{totalCandidates} offre(s) trouvée(s), mais toutes violent une contrainte interdite. Critère bloquant : {topCriteria}.',
+  DIAG_GEOGRAPHIC_RESTRICTION: '{totalCandidates} offre(s) trouvée(s), mais la livraison n\'est pas disponible pour la zone requise.',
+  DIAG_COMBINATION_IMPOSSIBLE: '{totalCandidates} offre(s) trouvée(s), mais aucune ne satisfait simultanément tous les critères requis : {topCriteria}.',
+  DIAG_REQUIRED_CRITERION_MISSING: '{totalCandidates} offre(s) trouvée(s), mais aucune ne satisfait le critère requis : {topCriteria}.',
+  DIAG_NO_CANDIDATES_DISCOVERED: 'La phase de découverte n\'a trouvé aucun candidat pour cette recherche.',
+  DIAG_UNKNOWN: '{totalCandidates} offre(s) trouvée(s) mais rejetées. Cause inconnue.',
+  DIAG_DISCOVERY_FAILURE: 'La phase de découverte n\'a trouvé aucun candidat. Les termes de recherche ou la catégorie sont peut-être trop spécifiques.',
+
+  RECOVERY_RELAX_BUDGET_DESC: 'Augmenter le budget maximum',
+  RECOVERY_RELAX_BUDGET_IMPACT: 'Les offres dépassant légèrement le budget deviendront éligibles',
+  RECOVERY_ACCEPT_REFURBISHED_DESC: 'Considérer les offres reconditionnées',
+  RECOVERY_ACCEPT_REFURBISHED_IMPACT: 'Les produits reconditionnés sont souvent 30-40% moins chers',
+  RECOVERY_LOWER_LEVEL_DESC: 'Passer "{criterionName}" de "required" à "very_important"',
+  RECOVERY_LOWER_LEVEL_IMPACT: 'Le critère influencera le classement mais ne bloquera plus les offres',
+  RECOVERY_REMOVE_LEAST_IMPORTANT_DESC: 'Supprimer le critère le moins prioritaire',
+  RECOVERY_REMOVE_LEAST_IMPORTANT_IMPACT: 'Davantage d\'offres deviendront éligibles',
+  RECOVERY_EXPAND_GEOGRAPHY_DESC: 'Accepter la livraison depuis un autre pays',
+  RECOVERY_EXPAND_GEOGRAPHY_IMPACT: 'Accès à davantage de marchands et d\'offres',
+  RECOVERY_EXPAND_SEARCH_DESC: 'Élargir les termes de recherche',
+  RECOVERY_EXPAND_SEARCH_IMPACT: 'La découverte explorera des catégories ou termes connexes',
+  RECOVERY_EXPAND_SEARCH_DISCOVERY_IMPACT: 'La découverte explorera des termes connexes et synonymes',
+  RECOVERY_WIDEN_CATEGORY_DESC: 'Élargir la catégorie de produit',
+  RECOVERY_WIDEN_CATEGORY_IMPACT: 'La recherche inclura des produits alternatifs proches',
+  RECOVERY_WIDEN_CATEGORY_DISCOVERY_IMPACT: 'Produits alternatifs inclus dans la recherche',
+  RECOVERY_NEW_SEARCH_DESC: 'Reformuler la recherche',
+  RECOVERY_NEW_SEARCH_IMPACT: 'Nouvelle interprétation de la demande',
+});
+
+registerCatalog('en', {
+  DIAG_BUDGET_TOO_STRICT: '{totalCandidates} offer(s) found, but all exceed the budget. Blocking criterion: {topCriteria}.',
+  DIAG_FORBIDDEN_VIOLATED: '{totalCandidates} offer(s) found, but all violate a forbidden constraint. Blocking criterion: {topCriteria}.',
+  DIAG_GEOGRAPHIC_RESTRICTION: '{totalCandidates} offer(s) found, but shipping is not available for the required area.',
+  DIAG_COMBINATION_IMPOSSIBLE: '{totalCandidates} offer(s) found, but none satisfies all required criteria at once: {topCriteria}.',
+  DIAG_REQUIRED_CRITERION_MISSING: '{totalCandidates} offer(s) found, but none satisfies the required criterion: {topCriteria}.',
+  DIAG_NO_CANDIDATES_DISCOVERED: 'The discovery phase found no candidates for this search.',
+  DIAG_UNKNOWN: '{totalCandidates} offer(s) found but rejected. Unknown cause.',
+  DIAG_DISCOVERY_FAILURE: 'The discovery phase found no candidates. The search terms or category may be too specific.',
+
+  RECOVERY_RELAX_BUDGET_DESC: 'Increase the maximum budget',
+  RECOVERY_RELAX_BUDGET_IMPACT: 'Offers slightly above budget will become eligible',
+  RECOVERY_ACCEPT_REFURBISHED_DESC: 'Consider refurbished offers',
+  RECOVERY_ACCEPT_REFURBISHED_IMPACT: 'Refurbished products are often 30-40% cheaper',
+  RECOVERY_LOWER_LEVEL_DESC: 'Change "{criterionName}" from "required" to "very_important"',
+  RECOVERY_LOWER_LEVEL_IMPACT: 'The criterion will influence ranking but no longer block offers',
+  RECOVERY_REMOVE_LEAST_IMPORTANT_DESC: 'Remove the lowest-priority criterion',
+  RECOVERY_REMOVE_LEAST_IMPORTANT_IMPACT: 'More offers will become eligible',
+  RECOVERY_EXPAND_GEOGRAPHY_DESC: 'Accept shipping from another country',
+  RECOVERY_EXPAND_GEOGRAPHY_IMPACT: 'Access to more merchants and offers',
+  RECOVERY_EXPAND_SEARCH_DESC: 'Broaden the search terms',
+  RECOVERY_EXPAND_SEARCH_IMPACT: 'Discovery will explore related categories or terms',
+  RECOVERY_EXPAND_SEARCH_DISCOVERY_IMPACT: 'Discovery will explore related terms and synonyms',
+  RECOVERY_WIDEN_CATEGORY_DESC: 'Broaden the product category',
+  RECOVERY_WIDEN_CATEGORY_IMPACT: 'The search will include close alternative products',
+  RECOVERY_WIDEN_CATEGORY_DISCOVERY_IMPACT: 'Alternative products included in the search',
+  RECOVERY_NEW_SEARCH_DESC: 'Rephrase the search',
+  RECOVERY_NEW_SEARCH_IMPACT: 'New interpretation of the request',
+});
 
 // ============================================================================
 // TYPES
@@ -51,6 +117,12 @@ export interface RecoveryOption {
   /** What would change if the user accepts this */
   impact: string;
 
+  /** Language-independent identifiers for `description`/`impact` — pass to
+   *  translate(code, language, params). See buildRecoveryOptions(). */
+  descriptionCode: string;
+  descriptionParams: Record<string, string | number>;
+  impactCode: string;
+
   /** The user must explicitly confirm this — NEVER auto-apply */
   requiresUserConfirmation: true;
 
@@ -74,8 +146,13 @@ export interface NoResultsDiagnosis {
   /** Primary cause (the one blocking most offers) */
   primaryCause: NoResultsCause;
 
-  /** Human-readable diagnosis */
+  /** Human-readable diagnosis (French — backward-compatible; see diagnosisCode) */
   diagnosis: string;
+
+  /** Language-independent identifier for `diagnosis` — pass to
+   *  translate(code, language, params). See buildDiagnosis(). */
+  diagnosisCode: string;
+  diagnosisParams: Record<string, string | number>;
 
   /** Suggested next steps (user must confirm each) */
   recoveryOptions: RecoveryOption[];
@@ -110,7 +187,7 @@ export class NoResultsAnalyzer {
     // Case 2: Admissibility rejected everything
     const patterns = this.extractRejectionPatterns(rejectedOffers, criteria);
     const primaryCause = this.classifyPrimaryCause(patterns, criteria);
-    const diagnosis = this.buildDiagnosis(primaryCause, patterns, discoveredCount);
+    const diag = this.buildDiagnosis(primaryCause, patterns, discoveredCount);
     const recoveryOptions = this.buildRecoveryOptions(primaryCause, patterns, criteria);
 
     return {
@@ -120,7 +197,9 @@ export class NoResultsAnalyzer {
       totalRejectedByAdmissibility: rejectedOffers.length,
       rootCauses: patterns,
       primaryCause,
-      diagnosis,
+      diagnosis: diag.text,
+      diagnosisCode: diag.code,
+      diagnosisParams: diag.params,
       recoveryOptions,
       theoreticallyPossible: discoveredCount > 0 && patterns.length > 0,
     };
@@ -222,31 +301,30 @@ export class NoResultsAnalyzer {
     cause: NoResultsCause,
     patterns: RejectionPattern[],
     totalCandidates: number
-  ): string {
+  ): { text: string; code: string; params: Record<string, string | number> } {
     const topCriteria = patterns.slice(0, 3).map(p => p.criterionName).join(', ');
+    const withCriteria = { totalCandidates, topCriteria };
 
+    let code: string;
+    let params: Record<string, string | number>;
     switch (cause) {
       case 'budget_too_strict':
-        return `${totalCandidates} offre(s) trouvée(s), mais toutes dépassent le budget. Critère bloquant : ${topCriteria}.`;
-
+        code = 'DIAG_BUDGET_TOO_STRICT'; params = withCriteria; break;
       case 'forbidden_violated':
-        return `${totalCandidates} offre(s) trouvée(s), mais toutes violent une contrainte interdite. Critère bloquant : ${topCriteria}.`;
-
+        code = 'DIAG_FORBIDDEN_VIOLATED'; params = withCriteria; break;
       case 'geographic_restriction':
-        return `${totalCandidates} offre(s) trouvée(s), mais la livraison n'est pas disponible pour la zone requise.`;
-
+        code = 'DIAG_GEOGRAPHIC_RESTRICTION'; params = { totalCandidates }; break;
       case 'combination_impossible':
-        return `${totalCandidates} offre(s) trouvée(s), mais aucune ne satisfait simultanément tous les critères requis : ${topCriteria}.`;
-
+        code = 'DIAG_COMBINATION_IMPOSSIBLE'; params = withCriteria; break;
       case 'required_criterion_missing':
-        return `${totalCandidates} offre(s) trouvée(s), mais aucune ne satisfait le critère requis : ${topCriteria}.`;
-
+        code = 'DIAG_REQUIRED_CRITERION_MISSING'; params = withCriteria; break;
       case 'no_candidates_discovered':
-        return 'La phase de découverte n\'a trouvé aucun candidat pour cette recherche.';
-
+        code = 'DIAG_NO_CANDIDATES_DISCOVERED'; params = {}; break;
       default:
-        return `${totalCandidates} offre(s) trouvée(s) mais rejetées. Cause inconnue.`;
+        code = 'DIAG_UNKNOWN'; params = { totalCandidates }; break;
     }
+
+    return { text: translate(code, 'fr', params), code, params };
   }
 
   private buildRecoveryOptions(
@@ -258,97 +336,67 @@ export class NoResultsAnalyzer {
 
     switch (cause) {
       case 'budget_too_strict':
-        options.push({
-          id: 'relax-budget',
-          type: 'relax_budget',
-          description: 'Augmenter le budget maximum',
-          impact: 'Les offres dépassant légèrement le budget deviendront éligibles',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.85,
-          targetCriterionId: patterns[0]?.criterionId,
-        });
-        options.push({
-          id: 'accept-refurbished',
-          type: 'accept_refurbished',
-          description: 'Considérer les offres reconditionnées',
-          impact: 'Les produits reconditionnés sont souvent 30-40% moins chers',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.7,
-        });
+        options.push(this.recoveryOption('relax-budget', 'relax_budget', 'RECOVERY_RELAX_BUDGET_DESC', {}, 'RECOVERY_RELAX_BUDGET_IMPACT', 0.85, patterns[0]?.criterionId));
+        options.push(this.recoveryOption('accept-refurbished', 'accept_refurbished', 'RECOVERY_ACCEPT_REFURBISHED_DESC', {}, 'RECOVERY_ACCEPT_REFURBISHED_IMPACT', 0.7));
         break;
 
       case 'required_criterion_missing':
         for (const pattern of patterns.slice(0, 2)) {
           const criterion = criteria.find(c => c.id === pattern.criterionId);
           if (criterion) {
-            options.push({
-              id: `lower-level-${criterion.id}`,
-              type: 'lower_preference_level',
-              description: `Passer "${criterion.name}" de "required" à "very_important"`,
-              impact: 'Le critère influencera le classement mais ne bloquera plus les offres',
-              requiresUserConfirmation: true,
-              estimatedSuccessChance: 0.75,
-              targetCriterionId: criterion.id,
-            });
+            options.push(this.recoveryOption(
+              `lower-level-${criterion.id}`, 'lower_preference_level',
+              'RECOVERY_LOWER_LEVEL_DESC', { criterionName: criterion.name }, 'RECOVERY_LOWER_LEVEL_IMPACT',
+              0.75, criterion.id
+            ));
           }
         }
         break;
 
       case 'combination_impossible':
-        options.push({
-          id: 'remove-least-important',
-          type: 'remove_criterion',
-          description: 'Supprimer le critère le moins prioritaire',
-          impact: 'Davantage d\'offres deviendront éligibles',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.8,
-        });
+        options.push(this.recoveryOption('remove-least-important', 'remove_criterion', 'RECOVERY_REMOVE_LEAST_IMPORTANT_DESC', {}, 'RECOVERY_REMOVE_LEAST_IMPORTANT_IMPACT', 0.8));
         break;
 
       case 'geographic_restriction':
-        options.push({
-          id: 'expand-geography',
-          type: 'expand_geography',
-          description: 'Accepter la livraison depuis un autre pays',
-          impact: 'Accès à davantage de marchands et d\'offres',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.9,
-        });
+        options.push(this.recoveryOption('expand-geography', 'expand_geography', 'RECOVERY_EXPAND_GEOGRAPHY_DESC', {}, 'RECOVERY_EXPAND_GEOGRAPHY_IMPACT', 0.9));
         break;
 
       case 'no_candidates_discovered':
-        options.push({
-          id: 'expand-search',
-          type: 'expand_search_terms',
-          description: 'Élargir les termes de recherche',
-          impact: 'La découverte explorera des catégories ou termes connexes',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.65,
-        });
-        options.push({
-          id: 'widen-category',
-          type: 'widen_category',
-          description: 'Élargir la catégorie de produit',
-          impact: 'La recherche inclura des produits alternatifs proches',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.6,
-        });
+        options.push(this.recoveryOption('expand-search', 'expand_search_terms', 'RECOVERY_EXPAND_SEARCH_DESC', {}, 'RECOVERY_EXPAND_SEARCH_IMPACT', 0.65));
+        options.push(this.recoveryOption('widen-category', 'widen_category', 'RECOVERY_WIDEN_CATEGORY_DESC', {}, 'RECOVERY_WIDEN_CATEGORY_IMPACT', 0.6));
         break;
     }
 
     // Always available: start fresh
     if (options.length > 0) {
-      options.push({
-        id: 'new-search',
-        type: 'expand_search_terms',
-        description: 'Reformuler la recherche',
-        impact: 'Nouvelle interprétation de la demande',
-        requiresUserConfirmation: true,
-        estimatedSuccessChance: 0.5,
-      });
+      options.push(this.recoveryOption('new-search', 'expand_search_terms', 'RECOVERY_NEW_SEARCH_DESC', {}, 'RECOVERY_NEW_SEARCH_IMPACT', 0.5));
     }
 
     return options;
+  }
+
+  /** Builds one RecoveryOption with both the French text and the (code, params) pair. */
+  private recoveryOption(
+    id: string,
+    type: RecoveryOption['type'],
+    descriptionCode: string,
+    descriptionParams: Record<string, string | number>,
+    impactCode: string,
+    estimatedSuccessChance: number,
+    targetCriterionId?: string
+  ): RecoveryOption {
+    return {
+      id,
+      type,
+      description: translate(descriptionCode, 'fr', descriptionParams),
+      impact: translate(impactCode, 'fr'),
+      descriptionCode,
+      descriptionParams,
+      impactCode,
+      requiresUserConfirmation: true,
+      estimatedSuccessChance,
+      targetCriterionId,
+    };
   }
 
   private buildDiscoveryFailureDiagnosis(
@@ -362,24 +410,12 @@ export class NoResultsAnalyzer {
       totalRejectedByAdmissibility: 0,
       rootCauses: [],
       primaryCause: 'no_candidates_discovered',
-      diagnosis: 'La phase de découverte n\'a trouvé aucun candidat. Les termes de recherche ou la catégorie sont peut-être trop spécifiques.',
+      diagnosis: translate('DIAG_DISCOVERY_FAILURE', 'fr'),
+      diagnosisCode: 'DIAG_DISCOVERY_FAILURE',
+      diagnosisParams: {},
       recoveryOptions: [
-        {
-          id: 'expand-search',
-          type: 'expand_search_terms',
-          description: 'Élargir les termes de recherche',
-          impact: 'La découverte explorera des termes connexes et synonymes',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.7,
-        },
-        {
-          id: 'widen-category',
-          type: 'widen_category',
-          description: 'Élargir la catégorie de produit',
-          impact: 'Produits alternatifs inclus dans la recherche',
-          requiresUserConfirmation: true,
-          estimatedSuccessChance: 0.6,
-        },
+        this.recoveryOption('expand-search', 'expand_search_terms', 'RECOVERY_EXPAND_SEARCH_DESC', {}, 'RECOVERY_EXPAND_SEARCH_DISCOVERY_IMPACT', 0.7),
+        this.recoveryOption('widen-category', 'widen_category', 'RECOVERY_WIDEN_CATEGORY_DESC', {}, 'RECOVERY_WIDEN_CATEGORY_DISCOVERY_IMPACT', 0.6),
       ],
       theoreticallyPossible: false,
     };

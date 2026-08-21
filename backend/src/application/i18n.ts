@@ -17,8 +17,14 @@
  * Extensible: new languages can be added without code changes.
  * Format: ISO 639-1 codes (alpha-2)
  */
-export const SUPPORTED_LANGUAGES = ['fr', 'en', 'de', 'es', 'it', 'pt', 'nl', 'ja', 'zh'] as const;
+export const SUPPORTED_LANGUAGES = [
+  'fr', 'en', 'de', 'es', 'it', 'pt', 'nl', 'pl', 'sv', 'da', 'no', 'fi',
+  'cs', 'el', 'ro', 'hu', 'ja', 'ko', 'zh', 'ar', 'he', 'tr', 'uk', 'ru',
+] as const;
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
+
+/** Launch defaults — French/France/EUR is where Capucine starts, not a ceiling. */
+export const DEFAULT_LANGUAGE: SupportedLanguage = 'fr';
 
 /**
  * Primary language for a user or market.
@@ -47,9 +53,43 @@ export interface Language {
 export const SUPPORTED_COUNTRIES = [
   'FR', 'DE', 'ES', 'IT', 'PT', 'BE', 'NL', 'AT', 'CH', 'GB', 'IE',
   'SE', 'NO', 'DK', 'FI', 'PL', 'CZ', 'SK', 'HU', 'RO', 'GR', 'CY',
-  'US', 'CA', 'MX', 'BR', 'AR', 'CL', 'JP', 'KR', 'CN', 'IN', 'AU', 'NZ'
+  'US', 'CA', 'MX', 'BR', 'AR', 'CL', 'JP', 'KR', 'CN', 'IN', 'AU', 'NZ',
+  'SA', 'IL', 'TR', 'UA', 'RU', 'TW',
 ] as const;
 export type SupportedCountry = (typeof SUPPORTED_COUNTRIES)[number];
+
+export const DEFAULT_COUNTRY: SupportedCountry = 'FR';
+
+/**
+ * Country → primary search language. Deliberately scoped to the countries
+ * SearchStrategyPlanner's CATEGORY_TRANSLATIONS already has real query
+ * vocabulary for (de/es/it — search-strategy-planner.ts) plus en/fr — a
+ * country outside this map simply produces no extra international query
+ * rather than a fabricated translation. Used to turn a conversational
+ * "cherche aussi en Allemagne" (→ 'DE') into the search LANGUAGE ('de')
+ * RealWebDiscoveryStrategy's phase 3 needs — never the country code itself,
+ * which is a different dimension (see megaprompt PARTIE 9: "ne confonds
+ * jamais langue de réponse et langues de recherche").
+ */
+export const COUNTRY_TO_SEARCH_LANGUAGE: Partial<Record<SupportedCountry, SupportedLanguage>> = {
+  FR: 'fr',
+  DE: 'de',
+  ES: 'es',
+  IT: 'it',
+  PT: 'pt',
+  GB: 'en',
+  US: 'en',
+  IE: 'en',
+};
+
+/**
+ * Curated default set for a generic broadening intent ("cherche partout en
+ * Europe", "peu importe le pays") with no specific country named — NEVER
+ * "every supported country" (megaprompt PARTIE 31: bounded, not an
+ * explosion). Kept short and deliberately reused as-is rather than
+ * growing per-request.
+ */
+export const DEFAULT_BROADEN_COUNTRIES: SupportedCountry[] = ['DE', 'ES', 'IT'];
 
 /**
  * Country/region information.
@@ -101,9 +141,12 @@ export interface Region {
  */
 export const SUPPORTED_CURRENCIES = [
   'EUR', 'USD', 'GBP', 'JPY', 'CNY', 'INR', 'AUD', 'CAD', 'CHF',
-  'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'HRK'
+  'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'HRK',
+  'KRW', 'TWD', 'SAR', 'ILS', 'TRY', 'UAH', 'RUB',
 ] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
+
+export const DEFAULT_CURRENCY: SupportedCurrency = 'EUR';
 
 /**
  * Currency information.
@@ -444,4 +487,81 @@ export function convertPrice(
   const fromRate = exchangeRates[fromCurrency] || 1;
   const toRate = exchangeRates[toCurrency] || 1;
   return (amount / fromRate) * toRate;
+}
+
+/** BCP-47-ish tag for Intl.* APIs (formatting.ts) — built from the two
+ *  separate dimensions this module already keeps apart, never hardcoded. */
+export function toBcp47(language: SupportedLanguage, country?: SupportedCountry): string {
+  return country ? `${language}-${country}` : language;
+}
+
+/**
+ * Resolve the EFFECTIVE language for one interaction, respecting the
+ * priority explicit request > session override > permanent profile > system
+ * default. A French profile with an English request for THIS message must
+ * be answered in English — this is what encodes that rule in one place
+ * instead of scattering ad-hoc `??` chains through callers.
+ */
+export function resolveLanguage(input: {
+  requestLanguage?: string | null;
+  sessionLanguage?: string | null;
+  profileLanguage?: string | null;
+}): SupportedLanguage {
+  const candidates = [input.requestLanguage, input.sessionLanguage, input.profileLanguage];
+  for (const c of candidates) {
+    const normalized = c?.trim().toLowerCase().split(/[-_]/)[0];
+    const match = SUPPORTED_LANGUAGES.find(l => l === normalized);
+    if (match) return match;
+  }
+  return DEFAULT_LANGUAGE;
+}
+
+// ============================================================================
+// MESSAGE CATALOG (identifier → localized text)
+// ============================================================================
+
+/**
+ * RULE (non-negotiable): business/domain code never contains user-facing
+ * strings. It emits a MessageCode (a stable, language-independent
+ * identifier — 'WITHIN_BUDGET', 'NO_RESULTS', ...) and optional structured
+ * params; only translate() below turns that into text, for one language.
+ * See explanation-engine.ts for the producer side of this split.
+ */
+export type MessageCode = string;
+export type MessageParams = Record<string, string | number>;
+export type MessageCatalog = Record<MessageCode, string>;
+
+const catalogs = new Map<SupportedLanguage, MessageCatalog>();
+
+/** Register (or merge into) the message catalog for one language. */
+export function registerCatalog(language: SupportedLanguage, catalog: MessageCatalog): void {
+  catalogs.set(language, { ...catalogs.get(language), ...catalog });
+}
+
+/**
+ * Translate a MessageCode into text for `language`, with {name}-style param
+ * interpolation. Falls back to DEFAULT_LANGUAGE, then to the code itself —
+ * never throws, never silently blank (an untranslated code stays visibly a
+ * code rather than becoming invented prose).
+ */
+export function translate(code: MessageCode, language: SupportedLanguage, params?: MessageParams): string {
+  const template = catalogs.get(language)?.[code] ?? catalogs.get(DEFAULT_LANGUAGE)?.[code] ?? code;
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (_, key) => (key in params ? String(params[key]) : `{${key}}`));
+}
+
+/**
+ * Correct-enough pluralization using the platform's real CLDR plural rules
+ * (Intl.PluralRules) — NOT `count === 1`, which is wrong for most languages
+ * (French treats 0 as singular; Polish/Russian/Arabic have 3-6 plural
+ * categories). `forms` supplies whichever CLDR categories this language
+ * actually needs; missing categories fall back to 'other'.
+ */
+export function pluralize(
+  count: number,
+  language: SupportedLanguage,
+  forms: Partial<Record<Intl.LDMLPluralRule, string>>
+): string {
+  const category = new Intl.PluralRules(language).select(count);
+  return forms[category] ?? forms.other ?? '';
 }

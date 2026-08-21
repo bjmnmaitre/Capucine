@@ -581,3 +581,325 @@ describe('Priority Engine - Architectural Properties', () => {
     expect(result.rankedOffers[0].offer.id).toBe('A');
   });
 });
+
+// ============================================================================
+// unknownPolicy: 'pass' — RANKING MUST STAY CONSISTENT WITH ADMISSIBILITY
+//
+// AdmissibilityEngine.filter() is the explicit hard gate (Stage 7), but
+// PriorityEngine.rankOffers() (Stage 8) independently re-derives
+// satisfiesAllConstraints from its own scoreCriterion/handleMissingData/
+// handleUnknownData logic. An offer that passes admissibility as UNKNOWN
+// (e.g. category — a classification hint, not a strictly verifiable spec
+// value) must not be silently dropped again here by a *different* missing-
+// data policy. See AdmissibilityEngine.resolveUnknownData() for the
+// admissibility-side half of this contract.
+// ============================================================================
+
+describe('Priority Engine — unknownPolicy: pass keeps ranking consistent with admissibility', () => {
+  it('required criterion + missing characteristic + unknownPolicy pass → offer is ranked (not silently rejected)', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offerNoCategory = createOffer('no-category', merchant, 500); // no characteristics at all
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', {
+        preferredValues: ['ordinateur_portable'],
+        unknownPolicy: 'pass',
+      }),
+    ];
+
+    const result = rankOffers(createRankingRequest([offerNoCategory], criteria));
+    expect(result.rankedOffers.map(r => r.offer.id)).toContain('no-category');
+    expect(result.rejectedOffers ?? []).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ offer: expect.objectContaining({ id: 'no-category' }) })])
+    );
+  });
+
+  it('required criterion + unknown-status characteristic + unknownPolicy pass → offer is ranked', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offerUnknownCategory = createOffer('unknown-category', merchant, 500, {
+      category: createUnknownDataPoint(),
+    });
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', {
+        preferredValues: ['ordinateur_portable'],
+        unknownPolicy: 'pass',
+      }),
+    ];
+
+    const result = rankOffers(createRankingRequest([offerUnknownCategory], criteria));
+    expect(result.rankedOffers.map(r => r.offer.id)).toContain('unknown-category');
+  });
+
+  it('required criterion + missing characteristic + default policy (no unknownPolicy) → still rejected (no regression)', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offerNoRam = createOffer('no-ram', merchant, 500); // no characteristics
+    const criteria = [
+      createCriterion('ram', 'Mémoire RAM', 'required', { minValue: 16, unit: 'GB' }), // no unknownPolicy
+    ];
+
+    const result = rankOffers(createRankingRequest([offerNoRam], criteria));
+    expect(result.rankedOffers.map(r => r.offer.id)).not.toContain('no-ram');
+  });
+
+  it('required criterion + present but WRONG category value + unknownPolicy pass → still rejected (pass only covers missing data, not contradicting data)', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offerWrongCategory = createOffer('wrong-category', merchant, 500, {
+      category: createDataPoint('smartphone'),
+    });
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', {
+        preferredValues: ['ordinateur_portable'],
+        unknownPolicy: 'pass',
+      }),
+    ];
+
+    const result = rankOffers(createRankingRequest([offerWrongCategory], criteria));
+    expect(result.rankedOffers.map(r => r.offer.id)).not.toContain('wrong-category');
+  });
+
+  it('required criterion + present and matching category value → offer is ranked and scores well', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offerMatching = createOffer('matching-category', merchant, 500, {
+      category: createDataPoint('ordinateur_portable'),
+    });
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', {
+        preferredValues: ['ordinateur_portable'],
+        unknownPolicy: 'pass',
+      }),
+    ];
+
+    const result = rankOffers(createRankingRequest([offerMatching], criteria));
+    const ranked = result.rankedOffers.find(r => r.offer.id === 'matching-category');
+    expect(ranked).toBeDefined();
+    expect(ranked!.overallScore).toBeGreaterThanOrEqual(50);
+  });
+});
+
+// ============================================================================
+// UNIFIED ADMISSIBILITY DECISION
+//
+// AdmissibilityEngine.filter() is now the sole source of truth for
+// eligibility. rankOffers() accepts its `resultsByOfferId` (the SAME
+// AdmissibilityResult objects AdmissibilityEngine already computed — no
+// recomputation, no parallel object) and trusts it verbatim instead of
+// re-deriving "required/forbidden constraint violated?" from criterion
+// scores. This is the real Capucine pipeline's wiring (CapucineEngine.search
+// /searchSync) — these tests exercise the SAME two real engines together to
+// prove they can no longer disagree about the same offer.
+// ============================================================================
+
+describe('Priority Engine — unified admissibility decision (consumes AdmissibilityEngine verdict)', () => {
+  // Local import here (not at module top) keeps this describe block
+  // self-contained about which engine it pulls in.
+  const { AdmissibilityEngine } = require('../../src/domain/admissibility');
+
+  function rankThroughBothEngines(offers: Offer[], criteria: PreferenceCriterion[]) {
+    const admissibility = new AdmissibilityEngine().filter(offers, criteria);
+    const ranking = rankOffers(
+      createRankingRequest(admissibility.eligibleOffers, criteria),
+      admissibility.resultsByOfferId
+    );
+    return { admissibility, ranking };
+  }
+
+  // ---- 1. offre totalement compatible ----
+  it('1. a fully compatible offer is admissible and ranked', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('compliant', merchant, 500);
+    const criteria = [createCriterion('budget', 'Budget', 'required', { maxBudget: 1000 })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['compliant']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['compliant']);
+  });
+
+  // ---- 2. offre incompatible ----
+  it('2. an incompatible offer is inadmissible and never reaches ranking as a normal result', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('too-expensive', merchant, 1500);
+    const criteria = [createCriterion('budget', 'Budget', 'required', { maxBudget: 1000 })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers).toHaveLength(0);
+    expect(ranking.rankedOffers).toHaveLength(0);
+  });
+
+  // ---- 3. offre avec donnée inconnue (category, unknownPolicy pass) ----
+  it('3. an offer with unknown data (unknownPolicy pass) is admissible and ranked, not silently dropped', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('no-category-data', merchant, 500); // no characteristics at all
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', { preferredValues: ['ordinateur_portable'], unknownPolicy: 'pass' }),
+    ];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['no-category-data']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['no-category-data']);
+  });
+
+  // ---- 4. required + unknownPolicy reject (default) ----
+  it('4. required + missing data + unknownPolicy reject (default): inadmissible in both engines', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('no-ram-data', merchant, 500);
+    const criteria = [createCriterion('ram', 'Mémoire RAM', 'required', { minValue: 16, unit: 'GB' })]; // no unknownPolicy → default reject
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers).toHaveLength(0);
+    expect(ranking.rankedOffers).toHaveLength(0);
+  });
+
+  // ---- 5. required + unknownPolicy pass ----
+  it('5. required + missing data + unknownPolicy pass: admissible in both engines', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('no-usecase-data', merchant, 500);
+    const criteria = [createCriterion('use_case', "Cas d'usage", 'required', { preferredValues: ['course a pied'], unknownPolicy: 'pass' })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['no-usecase-data']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['no-usecase-data']);
+  });
+
+  // ---- 6. preferred + unknown ----
+  it('6. preferred-level criterion + unknown data never eliminates the offer (not a hard gate at all)', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('no-warranty-data', merchant, 500);
+    const criteria = [createCriterion('warranty', 'Garantie', 'preference', {})];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['no-warranty-data']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['no-warranty-data']);
+  });
+
+  // ---- 7 & 8. category correcte / incorrecte ----
+  it('7. category present and correct: admissible and ranked', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('laptop', merchant, 900, { category: createDataPoint('ordinateur_portable') });
+    const criteria = [createCriterion('category', 'Catégorie', 'required', { preferredValues: ['ordinateur_portable'], unknownPolicy: 'pass' })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['laptop']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['laptop']);
+  });
+
+  it('8. category present but incorrect: inadmissible in both engines, never a normal ranked result', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offer = createOffer('phone', merchant, 900, { category: createDataPoint('smartphone') });
+    const criteria = [createCriterion('category', 'Catégorie', 'required', { preferredValues: ['ordinateur_portable'], unknownPolicy: 'pass' })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([offer], criteria);
+    expect(admissibility.eligibleOffers).toHaveLength(0);
+    expect(ranking.rankedOffers).toHaveLength(0);
+  });
+
+  // ---- 9. RAM ----
+  it('9. RAM below required minimum: inadmissible in both engines', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const enough = createOffer('ram-16', merchant, 900, { ram: createDataPoint('16GB') });
+    const notEnough = createOffer('ram-8', merchant, 900, { ram: createDataPoint('8GB') });
+    const criteria = [createCriterion('ram', 'Mémoire RAM', 'required', { minValue: 16, unit: 'GB' })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([enough, notEnough], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['ram-16']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['ram-16']);
+  });
+
+  // ---- 10. écran ----
+  it('10. screen_size outside tolerance: inadmissible in both engines', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const matching = createOffer('screen-14', merchant, 900, { screen_size: createDataPoint(14) });
+    const mismatched = createOffer('screen-17', merchant, 900, { screen_size: createDataPoint(17) });
+    const criteria = [createCriterion('screen_size', "Taille d'écran", 'required', { exactValue: 14, tolerance: 0.5, unit: 'pouces' })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([matching, mismatched], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['screen-14']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['screen-14']);
+  });
+
+  // ---- 11. budget ----
+  it('11. price over budget: inadmissible in both engines', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const cheap = createOffer('cheap', merchant, 900);
+    const expensive = createOffer('expensive', merchant, 1500);
+    const criteria = [createCriterion('budget', 'Budget', 'required', { maxBudget: 1000 })];
+
+    const { admissibility, ranking } = rankThroughBothEngines([cheap, expensive], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['cheap']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['cheap']);
+  });
+
+  // ---- 12. plusieurs contraintes simultanées ----
+  it('12. several constraints combined: only the offer satisfying all of them is admissible and ranked', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const compliant = createOffer('compliant', merchant, 1049, {
+      category: createDataPoint('ordinateur_portable'),
+      ram: createDataPoint('16GB'),
+      screen_size: createDataPoint(14),
+    });
+    const wrongCategory = createOffer('wrong-category', merchant, 900, {
+      category: createDataPoint('smartphone'),
+      ram: createDataPoint('16GB'),
+      screen_size: createDataPoint(14),
+    });
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', { preferredValues: ['ordinateur_portable'], unknownPolicy: 'pass' }),
+      createCriterion('ram', 'Mémoire RAM', 'required', { minValue: 16, unit: 'GB' }),
+      createCriterion('screen_size', "Taille d'écran", 'required', { exactValue: 14, tolerance: 0.5, unit: 'pouces' }),
+      createCriterion('budget', 'Budget', 'required', { maxBudget: 1100 }),
+    ];
+
+    const { admissibility, ranking } = rankThroughBothEngines([compliant, wrongCategory], criteria);
+    expect(admissibility.eligibleOffers.map((o: Offer) => o.id)).toEqual(['compliant']);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['compliant']);
+  });
+
+  // ---- 13. classement d'offres admissibles ----
+  it('13. among several admissible offers, ranking still sorts by score (cheaper ranks higher)', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const cheaper = createOffer('cheaper', merchant, 700);
+    const pricier = createOffer('pricier', merchant, 950);
+    const criteria = [createCriterion('budget', 'Budget', 'required', { maxBudget: 1000 })];
+
+    const { ranking } = rankThroughBothEngines([pricier, cheaper], criteria);
+    expect(ranking.rankedOffers.map(r => r.offer.id)).toEqual(['cheaper', 'pricier']);
+  });
+
+  // ---- 14. aucune offre inadmissible classée comme résultat normal ----
+  it('14. an inadmissible offer never appears in rankedOffers, even mixed with admissible ones', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const admissibleOffer = createOffer('ok', merchant, 500);
+    const inadmissibleOffer = createOffer('rejected', merchant, 5000);
+    const criteria = [createCriterion('budget', 'Budget', 'required', { maxBudget: 1000 })];
+
+    const { ranking } = rankThroughBothEngines([admissibleOffer, inadmissibleOffer], criteria);
+    const rankedIds = ranking.rankedOffers.map(r => r.offer.id);
+    expect(rankedIds).toContain('ok');
+    expect(rankedIds).not.toContain('rejected');
+  });
+
+  // ---- 15. même verdict avant/après classement (non-divergence explicite) ----
+  it('15. AdmissibilityEngine and PriorityEngine agree on the exact same eligible set — no divergence', () => {
+    const merchant = createMerchant('m1', 'Shop', 'FR');
+    const offers = [
+      createOffer('a-compliant', merchant, 900, { category: createDataPoint('ordinateur_portable'), ram: createDataPoint('16GB') }),
+      createOffer('b-wrong-category', merchant, 900, { category: createDataPoint('smartphone'), ram: createDataPoint('16GB') }),
+      createOffer('c-not-enough-ram', merchant, 900, { category: createDataPoint('ordinateur_portable'), ram: createDataPoint('4GB') }),
+      createOffer('d-unknown-category', merchant, 900, { ram: createDataPoint('16GB') }), // no category data at all
+      createOffer('e-over-budget', merchant, 5000, { category: createDataPoint('ordinateur_portable'), ram: createDataPoint('16GB') }),
+    ];
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', { preferredValues: ['ordinateur_portable'], unknownPolicy: 'pass' }),
+      createCriterion('ram', 'Mémoire RAM', 'required', { minValue: 16, unit: 'GB' }),
+      createCriterion('budget', 'Budget', 'required', { maxBudget: 1000 }),
+    ];
+
+    const { admissibility, ranking } = rankThroughBothEngines(offers, criteria);
+
+    const admissibleIds = admissibility.eligibleOffers.map((o: Offer) => o.id).sort();
+    const rankedIds = ranking.rankedOffers.map(r => r.offer.id).sort();
+
+    // VIOLATED offers (b, c, e) are never eligible → never ranked as a normal result.
+    // UNKNOWN+pass offer (d) is not silently rejected by either engine.
+    expect(admissibleIds).toEqual(['a-compliant', 'd-unknown-category']);
+    expect(rankedIds).toEqual(admissibleIds); // exact same verdict, both engines agree
+  });
+});

@@ -10,7 +10,9 @@
  * DETERMINISTIC: Same criteria = same results (required for testing)
  */
 
-import { Product, Offer, SearchMatchQuality } from '../domain/types';
+import { Product, Offer, SearchMatchQuality, PreferenceCriterion } from '../domain/types';
+import { SearchCoverage } from './search-coverage';
+import { SupportedLanguage } from './i18n';
 
 // ============================================================================
 // DISCOVERY CRITERIA
@@ -57,6 +59,35 @@ export interface DiscoveryCriteria {
   // Quality filters
   minRating?: number;
   verifiedOnly?: boolean;
+
+  /**
+   * SearchPlan.hardConstraints, passed through so discovery strategies that
+   * build multiple complementary queries (SearchStrategyPlanner) can derive
+   * a technical-specs query generically from whatever numeric constraints
+   * (ram, screen_size, storage, ...) are actually present — without
+   * duplicating that logic or hardcoding specific criterion ids.
+   */
+  hardConstraints?: PreferenceCriterion[];
+
+  /**
+   * The QUERY's language — separate from the user's interface/response
+   * language (see i18n.ts's resolveLanguage). Drives which language
+   * SearchStrategyPlanner phrases phase 1-2 queries in; RealWebDiscoveryStrategy
+   * falls back to DEFAULT_LANGUAGE when absent (e.g. sync/local-catalog paths
+   * that never resolved a language).
+   */
+  language?: SupportedLanguage;
+
+  /**
+   * Per-REQUEST override for RealWebDiscoveryStrategy's phase-3
+   * international queries (SearchStrategyPlanner.buildInternationalStrategies())
+   * — e.g. a conversational "cherche aussi en Allemagne" follow-up adding
+   * 'de' for just this search. Falls back to the strategy's own constructor-
+   * level `internationalLanguages` (a static default) when absent, so
+   * existing callers that never set this are unaffected. Reuses the EXACT
+   * same phase-3 mechanism — no second international-search system.
+   */
+  internationalLanguages?: SupportedLanguage[];
 }
 
 // ============================================================================
@@ -138,6 +169,10 @@ export interface DiscoveryResult {
      *  enrichment (JSON-LD). Optional — only present when a ProductPageExtractor
      *  was provided to the discovery strategy. */
     pageEnrichedCount?: number;
+    /** Search-coverage assessment (see search-coverage.ts). Optional — only
+     *  populated by strategies that run multiple queries/phases and need to
+     *  decide "have I searched enough?" (currently RealWebDiscoveryStrategy). */
+    coverage?: SearchCoverage;
   };
 
   // Metadata

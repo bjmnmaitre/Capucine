@@ -10,3 +10,7 @@ coverage/
 *.js.map
 *.d.ts
 !jest.config.js
+# Hand-written frontend JS (public/js/**) is real source, not tsc build
+# output — the blanket *.js rule above exists for compiled dist/ artifacts
+# (dist/ is already ignored on its own above), not for this.
+!public/js/**/*.js

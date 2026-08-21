@@ -20,6 +20,7 @@ import {
   Offer,
   DataStatus,
 } from '../domain/types';
+import { AdmissibilityResult } from '../domain/admissibility';
 
 // ============================================================================
 // CORE RANKING LOGIC
@@ -28,10 +29,28 @@ import {
 /**
  * Score a single offer against the effective criteria.
  * Returns per-criterion breakdown + overall score.
+ *
+ * Eligibility (satisfiesAllConstraints/violatedConstraints):
+ * - When `admissibilityResult` is provided (the real Capucine pipeline always
+ *   provides it — see rankOffers()/CapucineEngine), it is the SOLE source of
+ *   truth: this function reports exactly what AdmissibilityEngine already
+ *   decided, instead of re-deriving eligibility from criterion scores. This
+ *   is what closes the divergence risk between the two engines — required/
+ *   forbidden pass-fail is decided in exactly one place.
+ * - When omitted (every existing direct caller of rankOffers()/scoreOffer()
+ *   that doesn't run offers through AdmissibilityEngine first — e.g. the
+ *   ~100 call sites across the test suite that use PriorityEngine as a
+ *   standalone scorer), this function falls back to its own self-contained
+ *   evaluation, unchanged from before. Backward compatible by construction.
+ *
+ * Per-criterion scoring (criterionScores/overallScore) is unaffected either
+ * way — that's a ranking-quality dimension (e.g. "how far under budget"),
+ * not an eligibility decision, and stays PriorityEngine's responsibility.
  */
 function scoreOffer(
   offer: Offer,
-  effectiveCriteria: PreferenceCriterion[]
+  effectiveCriteria: PreferenceCriterion[],
+  admissibilityResult?: AdmissibilityResult
 ): {
   criterionScores: CriterionScore[];
   overallScore: number;
@@ -49,23 +68,25 @@ function scoreOffer(
 
     criterionScores.push(score);
 
-    // Hard constraints (forbidden, required) affect constraint satisfaction
-    if (criterion.level === 'forbidden' && score.score > 0) {
-      violatedConstraints.push({
-        criterionId: criterion.id,
-        criterionName: criterion.name,
-        reason: score.reasoning, // Use detailed reasoning from score
-      });
-      satisfiesAllConstraints = false;
-    }
+    if (!admissibilityResult) {
+      // No admissibility verdict supplied — self-contained fallback (see doc above).
+      if (criterion.level === 'forbidden' && score.score > 0) {
+        violatedConstraints.push({
+          criterionId: criterion.id,
+          criterionName: criterion.name,
+          reason: score.reasoning, // Use detailed reasoning from score
+        });
+        satisfiesAllConstraints = false;
+      }
 
-    if (criterion.level === 'required' && score.score < 50) {
-      violatedConstraints.push({
-        criterionId: criterion.id,
-        criterionName: criterion.name,
-        reason: score.reasoning, // Use detailed reasoning from score
-      });
-      satisfiesAllConstraints = false;
+      if (criterion.level === 'required' && score.score < 50) {
+        violatedConstraints.push({
+          criterionId: criterion.id,
+          criterionName: criterion.name,
+          reason: score.reasoning, // Use detailed reasoning from score
+        });
+        satisfiesAllConstraints = false;
+      }
     }
 
     // Weight scoring by preference level
@@ -76,6 +97,18 @@ function scoreOffer(
 
   // Normalize to 0-100 scale
   const overallScore = constraintCount > 0 ? totalScore / constraintCount : 0;
+
+  if (admissibilityResult) {
+    // Trust AdmissibilityEngine's verdict verbatim — no re-derivation.
+    satisfiesAllConstraints = admissibilityResult.eligible;
+    for (const v of admissibilityResult.violations) {
+      violatedConstraints.push({
+        criterionId: v.criterionId,
+        criterionName: v.criterionName,
+        reason: v.violation,
+      });
+    }
+  }
 
   return {
     criterionScores,
@@ -99,6 +132,14 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
   // Try to find the relevant data in the offer
   const offerData = offer.characteristics[id] || extractSpecialCriterion(offer, id, criterion);
 
+  // Criteria opted into unknownPolicy: 'pass' (e.g. category — a best-effort
+  // classification hint, not a strictly verifiable spec value) score missing/
+  // unknown data as neutral (50) rather than a sub-50 "likely fails" score.
+  // This mirrors AdmissibilityEngine.resolveUnknownData() so a criterion that
+  // passes the admissibility gate as UNKNOWN isn't silently re-rejected here
+  // by ranking's own (separate) hard-constraint check — see scoreOffer().
+  const unknownPolicy = criterion.parameters?.unknownPolicy as 'reject' | 'pass' | undefined;
+
   // CRITICAL LOGIC: Handle data status properly
   if (!offerData) {
     // Criterion data not found in this offer
@@ -107,7 +148,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
       criterionId: id,
       criterionName: name,
       level,
-      score: handleMissingData(level),
+      score: handleMissingData(level, unknownPolicy),
       reasoning: `No data available for criterion '${name}'`,
       dataUsed: {
         status: 'unknown',
@@ -138,7 +179,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
         criterionId: id,
         criterionName: name,
         level,
-        score: handleUnknownData(level),
+        score: handleUnknownData(level, unknownPolicy),
         reasoning: `Criterion '${name}' cannot be verified (data unknown)`,
         dataUsed: {
           status: 'unknown',
@@ -456,10 +497,13 @@ function evaluateDataValue(rawValue: unknown, criterion: PreferenceCriterion): n
  * For 'forbidden': Unknown data = possibly dangerous, lower score.
  * For preferences: Unknown = neutral, doesn't help or hurt.
  */
-function handleUnknownData(level: PreferenceLevel): number {
+function handleUnknownData(level: PreferenceLevel, unknownPolicy?: 'reject' | 'pass'): number {
   switch (level) {
     case 'required':
-      // Can't verify requirement without data
+      // Can't verify requirement without data.
+      // unknownPolicy: 'pass' (opt-in, e.g. category) → neutral: no contradicting
+      // evidence, don't score it as a likely failure.
+      if (unknownPolicy === 'pass') return 50;
       return 25; // Low score, constraint may be violated
     case 'forbidden':
       // Forbidden criterion with unknown data = risky
@@ -505,10 +549,12 @@ function handleUnverifiableData(level: PreferenceLevel): number {
 /**
  * Scoring logic when criterion data is completely missing from offer.
  */
-function handleMissingData(level: PreferenceLevel): number {
-  // If it's a hard constraint, missing data is bad
+function handleMissingData(level: PreferenceLevel, unknownPolicy?: 'reject' | 'pass'): number {
+  // If it's a hard constraint, missing data is bad by default.
+  // unknownPolicy: 'pass' (opt-in, e.g. category) → neutral instead, same
+  // rationale as handleUnknownData() above.
   if (level === 'required') {
-    return 30;
+    return unknownPolicy === 'pass' ? 50 : 30;
   }
   if (level === 'forbidden') {
     // No data → no evidence of the forbidden thing being present → score 0 (not violated)
@@ -575,15 +621,25 @@ function formatValue(value: unknown): string {
  * - Independent: No AI, no network, no merchant influence
  * - Testable: Can test without external dependencies
  * - Transparent: Full reasoning for every score
+ *
+ * @param admissibilityByOfferId Optional — the AdmissibilityResult already
+ *   computed for each offer (keyed by offer.id), from
+ *   AdmissibilityEngine.filter()'s `resultsByOfferId`. CapucineEngine always
+ *   passes this, so the real search pipeline has exactly ONE place deciding
+ *   "is this offer admissible?" — see scoreOffer() for the fallback behavior
+ *   when it's omitted (every other existing caller/test).
  */
-export function rankOffers(request: RankingRequest): RankingResult {
+export function rankOffers(
+  request: RankingRequest,
+  admissibilityByOfferId?: Map<string, AdmissibilityResult>
+): RankingResult {
   const rankedOffers: RankedOffer[] = [];
   const rejectedOffers: RankingResult['rejectedOffers'] = [];
 
   // Score all offers
   for (const offer of request.offers) {
     const { criterionScores, overallScore, satisfiesAllConstraints, violatedConstraints } =
-      scoreOffer(offer, request.effectiveCriteria);
+      scoreOffer(offer, request.effectiveCriteria, admissibilityByOfferId?.get(offer.id));
 
     if (!satisfiesAllConstraints) {
       // Offer violates hard constraints; reject it

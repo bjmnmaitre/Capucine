@@ -43,12 +43,27 @@ import { ExplanationEngine, FullExplanation } from './explanation-engine';
 import { NoResultsAnalyzer, NoResultsDiagnosis } from './no-results-analyzer';
 import { AIOrchestrator } from './ai-orchestrator';
 import { InMemoryDiscoveryStrategy } from './in-memory-discovery';
-import { BasicPatternInterpreter } from './request-interpreter';
+import {
+  BasicPatternInterpreter,
+  DOMAIN_PRODUCT_CATEGORIES,
+  extractRankingPreference,
+  extractInternationalIntent,
+  extractResultLimit,
+  extractMerchantExclusion,
+  extractFreeShippingIntent,
+  extractDeliverabilityIntent,
+  extractRetryIntent,
+  RetryIntent,
+  InternationalIntent,
+} from './request-interpreter';
+import { RankingPreference } from './ranking-preference';
 import { InterpretedRequest } from './request';
 import { RealWebDiscoveryStrategy } from './real-web-discovery';
-import { detectWebSearchAdapter } from './web-search-adapters';
+import { detectWebSearchAdapters } from './web-search-adapters';
 import { ToolRegistry, buildDefaultToolRegistry } from './tools';
 import { ProductPageExtractor } from './product-page-extractor';
+import { SupportedLanguage, resolveLanguage } from './i18n';
+import { defaultLanguageDetector } from './language-detection';
 
 // ============================================================================
 // ENGINE INPUT / OUTPUT
@@ -72,6 +87,28 @@ export interface SearchRequest {
 
   /** Skip AI interpretation (use only pre-interpreted criteria) */
   skipAIInterpretation?: boolean;
+
+  /**
+   * Explicit language for THIS request (e.g. 'fr', 'en') — highest priority
+   * in resolveLanguage()'s chain (i18n.ts): explicit request > session >
+   * profile > system default. A French profile writing this one query in
+   * English must be answered in English — see resolveLanguage().
+   * When absent, the language is detected from queryText (language-detection.ts).
+   */
+  language?: string;
+
+  /**
+   * Per-request international search-language override — e.g. a
+   * conversational "cherche aussi en Allemagne" follow-up adds 'de' for
+   * just this search. Threaded into DiscoveryCriteria.internationalLanguages
+   * (see planToDiscoveryCriteria()), which RealWebDiscoveryStrategy's
+   * ALREADY-EXISTING phase-3 (SearchStrategyPlanner.buildInternationalStrategies())
+   * consumes — no second international-search mechanism. Distinct from
+   * `language` above: that's the RESPONSE language, this is which
+   * ADDITIONAL languages phase 3 searches in (see megaprompt Part 9's
+   * "ne confonds jamais langue de réponse et langues de recherche").
+   */
+  additionalSearchLanguages?: SupportedLanguage[];
 }
 
 /**
@@ -134,6 +171,16 @@ export interface SearchEngineResult {
    * Absent if preInterpretedCriteria were provided directly.
    */
   interpretedRequest?: InterpretedRequest;
+
+  /**
+   * The EFFECTIVE query language for this search, resolved via
+   * resolveLanguage() (i18n.ts): explicit request.language > detected from
+   * queryText > profile.preferredLanguage > DEFAULT_LANGUAGE. Drives which
+   * language(s) RealWebDiscoveryStrategy searches in (see DiscoveryCriteria.
+   * language) — kept in the result so the API/response layer can also
+   * answer in this language (translate(), i18n.ts) without re-detecting it.
+   */
+  language: SupportedLanguage;
 
   /** Pipeline stages timing for debugging */
   timing: PipelineTiming;
@@ -245,8 +292,8 @@ export class CapucineEngine {
     if (options.toolRegistry) {
       this.toolRegistry = options.toolRegistry;
     } else {
-      const webAdapter = detectWebSearchAdapter();
-      this.toolRegistry = buildDefaultToolRegistry(webAdapter);
+      const webAdapters = detectWebSearchAdapters();
+      this.toolRegistry = buildDefaultToolRegistry(webAdapters);
     }
 
     // ── Discovery orchestrator ────────────────────────────────────────────────
@@ -264,9 +311,9 @@ export class CapucineEngine {
       //   - per-call timeout (default 10s)
       //   - rate limiting (100 calls/min by default)
       //   - audit trail entry on every call
-      //   - availability check (isAvailable('web_search'))
+      //   - availability check (listWebSearchTools() — any 'web_search'/'web_search_<name>' source)
       const enableWeb = options.enableWebDiscovery ?? true;
-      if (enableWeb && this.toolRegistry.isAvailable('web_search')) {
+      if (enableWeb && this.toolRegistry.listWebSearchTools().length > 0) {
         // Pass ToolRegistry — strategy routes through it, not the raw adapter.
         // Also pass a ProductPageExtractor so top candidates get real page
         // enrichment (JSON-LD) instead of relying solely on the snippet-regex
@@ -283,6 +330,51 @@ export class CapucineEngine {
       proceedDespiteClarifications: options.proceedDespiteClarifications ?? true,
       enableWebDiscovery: options.enableWebDiscovery ?? true,
       enablePageEnrichment: options.enablePageEnrichment ?? true,
+    };
+  }
+
+  /**
+   * Interpret a short standalone piece of text (e.g. a conversational
+   * follow-up like "élargis à 1100€", "uniquement du neuf", "montre-moi les
+   * moins chers", "cherche aussi en Allemagne") into criteria + ranking/
+   * international-search intent, WITHOUT running a search. Reuses the same
+   * BasicPatternInterpreter as search()/searchSync() for criteria, plus the
+   * standalone extractRankingPreference()/extractInternationalIntent()
+   * functions (request-interpreter.ts) — no parallel NLU logic.
+   *
+   * Used by ConversationManager.applyFollowUp() (see server.ts POST /clarify)
+   * to compute the delta for a refinement turn.
+   */
+  interpretFollowUp(text: string, userId = 'anonymous', destinationCountry = 'FR'): {
+    criteria: PreferenceCriterion[];
+    rankingPreference: RankingPreference | null;
+    internationalIntent: InternationalIntent | null;
+    resultLimit: number | null;
+    excludeMerchantName: string | null;
+    retryIntent: RetryIntent | null;
+  } {
+    const interpreted = this.interpreter.interpretSync({
+      id: `followup-${Date.now()}`,
+      userId,
+      text,
+      timestamp: new Date(),
+    });
+    // Free-shipping/deliverability intents are themselves PreferenceCriterion
+    // objects (same shape as condition/category) — folded into the same
+    // criteria array the caller already merges by id, no separate channel.
+    const criteria = [...interpreted.extractedCriteria];
+    const freeShipping = extractFreeShippingIntent(text);
+    if (freeShipping) criteria.push(freeShipping);
+    const deliverability = extractDeliverabilityIntent(text, destinationCountry);
+    if (deliverability) criteria.push(deliverability);
+
+    return {
+      criteria,
+      rankingPreference: extractRankingPreference(text),
+      internationalIntent: extractInternationalIntent(text),
+      retryIntent: extractRetryIntent(text),
+      resultLimit: extractResultLimit(text),
+      excludeMerchantName: extractMerchantExclusion(text),
     };
   }
 
@@ -308,6 +400,21 @@ export class CapucineEngine {
       explanationMs: 0,
       totalMs: 0,
     };
+
+    // ── Language resolution ───────────────────────────────────────────────────
+    // Priority: explicit request.language > detected from queryText >
+    // profile.preferredLanguage > DEFAULT_LANGUAGE ('fr'). See i18n.ts's
+    // resolveLanguage() for why explicit-request always wins (a French
+    // profile writing THIS query in English must be answered in English).
+    const detected = request.queryText ? defaultLanguageDetector.detectLanguage(request.queryText) : undefined;
+    const detectedLanguage = detected && detected.language !== 'unknown' && detected.confidence >= 0.15
+      ? detected.language
+      : undefined;
+    const effectiveLanguage: SupportedLanguage = resolveLanguage({
+      requestLanguage: request.language,
+      sessionLanguage: detectedLanguage,
+      profileLanguage: request.profile.preferredLanguage,
+    });
 
     // ── Stage 0: NL Interpretation (BasicPatternInterpreter) ─────────────────
     let preProfileCriteria = request.preInterpretedCriteria ?? [];
@@ -399,7 +506,9 @@ export class CapucineEngine {
     const { discovery, finalPlan } = await this.discoverWithEscalation(
       searchPlan,
       request.queryText,
-      phaseTerms
+      phaseTerms,
+      effectiveLanguage,
+      request.additionalSearchLanguages
     );
     searchPlan = finalPlan;
     timing.discoveryMs = Date.now() - discoveryStart;
@@ -441,14 +550,25 @@ export class CapucineEngine {
     }));
 
     // ── Stage 8: Ranking (PriorityEngine) ─────────────────────────────────────
+    // AdmissibilityEngine (Stage 7) is the sole source of truth for eligibility;
+    // PriorityEngine consumes its verdict (resultsByOfferId) rather than
+    // re-deciding "required/forbidden constraint violated?" on its own — see
+    // priority-engine.ts's scoreOffer(). Offers here are already the eligible
+    // subset, so rankOffers' own rejectedOffers will be empty by construction;
+    // ranking.rejectedOffers is set to the full-pipeline rejection list (offers
+    // that never reached ranking at all, rejected back at Stage 7) so
+    // ExplanationEngine/server.ts still see every rejection, not just none.
     const rankingStart = Date.now();
-    const ranking = rankOffers({
-      offers: eligibleOffers,
-      effectiveCriteria,
-      requestId: request.requestId,
-      timestamp: new Date(),
-    });
-    (ranking as any).rejectedOffers = rejectedForRanking;
+    const ranking = rankOffers(
+      {
+        offers: eligibleOffers,
+        effectiveCriteria,
+        requestId: request.requestId,
+        timestamp: new Date(),
+      },
+      admissibility.resultsByOfferId
+    );
+    ranking.rejectedOffers = rejectedForRanking;
     timing.rankingMs = Date.now() - rankingStart;
 
     // ── Stage 9: Explanation ──────────────────────────────────────────────────
@@ -484,6 +604,7 @@ export class CapucineEngine {
       noResultsDiagnosis,
       provenanceSummary: this.buildProvenanceSummary(ranking),
       interpretedRequest,
+      language: effectiveLanguage,
       timing,
     };
   }
@@ -507,6 +628,17 @@ export class CapucineEngine {
       explanationMs: 0,
       totalMs: 0,
     };
+
+    // ── Language resolution (same rule as search() — see there for rationale) ──
+    const syncDetected = request.queryText ? defaultLanguageDetector.detectLanguage(request.queryText) : undefined;
+    const syncDetectedLanguage = syncDetected && syncDetected.language !== 'unknown' && syncDetected.confidence >= 0.15
+      ? syncDetected.language
+      : undefined;
+    const syncEffectiveLanguage: SupportedLanguage = resolveLanguage({
+      requestLanguage: request.language,
+      sessionLanguage: syncDetectedLanguage,
+      profileLanguage: request.profile.preferredLanguage,
+    });
 
     // ── Stage 0: NL Interpretation ────────────────────────────────────────────
     let preProfileCriteria = request.preInterpretedCriteria ?? [];
@@ -557,7 +689,7 @@ export class CapucineEngine {
     timing.planBuildMs = Date.now() - planStart;
 
     // ── Stage 4: Discovery (sync, no escalation) ──────────────────────────────
-    const discoveryCriteria = this.planToDiscoveryCriteria(searchPlan, request.queryText, syncPhaseTerms);
+    const discoveryCriteria = this.planToDiscoveryCriteria(searchPlan, request.queryText, syncPhaseTerms, syncEffectiveLanguage);
     const discoveryStart = Date.now();
     const discovery = this.discoveryOrchestrator.discoverSync(discoveryCriteria);
     timing.discoveryMs = Date.now() - discoveryStart;
@@ -585,13 +717,16 @@ export class CapucineEngine {
       reason: r.primaryViolation,
     }));
 
-    const ranking = rankOffers({
-      offers: eligibleOffers,
-      effectiveCriteria,
-      requestId: request.requestId,
-      timestamp: new Date(),
-    });
-    (ranking as any).rejectedOffers = rejectedForRanking;
+    const ranking = rankOffers(
+      {
+        offers: eligibleOffers,
+        effectiveCriteria,
+        requestId: request.requestId,
+        timestamp: new Date(),
+      },
+      admissibility.resultsByOfferId
+    );
+    ranking.rejectedOffers = rejectedForRanking;
 
     const explanation = this.explanationEngine.explain(ranking);
 
@@ -622,6 +757,7 @@ export class CapucineEngine {
       noResultsDiagnosis,
       provenanceSummary: this.buildProvenanceSummary(ranking),
       interpretedRequest,
+      language: syncEffectiveLanguage,
       timing,
     };
   }
@@ -667,12 +803,32 @@ export class CapucineEngine {
       ? interpreted!.suggestedSearchTerms!
       : this.extractPrimaryTerms(queryText, criteria);
 
-    // Extract categories from criteria
+    // Extract categories from criteria. RequestInterpreter (and inline/
+    // profile criteria following the same convention) stores the detected
+    // category as `preferredValues: [id]` — see
+    // request-interpreter.ts's applyCategoryDetection() doc comment for why
+    // (it's what makes AdmissibilityEngine's checkPreferredValues() actually
+    // verify it) — never a bespoke `category` key, so reading that key here
+    // silently produced an always-empty array; DiscoveryCriteria.categories
+    // was therefore dead code for every search.
+    //
+    // Only DOMAIN category ids (DOMAIN_PRODUCT_CATEGORIES — real catalog
+    // categories like 'ordinateur_portable') go into `categories`, which
+    // feeds DiscoveryCriteria.categories' HARD pre-filter (see
+    // in-memory-discovery.ts): a GENERIC id (e.g. 'electronics') matches no
+    // catalog entry, so using it there would silently zero out every
+    // candidate instead of narrowing the search — exactly the failure mode
+    // that made a naive `preferredValues[0]` fix dangerous. A generic-only
+    // detection still isn't lost — planBuilder's categoryTerms folds
+    // `categories` into search keywords too, and any category word already
+    // reached primaryTerms/suggestedSearchTerms via normal term extraction.
     const categories: string[] = [];
     for (const c of criteria) {
       if (c.id === 'category' || c.id === 'catégorie') {
-        const cat = c.parameters?.category as string | undefined;
-        if (cat) categories.push(cat);
+        const preferredValues = (c.parameters?.preferredValues as string[] | undefined) ?? [];
+        for (const value of preferredValues) {
+          if (DOMAIN_PRODUCT_CATEGORIES.has(value)) categories.push(value);
+        }
       }
     }
 
@@ -814,14 +970,16 @@ export class CapucineEngine {
   private async discoverWithEscalation(
     initialPlan: SearchPlan,
     queryText: string,
-    phaseTerms?: PhaseTerms
+    phaseTerms?: PhaseTerms,
+    language?: SupportedLanguage,
+    additionalSearchLanguages?: SupportedLanguage[]
   ): Promise<{ discovery: DiscoveryResult; finalPlan: SearchPlan }> {
     let currentPlan = initialPlan;
     let accumulated: DiscoveryResult['candidates'] = [];
     let lastResult: DiscoveryResult | undefined;
 
     for (let attempt = 0; attempt <= 4; attempt++) {
-      const criteria = this.planToDiscoveryCriteria(currentPlan, queryText, phaseTerms);
+      const criteria = this.planToDiscoveryCriteria(currentPlan, queryText, phaseTerms, language, additionalSearchLanguages);
       const result = await this.discoveryOrchestrator.discover(criteria);
 
       accumulated = [...accumulated, ...result.candidates];
@@ -852,7 +1010,7 @@ export class CapucineEngine {
         lastResult ?? {
           id: `discovery-exhausted-${Date.now()}`,
           timestamp: new Date(),
-          criteria: this.planToDiscoveryCriteria(currentPlan, queryText),
+          criteria: this.planToDiscoveryCriteria(currentPlan, queryText, undefined, language, additionalSearchLanguages),
           candidates: [],
           statistics: {
             queriedSources: 0,
@@ -881,8 +1039,18 @@ export class CapucineEngine {
    * The plan carries rich context (rarity, escalation policy, multi-level strategy).
    * DiscoveryCriteria is what individual strategies understand.
    */
-  private planToDiscoveryCriteria(plan: SearchPlan, queryText: string, phaseTerms?: PhaseTerms): DiscoveryCriteria {
+  private planToDiscoveryCriteria(
+    plan: SearchPlan,
+    queryText: string,
+    phaseTerms?: PhaseTerms,
+    language?: SupportedLanguage,
+    additionalSearchLanguages?: SupportedLanguage[]
+  ): DiscoveryCriteria {
     const criteria: DiscoveryCriteria = {};
+    if (language) criteria.language = language;
+    if (additionalSearchLanguages && additionalSearchLanguages.length > 0) {
+      criteria.internationalLanguages = additionalSearchLanguages;
+    }
 
     // Keywords: phase-specific term set if we have phaseTerms; otherwise all terms.
     // Phase 1 sends only the most specific refs. Each level adds breadth.
@@ -911,6 +1079,13 @@ export class CapucineEngine {
     // Categories
     if (plan.query.categories && plan.query.categories.length > 0) {
       criteria.categories = plan.query.categories;
+    }
+
+    // Hard constraints, passed through unchanged so discovery strategies that
+    // build multiple complementary queries (SearchStrategyPlanner) can derive
+    // a technical-specs query from whatever numeric constraints are present.
+    if (plan.hardConstraints.length > 0) {
+      criteria.hardConstraints = plan.hardConstraints;
     }
 
     // Price range

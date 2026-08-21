@@ -262,6 +262,11 @@ export interface QueryAnalysis {
   detectedCategories: {
     category: string;
     confidence: number; // 0-1
+    /** 'domain' = a real Capucine catalog category (e.g. 'ordinateur_portable');
+     *  'generic' = a broad classification (e.g. 'electronics') that must never
+     *  outrank a domain match just because it scored a higher confidence ratio
+     *  on a smaller keyword list — see extractCategories() in request-interpreter.ts. */
+    kind: 'domain' | 'generic';
   }[];
 
   // Ambiguity summary

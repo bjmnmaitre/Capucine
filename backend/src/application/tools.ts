@@ -389,6 +389,22 @@ export class ToolRegistry {
   }
 
   /**
+   * List the names of registered web-search sources (tools named 'web_search'
+   * or 'web_search_<something>' by convention), filtered to those currently
+   * available() — never returns a name that's registered but not configured.
+   *
+   * This is how RealWebDiscoveryStrategy discovers "which Web sources can I
+   * query right now" instead of hardcoding a single 'web_search' tool name —
+   * a future adapter just registers under 'web_search_<name>' and is picked
+   * up automatically, no discovery-engine changes required.
+   */
+  listWebSearchTools(): string[] {
+    return [...this.registry.entries()]
+      .filter(([name, reg]) => (name === 'web_search' || name.startsWith('web_search_')) && reg.tool.available())
+      .map(([name]) => name);
+  }
+
+  /**
    * List all registered tools with their status.
    */
   listTools(): Array<{ name: string; description: string; available: boolean; stats: { calls: number; errors: number; errorRate: number } }> {
@@ -492,12 +508,23 @@ export interface WebSearchOutput {
  * If no adapter is injected, it is NOT_EXECUTABLE (returns API_KEY_MISSING).
  */
 export class WebSearchTool implements Tool<WebSearchParams, WebSearchOutput> {
-  readonly name = 'web_search';
+  readonly name: string;
   readonly description = 'Search the web for product pages, reviews, and prices';
   readonly version = '1.0.0';
   readonly requiresApiKey = true;
 
-  constructor(private readonly adapter?: WebSearchAdapter) {}
+  /**
+   * @param adapter - the concrete search backend for this tool instance.
+   * @param name - registry name for this source. Defaults to 'web_search'
+   *   (single-source, fully backward compatible). To register several
+   *   sources side by side (multi-source discovery), pass a distinct name
+   *   per instance — see ToolRegistry.listWebSearchTools() and
+   *   buildDefaultToolRegistry(), which does this automatically for each
+   *   configured adapter (e.g. 'web_search_brave_search', 'web_search_serper').
+   */
+  constructor(private readonly adapter?: WebSearchAdapter, name = 'web_search') {
+    this.name = name;
+  }
 
   available(): boolean {
     return this.adapter?.isConfigured() ?? false;
@@ -511,7 +538,7 @@ export class WebSearchTool implements Tool<WebSearchParams, WebSearchOutput> {
         success: false,
         error: 'WebSearchTool is NOT_EXECUTABLE: no adapter configured or API key missing. Set BRAVE_API_KEY or SERPER_API_KEY environment variable.',
         errorCode: 'API_KEY_MISSING',
-        provenance: { source: 'web_search', retrievedAt: new Date() },
+        provenance: { source: this.name, retrievedAt: new Date() },
         durationMs: 0,
         fromCache: false,
         toolName: this.name,
@@ -707,13 +734,27 @@ export interface WebSearchAdapter {
 /**
  * Build a ToolRegistry pre-populated with the standard Capucine tools.
  *
- * @param webSearchAdapter - Optional web search adapter.
- *   If absent, WebSearchTool is registered but NOT_EXECUTABLE.
+ * @param webSearchAdapter - Optional web search adapter(s).
+ *   - Omitted: WebSearchTool registered as 'web_search', NOT_EXECUTABLE.
+ *   - Single adapter: registered as 'web_search' (unchanged, backward compatible).
+ *   - Array of adapters: MULTI-SOURCE — each is registered under its own
+ *     'web_search_<adapterName>' name (e.g. 'web_search_brave_search',
+ *     'web_search_serper'), so RealWebDiscoveryStrategy can query all of
+ *     them via registry.listWebSearchTools(). The registry itself stays
+ *     generic — nothing here hardcodes "Brave" or "Serper"; a third adapter
+ *     is picked up the same way with zero changes to this function.
  */
-export function buildDefaultToolRegistry(webSearchAdapter?: WebSearchAdapter): ToolRegistry {
+export function buildDefaultToolRegistry(webSearchAdapter?: WebSearchAdapter | WebSearchAdapter[]): ToolRegistry {
   const registry = new ToolRegistry();
 
-  registry.register(new WebSearchTool(webSearchAdapter));
+  if (Array.isArray(webSearchAdapter)) {
+    for (const adapter of webSearchAdapter) {
+      const suffix = adapter.adapterName.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+      registry.register(new WebSearchTool(adapter, `web_search_${suffix}`));
+    }
+  } else {
+    registry.register(new WebSearchTool(webSearchAdapter));
+  }
   registry.register(new ProductSearchTool());
   registry.register(new ImageAnalysisTool());
 

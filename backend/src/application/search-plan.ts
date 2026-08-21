@@ -321,10 +321,15 @@ export class SearchPhaseQueryBuilder {
       ...alternatives.filter(t => !exactRefs.includes(t) && !brandModelCombos.includes(t)),
     ];
 
-    // Category terms: non-model primary terms (brand names, category words)
+    // Category terms: non-model primary terms (brand names, category words).
+    // query.categories holds internal catalog ids (e.g. 'ordinateur_portable'
+    // — underscored, matching DiscoveryCriteria's exact-match filter) — sent
+    // literally to a real Web search engine that'd be a near-useless token,
+    // so it's turned into words here, at the point it becomes a search term,
+    // rather than carrying two different formats through SearchPlan.
     const categoryTerms = primary
       .filter(t => !this.looksLikeModelRef(t) && t.length > 2)
-      .concat(query.categories ?? []);
+      .concat((query.categories ?? []).map(c => c.replace(/_/g, ' ')));
 
     // Multilingual: explicit languages from query (populated externally)
     const multilingualTerms = query.languages && query.languages.length > 1

@@ -27,6 +27,55 @@ import {
   QueryValidationWarning,
 } from './request';
 import { PreferenceCriterion, PreferenceLevel } from '../domain/types';
+import { SupportedCountry } from './i18n';
+import { RankingPreference } from './ranking-preference';
+
+// ============================================================================
+// CATEGORY VOCABULARY
+//
+// Split in two, not one bag of keywords, because they answer different
+// questions and must never be ranked against each other by raw confidence:
+//   - DOMAIN: real Capucine catalog categories. These are what
+//     DiscoveryCriteria.categories' hard filter and in-memory-discovery.ts's
+//     `entry.category` actually index offers by — a domain match is safe to
+//     use as a strong signal (see DOMAIN_PRODUCT_CATEGORIES, consumed by
+//     CapucineEngine.buildSearchPlan()).
+//   - GENERIC: broad classifications (electronics, clothing, ...) that exist
+//     for coverage on queries with no domain-specific vocabulary, but match
+//     NOTHING in the catalog — using one as a hard discovery filter would
+//     silently zero out every candidate. See extractCategories()'s
+//     domain-always-outranks-generic sort below.
+// Extending Capucine to a new product type is adding one line to
+// DOMAIN_CATEGORY_PATTERNS (+ optionally a matching catalog category) — not
+// building a new ontology.
+// ============================================================================
+
+const DOMAIN_CATEGORY_PATTERNS: Record<string, string[]> = {
+  smartphone: ['smartphone', 'téléphone', 'telephone', 'iphone', 'android', 'mobile', 'pixel', 'galaxy', 'fairphone'],
+  ordinateur_portable: ['ordinateur', 'laptop', 'pc portable', 'macbook', 'thinkpad', 'notebook', 'ultrabook'],
+  casque: ['casque', 'écouteur', 'ecouteur', 'headphone', 'airpod', 'earphone', 'audio', 'bluetooth'],
+  aspirateur_robot: ['aspirateur', 'robot aspirateur', 'vacuum', 'roomba', 'roborock'],
+  clavier: ['clavier', 'keyboard', 'keychron', 'mécanique', 'mecanique'],
+  livre: ['livre', 'roman', 'book', 'manga', 'bd', 'bande dessinée'],
+};
+
+const GENERIC_CATEGORY_PATTERNS: Record<string, string[]> = {
+  electronics: ['laptop', 'phone', 'tablet', 'computer', 'headphone'],
+  clothing: ['jacket', 'shirt', 'pants', 'dress', 'shoes'],
+  furniture: ['chair', 'table', 'desk', 'bookcase', 'sofa'],
+  appliances: ['microwave', 'blender', 'toaster', 'vacuum'],
+  food: ['cereal', 'chocolate', 'pasta', 'bread'],
+};
+
+/**
+ * Category ids known to correspond to real catalog/domain categories —
+ * safe to use as a hard discovery pre-filter (DiscoveryCriteria.categories).
+ * A GENERIC category (e.g. 'electronics') must never be used that way: no
+ * catalog entry carries that value, so it would silently discard every
+ * candidate rather than narrow the search. See buildSearchPlan() in
+ * capucine-engine.ts.
+ */
+export const DOMAIN_PRODUCT_CATEGORIES: ReadonlySet<string> = new Set(Object.keys(DOMAIN_CATEGORY_PATTERNS));
 
 // ============================================================================
 // REQUEST INTERPRETER INTERFACE
@@ -85,6 +134,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     // Extract from text
     if (query.text) {
       this.parseText(query.text, interpretation);
+      this.applyCategoryDetection(query.text, interpretation);
     }
 
     // Assess confidence
@@ -126,22 +176,44 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
 
     // Detect primary category from text and promote to criterion
     if (query.text) {
-      const detectedCategories = this.extractCategories(query.text);
-      if (detectedCategories.length > 0 && !interpretation.extractedCriteria.some(c => c.id === 'category')) {
-        const top = detectedCategories[0];
-        interpretation.category = top.category;
-        interpretation.extractedCriteria.push({
-          id: 'category',
-          name: 'Catégorie',
-          level: 'required',
-          parameters: { category: top.category },
-        });
-      }
+      this.applyCategoryDetection(query.text, interpretation);
     }
 
     this.assessConfidence(interpretation);
 
     return interpretation;
+  }
+
+  /**
+   * Detect the primary product category from text and, if found, promote it
+   * to a structured criterion — shared by interpret() and interpretSync() so
+   * both paths (the async HTTP pipeline and the sync test/CLI path) see the
+   * same category behavior.
+   *
+   * Wiring notes (why these exact parameters):
+   * - `preferredValues: [top.category]` — NOT a bespoke `category` key. This
+   *   is what makes AdmissibilityEngine.checkConstraint's existing
+   *   checkPreferredValues() branch actually run a real equality check
+   *   against offer.characteristics.category. Using an unread parameter key
+   *   here previously meant category was never actually verified — any
+   *   offer with *a* category value passed regardless of what it was.
+   * - `unknownPolicy: 'pass'` — category is a best-effort classification
+   *   hint, not a strictly verifiable spec value like RAM or screen size.
+   *   An offer with no explicit `category` characteristic must not be
+   *   rejected outright — see AdmissibilityEngine.resolveUnknownData().
+   */
+  private applyCategoryDetection(text: string, interpretation: InterpretedRequest): void {
+    const detectedCategories = this.extractCategories(text);
+    if (detectedCategories.length > 0 && !interpretation.extractedCriteria.some(c => c.id === 'category')) {
+      const top = detectedCategories[0];
+      interpretation.category = top.category;
+      interpretation.extractedCriteria.push({
+        id: 'category',
+        name: 'Catégorie',
+        level: 'required',
+        parameters: { preferredValues: [top.category], unknownPolicy: 'pass' },
+      });
+    }
   }
 
   async analyzeQuery(query: UserQuery): Promise<QueryAnalysis> {
@@ -250,10 +322,20 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
   }
 
   private parseText(text: string, interpretation: InterpretedRequest): void {
-    const lower = text.toLowerCase();
+    // Extract structured technical constraints FIRST. Each extractor returns
+    // the raw substring it matched (e.g. "moins de 1000 €", "14 pouces",
+    // "16 Go RAM") so those spans can be removed before free-text term
+    // extraction runs. Without this, extractProductTerms' model-number regex
+    // treats "16 Go" / "de 1000" as if they were product refs ("pouces-16",
+    // "de-1000") — constraints must never leak into search terms.
+    const matchedSpans: string[] = [];
+    const track = (span: string | null) => { if (span) matchedSpans.push(span); };
 
-    // Extract budget patterns
-    this.extractBudget(text, interpretation);
+    track(this.extractBudget(text, interpretation));
+    track(this.extractScreenSize(text, interpretation));
+    track(this.extractRAM(text, interpretation));
+    track(this.extractStorage(text, interpretation));
+    track(this.extractCondition(text, interpretation));
 
     // Extract must-have/required patterns
     this.extractRequirements(text, interpretation);
@@ -264,11 +346,25 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     // Extract exclusions
     this.extractExclusions(text, interpretation);
 
-    // Extract product terms (brand names + model numbers)
-    interpretation.suggestedSearchTerms = this.extractProductTerms(text);
+    // Extract product terms (brand names + model numbers) from the text with
+    // recognized constraint phrases stripped out — see comment above.
+    const sanitizedForTerms = this.stripMatchedSpans(text, matchedSpans);
+    interpretation.suggestedSearchTerms = this.extractProductTerms(sanitizedForTerms);
 
     // Detect ambiguities
     this.detectAmbiguities(text, interpretation);
+  }
+
+  /** Remove each matched constraint substring (first occurrence, case-insensitive) from text. */
+  private stripMatchedSpans(text: string, spans: string[]): string {
+    let result = text;
+    for (const span of spans) {
+      const idx = result.toLowerCase().indexOf(span.toLowerCase());
+      if (idx !== -1) {
+        result = result.slice(0, idx) + ' ' + result.slice(idx + span.length);
+      }
+    }
+    return result;
   }
 
   /**
@@ -347,13 +443,26 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
 
     // 4. Remaining meaningful words (length > 3, not stop words, not budget words)
     const EXTRACT_STOP = new Set([
-      // French
-      'cherche', 'veux', 'voudrais', 'besoin', 'trouver', 'acheter', 'avoir',
+      // French — shopping-intent verbs, every common conjugation actually
+      // seen in a natural request. Missing conjugations here is a REAL bug,
+      // not a cosmetic gap: any leaked verb becomes a required AND-keyword
+      // for local-catalog discovery (InMemoryDiscoveryStrategy requires
+      // every keyword to appear in a candidate's corpus), so a single
+      // missed verb like "trouve" silently zeroes out every result for an
+      // entirely ordinary query ("trouve-moi un ordinateur portable").
+      'cherche', 'cherches', 'cherchez', 'cherchons',
+      'trouve', 'trouves', 'trouvez', 'trouvons', 'trouver',
+      'montre', 'montres', 'montrez', 'montrons', 'montrer',
+      'recherche', 'recherches', 'recherchez', 'rechercher',
+      'affiche', 'affichez', 'afficher',
+      'propose', 'proposez', 'proposer',
+      'donne', 'donnez', 'donner',
+      'veux', 'voudrais', 'besoin', 'acheter', 'avoir', 'faut',
       'dans', 'pour', 'avec', 'sans', 'mais', 'plus', 'moins', 'très',
       'impérativement', 'absolument', 'obligatoirement', 'idéalement',
       'notamment', 'surtout', 'aussi', 'encore', 'toujours',
       // English
-      'looking', 'search', 'find', 'need', 'want', 'like', 'prefer',
+      'looking', 'search', 'find', 'show', 'need', 'want', 'like', 'prefer',
       'that', 'this', 'with', 'from', 'have', 'should', 'could', 'would',
       // Budget words
       'budget', 'euros', 'euro', 'maximum', 'minimum', 'maxi', 'moins', 'plus',
@@ -373,19 +482,21 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     return terms.slice(0, 8);
   }
 
+  /** Returns the matched substring (for span-stripping), or null if no budget pattern matched. */
   private extractBudget(
     text: string,
     interpretation: InterpretedRequest
-  ): void {
+  ): string | null {
     // Patterns: "under €500", "max 500", "less than 600", "up to 1000", "around 1000"
-    // French: "moins de 500€", "pas plus de 600", "budget de 800€", "jusqu'à 1000€"
+    // French: "moins de 500€", "pas plus de 600", "budget de 800€", "jusqu'à 1000€", "sous 1000€"
     const patterns = [
       // ── French patterns (checked first) ──
-      /moins\s+de\s*(\d+)\s*€?/i,
-      /pas\s+plus\s+de\s*(\d+)\s*€?/i,
-      /max(?:i(?:mum)?)?\s+(\d+)\s*€?/i,
-      /budget\s+(?:de\s+)?(\d+)\s*€?/i,
-      /jusqu[''`]?à\s*(\d+)\s*€?/i,
+      /moins\s+de\s*(\d+)(?:\s*€|\s*euros?)?/i,
+      /pas\s+plus\s+de\s*(\d+)(?:\s*€|\s*euros?)?/i,
+      /sous\s*(\d+)(?:\s*€|\s*euros?)?/i,
+      /max(?:i(?:mum)?)?\s+(\d+)(?:\s*€|\s*euros?)?/i,
+      /budget\s+(?:de\s+)?(\d+)(?:\s*€|\s*euros?)?/i,
+      /jusqu[''`]?à\s*(\d+)(?:\s*€|\s*euros?)?/i,
       /(\d+)\s*€\s*(?:max(?:i(?:mum)?)?|maxi)/i,
       /€\s*(\d+)/i,
       /(\d+)\s*euros?\s+(?:max|maxi|maximum)/i,
@@ -399,6 +510,15 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
       /roughly\s*€?(\d+)/i,
       /budget\s*€?(\d+)/i,
       /€(\d+)\s+(budget|max|limit)/i,
+      // ── Conversational refinement phrasing (e.g. "élargis à 1100€" as a
+      // follow-up to an existing search) — appended last so they never
+      // shadow the patterns above for ordinary single-turn queries; see
+      // CapucineEngine.interpretFollowUp(). ──
+      /[ée]largis?(?:\s+(?:le\s+)?budget)?\s*(?:à|a)\s*€?(\d+)/i,
+      /augmente[r]?\s+(?:le\s+)?budget\s*(?:à|a)\s*€?(\d+)/i,
+      /porte[r]?\s+(?:le\s+)?budget\s*(?:à|a)\s*€?(\d+)/i,
+      /increase\s+(?:the\s+)?budget\s+to\s*€?(\d+)/i,
+      /raise\s+(?:the\s+)?budget\s+to\s*€?(\d+)/i,
     ];
 
     for (const pattern of patterns) {
@@ -418,9 +538,167 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
             parameters: { maxBudget: amount, currency: 'EUR' },
           });
         }
-        break;
+        return match[0];
       }
     }
+    return null;
+  }
+
+  /**
+   * Extract screen size ("14 pouces", "14\"", "écran 14 pouces", "14 po", "14 inch").
+   * Pushed as a REQUIRED criterion — an explicitly stated screen size is a hard
+   * constraint, not a hint. characteristics.screen_size is normalized to a plain
+   * number of inches by NormalizationEngine before admissibility runs, so a small
+   * tolerance absorbs rounding (13.9" listed as "14 pouces" by a merchant, etc.).
+   * Returns the matched substring (for span-stripping), or null.
+   */
+  private extractScreenSize(text: string, interpretation: InterpretedRequest): string | null {
+    const patterns = [
+      /(\d+(?:[.,]\d+)?)\s*pouces?\b/i,
+      /(\d+(?:[.,]\d+)?)\s*po\b/i,
+      /(\d+(?:[.,]\d+)?)\s*"/,
+      /(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in)\b/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const value = parseFloat(match[1].replace(',', '.'));
+        if (!interpretation.extractedCriteria.some(c => c.id === 'screen_size')) {
+          interpretation.extractedCriteria.push({
+            id: 'screen_size',
+            name: "Taille d'écran",
+            level: 'required',
+            parameters: { exactValue: value, tolerance: 0.5, unit: 'pouces' },
+          });
+        }
+        return match[0];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extract RAM ("16 Go RAM", "16 Go de RAM", "16GB RAM", "RAM 16 Go").
+   * Pushed as a REQUIRED minimum — a stated RAM amount is read as "at least
+   * this much", which matches how shoppers phrase memory requirements.
+   * Returns the matched substring (for span-stripping), or null.
+   */
+  private extractRAM(text: string, interpretation: InterpretedRequest): string | null {
+    const patterns = [
+      /(\d+)\s*go\s*(?:de\s*)?ram\b/i,
+      /ram\s*(?:de\s*)?(\d+)\s*go\b/i,
+      /(\d+)\s*gb\s*(?:of\s*)?ram\b/i,
+      /ram\s*(?:of\s*)?(\d+)\s*gb\b/i,
+      // ── Conversational refinement phrasing — "uniquement 16 Go" /
+      // "finalement 32 Go" / "and with 32 GB" as a follow-up to an existing
+      // search never repeats the word "ram" (see CapucineEngine.interpretFollowUp()
+      // / ConversationManager.applyFollowUp()). Requiring the quantifier
+      // ("uniquement"/"seulement"/"finalement"/"and with"/"with") keeps this
+      // from firing on an ordinary standalone storage query like "clé USB
+      // 32 Go" — appended last so it never shadows the patterns above. ──
+      /\b(?:uniquement|seulement|finalement)\s+(\d+)\s*go\b/i,
+      /\b(?:uniquement|seulement|finalement)\s+(\d+)\s*gb\b/i,
+      /\bet\s+avec\s+(\d+)\s*go\b/i,
+      /\band\s+with\s+(\d+)\s*gb\b/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const value = parseInt(match[1], 10);
+        if (!interpretation.extractedCriteria.some(c => c.id === 'ram')) {
+          interpretation.extractedCriteria.push({
+            id: 'ram',
+            name: 'Mémoire RAM',
+            level: 'required',
+            parameters: { minValue: value, unit: 'GB' },
+          });
+        }
+        return match[0];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extract storage ("512 Go SSD", "SSD 512 Go", "1 To", "1TB").
+   * Pushed as a REQUIRED minimum, same rationale as RAM. To/TB is converted
+   * to GB using the ×1024 convention NormalizationEngine already uses
+   * (normalizeStorageValue in normalization-engine.ts) so both sides of the
+   * admissibility comparison agree on what "1 To" means.
+   * Returns the matched substring (for span-stripping), or null.
+   */
+  /**
+   * Extract product condition ("neuf", "reconditionné", "occasion" / "brand
+   * new", "refurbished", "used", "second-hand"). Pushed with unknownPolicy
+   * 'pass' — like category, this is a best-effort filter: today's discovery
+   * pipeline rarely extracts condition data from offers, so an offer with no
+   * condition data must stay UNKNOWN, never be treated as VIOLATED (INVARIANT:
+   * absence of data is never read as non-conformance). Also the extractor a
+   * conversational follow-up ("uniquement du neuf") relies on — see
+   * CapucineEngine.interpretFollowUp() / ConversationManager.applyFollowUp().
+   * Returns the matched substring (for span-stripping), or null.
+   */
+  private extractCondition(text: string, interpretation: InterpretedRequest): string | null {
+    const patterns: Array<{ re: RegExp; value: string }> = [
+      // Trailing \b (not \s|$) after an accented character never matches —
+      // \b requires a word/non-word transition, but JS regex treats accented
+      // letters as non-word too, so "é" followed by a space/end is a
+      // non-word→non-word "boundary" that never fires. Use a lookahead instead.
+      { re: /\breconditionn[ée]e?s?(?=\s|$)/i, value: 'refurbished' },
+      { re: /\brefurbished\b/i, value: 'refurbished' },
+      { re: /\boccasion\b/i, value: 'used' },
+      { re: /\busagé/i, value: 'used' },
+      { re: /\bsecond[\s-]hand\b/i, value: 'used' },
+      { re: /\bused\b/i, value: 'used' },
+      { re: /\bneuf(?:ve)?s?\b/i, value: 'new' },
+      { re: /\bbrand[\s-]new\b/i, value: 'new' },
+    ];
+
+    for (const { re, value } of patterns) {
+      const match = text.match(re);
+      if (match) {
+        if (!interpretation.extractedCriteria.some(c => c.id === 'condition')) {
+          interpretation.extractedCriteria.push({
+            id: 'condition',
+            name: 'État du produit',
+            level: 'required',
+            parameters: { preferredValues: [value], unknownPolicy: 'pass' },
+          });
+        }
+        return match[0];
+      }
+    }
+    return null;
+  }
+
+  private extractStorage(text: string, interpretation: InterpretedRequest): string | null {
+    const patterns: Array<{ re: RegExp; isTeraUnit: boolean }> = [
+      { re: /(\d+)\s*go\s*ssd\b/i, isTeraUnit: false },
+      { re: /ssd\s*(?:de\s*)?(\d+)\s*go\b/i, isTeraUnit: false },
+      { re: /(\d+)\s*gb\s*ssd\b/i, isTeraUnit: false },
+      { re: /(\d+(?:[.,]\d+)?)\s*to\b/i, isTeraUnit: true },
+      { re: /(\d+(?:[.,]\d+)?)\s*tb\b/i, isTeraUnit: true },
+    ];
+
+    for (const { re, isTeraUnit } of patterns) {
+      const match = text.match(re);
+      if (match) {
+        let value = parseFloat(match[1].replace(',', '.'));
+        if (isTeraUnit) value = Math.round(value * 1024);
+        if (!interpretation.extractedCriteria.some(c => c.id === 'storage')) {
+          interpretation.extractedCriteria.push({
+            id: 'storage',
+            name: 'Stockage',
+            level: 'required',
+            parameters: { minValue: value, unit: 'GB' },
+          });
+        }
+        return match[0];
+      }
+    }
+    return null;
   }
 
   private extractRequirements(
@@ -615,37 +893,59 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
 
   private extractCategories(
     text: string
-  ): { category: string; confidence: number }[] {
+  ): { category: string; confidence: number; kind: 'domain' | 'generic' }[] {
     // Category detection — French and English keywords
-    const categories: { category: string; confidence: number }[] = [];
+    const categories: { category: string; confidence: number; kind: 'domain' | 'generic' }[] = [];
 
-    const categoryPatterns: Record<string, string[]> = {
-      // ── Domain categories (Capucine catalog) ──
-      smartphone: ['smartphone', 'téléphone', 'telephone', 'iphone', 'android', 'mobile', 'pixel', 'galaxy', 'fairphone'],
-      ordinateur_portable: ['ordinateur', 'laptop', 'pc portable', 'macbook', 'thinkpad', 'notebook', 'ultrabook'],
-      casque: ['casque', 'écouteur', 'ecouteur', 'headphone', 'airpod', 'earphone', 'audio', 'bluetooth'],
-      aspirateur_robot: ['aspirateur', 'robot aspirateur', 'vacuum', 'roomba', 'roborock'],
-      clavier: ['clavier', 'keyboard', 'keychron', 'mécanique', 'mecanique'],
-      livre: ['livre', 'roman', 'book', 'manga', 'bd', 'bande dessinée'],
-      // ── Generic categories ──
-      electronics: ['laptop', 'phone', 'tablet', 'computer', 'headphone'],
-      clothing: ['jacket', 'shirt', 'pants', 'dress', 'shoes'],
-      furniture: ['chair', 'table', 'desk', 'bookcase', 'sofa'],
-      appliances: ['microwave', 'blender', 'toaster', 'vacuum'],
-      food: ['cereal', 'chocolate', 'pasta', 'bread'],
-    };
-
-    for (const [category, keywords] of Object.entries(categoryPatterns)) {
-      const matches = keywords.filter(kw => text.toLowerCase().includes(kw)).length;
+    for (const [category, keywords] of Object.entries(DOMAIN_CATEGORY_PATTERNS)) {
+      const matches = keywords.filter(kw => this.matchesAsWord(text, kw)).length;
       if (matches > 0) {
-        categories.push({
-          category,
-          confidence: Math.min(1, matches / keywords.length),
-        });
+        categories.push({ category, confidence: Math.min(1, matches / keywords.length), kind: 'domain' });
+      }
+    }
+    for (const [category, keywords] of Object.entries(GENERIC_CATEGORY_PATTERNS)) {
+      const matches = keywords.filter(kw => this.matchesAsWord(text, kw)).length;
+      if (matches > 0) {
+        categories.push({ category, confidence: Math.min(1, matches / keywords.length), kind: 'generic' });
       }
     }
 
+    // Domain categories ALWAYS outrank generic ones, regardless of confidence
+    // ratio. Without this, a query like "laptop" (1 keyword match) resolves
+    // to 'electronics' (1/5 = 0.2) over 'ordinateur_portable' (1/7 ≈ 0.143)
+    // purely because 'electronics' has a shorter keyword list — a smaller,
+    // less specific category winning BECAUSE it's less specific is backwards.
+    // A domain category IS the specific one: it's what the Capucine catalog
+    // (and DiscoveryCriteria.categories' hard filter — see buildSearchPlan())
+    // actually indexes offers by; 'electronics' matches nothing in the
+    // catalog at all. Within the same kind, highest confidence wins; ties
+    // keep their original relative order (Array.sort is stable).
+    categories.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'domain' ? -1 : 1;
+      return b.confidence - a.confidence;
+    });
+
     return categories;
+  }
+
+  /**
+   * Word-boundary keyword match (case-insensitive, French-accent-aware,
+   * optional trailing 's' for simple plurals).
+   *
+   * Plain `text.includes(keyword)` matches a keyword anywhere, including
+   * mid-word — e.g. "table" inside "por[table]" — which let short-keyword
+   * categories (like 'furniture': chair/table/desk/bookcase/sofa) win by
+   * accident over the actually-relevant category. `\b` isn't safe here
+   * either: JS's default \w doesn't include accented letters, so `\bécouteur\b`
+   * fails to match "un écouteur bluetooth" at all (no recognized boundary
+   * before 'é'). This uses an explicit French-aware "word character" class
+   * via lookaround instead.
+   */
+  private matchesAsWord(text: string, keyword: string): boolean {
+    const WORD_CHAR = 'a-z0-9à-ÿ';
+    const escaped = keyword.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(?<![${WORD_CHAR}])${escaped}s?(?![${WORD_CHAR}])`, 'i');
+    return pattern.test(text.toLowerCase());
   }
 }
 
@@ -777,3 +1077,273 @@ const ENGLISH_STOP_WORDS = new Set([
   'good', 'great', 'nice', 'best', 'high', 'low',
   'cheap', 'price', 'cost', 'expensive',
 ]);
+
+// ============================================================================
+// CONVERSATIONAL RANKING-PREFERENCE INTENT
+// ("montre-moi les moins chers" / "show me the cheapest ones")
+//
+// Pure, standalone functions (not part of BasicPatternInterpreter's
+// parseText pipeline) — same reasoning as extractCondition()/the budget-
+// refinement patterns: these are conversational-refinement phrasings, only
+// ever run via CapucineEngine.interpretFollowUp(), never mixed into a
+// single-turn product query's criteria extraction.
+// ============================================================================
+
+/**
+ * Detects a request to reorder results by price — returns the
+ * RankingPreference id (see ranking-preference.ts) or null when the text
+ * expresses no ranking intent. Never guesses BEST_VALUE/FASTEST_DELIVERY/
+ * BEST_RATED from vague wording — only PRICE_LOWEST has real signal
+ * patterns today, matching what ranking-preference.ts actually implements.
+ */
+export function extractRankingPreference(text: string): RankingPreference | null {
+  const PRICE_LOWEST_PATTERNS = [
+    /\bmoins\s+chers?\b/i,
+    /\ble\s+(?:moins|plus\s+bas)\s+cher\b/i,
+    /\bprix\s+(?:le\s+plus\s+bas|croissants?)\b/i,
+    /\b(?:classe|classer|classez|trie|trier|triez|tri[ée])[a-zàâäéèêëïîôùûüç -]*\bprix\b/i,
+    /\bdu\s+moins\s+cher\s+au\s+plus\s+cher\b/i,
+    /\bmeilleur\s+prix\b/i,
+    /\bcheapest\b/i,
+    /\blowest\s+price\b/i,
+    /\bsort(?:ed)?\s+by\s+price\b/i,
+    /\bbest\s+price\b/i,
+  ];
+  if (PRICE_LOWEST_PATTERNS.some(re => re.test(text))) return 'PRICE_LOWEST';
+  return null;
+}
+
+/**
+ * "montre-moi les 3 meilleures" / "top 3" / "les 3 premières" — limits how
+ * many results are presented, applied as a pure post-ranking slice (see
+ * server.ts) — never re-runs discovery/admissibility for fewer candidates.
+ * Returns null (never 0 or a guessed default) when no number is expressed.
+ */
+export function extractResultLimit(text: string): number | null {
+  const PATTERNS = [
+    /\b(?:montre|affiche|donne)[a-zàâäéèêëïîôùûüç -]*\bles?\s+(\d+)\s+(?:meilleur|premi)/i,
+    /\btop\s*(\d+)\b/i,
+    /\bles?\s+(\d+)\s+(?:meilleures?|premi[eè]res?|premiers?)\b/i,
+    /\bshow\s+(?:me\s+)?(?:the\s+)?(\d+)\s+best\b/i,
+  ];
+  for (const re of PATTERNS) {
+    const match = text.match(re);
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (n > 0) return n;
+    }
+  }
+  return null;
+}
+
+/**
+ * "exclue Amazon" / "sans Amazon" / "exclude Amazon" / "pas Fnac" — merchant
+ * EXCLUSION by free-text NAME (not a controlled catalog id — matched against
+ * offer.merchant.name case-insensitively at presentation time, see
+ * server.ts). Returns null when no exclusion is expressed. A merchant name
+ * is whatever word(s) follow the exclusion verb — capitalized-word
+ * heuristic keeps this from matching on lowercase common words.
+ */
+export function extractMerchantExclusion(text: string): string | null {
+  const PATTERNS = [
+    /\bexclu\w*\s+([A-ZÀ-Ý][\w.-]*(?:\s+[A-ZÀ-Ý][\w.-]*)?)/,
+    /\bsans\s+([A-ZÀ-Ý][\w.-]*(?:\s+[A-ZÀ-Ý][\w.-]*)?)\b(?!\s*frais)/,
+    /\bpas\s+([A-ZÀ-Ý][\w.-]*(?:\s+[A-ZÀ-Ý][\w.-]*)?)/,
+    /\bexclude\s+([A-ZÀ-Ý][\w.-]*(?:\s+[A-ZÀ-Ý][\w.-]*)?)/,
+    /\bwithout\s+([A-ZÀ-Ý][\w.-]*(?:\s+[A-ZÀ-Ý][\w.-]*)?)/,
+  ];
+  for (const re of PATTERNS) {
+    const match = text.match(re);
+    if (match) return match[1].trim();
+  }
+  return null;
+}
+
+/**
+ * "sans frais de livraison" / "livraison gratuite uniquement" / "free
+ * shipping only" — a real, checkable criterion (Offer.shippingCost IS
+ * populated by every discovery source that reports it — see
+ * AdmissibilityEngine's generic offer.characteristics[id] lookup). Returns
+ * a PreferenceCriterion the SAME WAY extractCondition()/applyCategoryDetection()
+ * do — unknownPolicy 'pass' since many offers legitimately have unknown
+ * shipping cost (see ConversationSession follow-up wiring), never treating
+ * an unreported shipping cost as a violation.
+ */
+export function extractFreeShippingIntent(text: string): PreferenceCriterion | null {
+  const PATTERNS = [
+    /\bsans\s+frais\s+de\s+livraison\b/i,
+    /\blivraison\s+gratuite\s+(?:uniquement|seulement)\b/i,
+    /\buniquement\s+(?:la\s+)?livraison\s+gratuite\b/i,
+    /\bfree\s+shipping\s+only\b/i,
+    /\bonly\s+free\s+shipping\b/i,
+  ];
+  if (!PATTERNS.some(re => re.test(text))) return null;
+  return {
+    id: 'shipping_cost',
+    name: 'Livraison gratuite',
+    level: 'required',
+    parameters: { exactValue: 0, unit: 'EUR', unknownPolicy: 'pass' },
+  };
+}
+
+/**
+ * "garde uniquement les offres livrables en France" / "livrable chez moi" /
+ * "deliverable to France" — takes `destinationCountry` explicitly (the
+ * criterion means nothing without it — "livrable" to WHERE?) and produces a
+ * criterion with `preferredValues: [destinationCountry]`, the SAME
+ * `offer.characteristics[id] === preferredValues[?]` comparison every other
+ * generic criterion uses (AdmissibilityEngine.checkPreferredValues) — a
+ * PREVIOUS version of this function omitted preferredValues entirely, which
+ * meant the criterion could never actually compare anything even once a
+ * data source populated `characteristics['deliversTo']` (fixed here).
+ *
+ * HONEST LIMITATION (still real, root-cause audited — see final report,
+ * megaprompt PARTIE 2 "PROBLÈME A"): no discovery source (local catalog
+ * fixtures, ProductPageExtractor) yet WRITES `characteristics['deliversTo']`
+ * — schema.org's OfferShippingDetails.shippingDestination is the correct
+ * real-world source for this (merchants that publish it), but extracting it
+ * is a separate, not-yet-implemented ProductPageExtractor enhancement. The
+ * criterion is now correctly FORMED and ready to compare the moment that
+ * data exists; today it still honestly resolves UNKNOWN (unknownPolicy
+ * 'pass') for every offer, never VIOLATED, never fabricated as SATISFIED.
+ */
+export function extractDeliverabilityIntent(text: string, destinationCountry: string): PreferenceCriterion | null {
+  const PATTERNS = [
+    /\blivrables?\s+(?:en|chez)\s+/i,
+    /\bdeliverable\s+(?:to|in)\s+/i,
+  ];
+  if (!PATTERNS.some(re => re.test(text))) return null;
+  return {
+    id: 'deliversTo',
+    name: 'Livrable à destination',
+    level: 'required',
+    parameters: { preferredValues: [destinationCountry], unknownPolicy: 'pass' },
+  };
+}
+
+/**
+ * Country-name recognition — small, controlled, FR/EN (extensible), NOT a
+ * general translator. Scoped to the countries CATEGORY_TRANSLATIONS in
+ * search-strategy-planner.ts already has query vocabulary for (de/es/it),
+ * plus pt/en — a targetCountry with no matching search-language support
+ * would silently produce no extra query, which is the correct honest
+ * behavior (see SearchStrategyPlanner.buildInternationalStrategies()).
+ */
+// Exported so product-page-extractor.ts can reuse the SAME name→code
+// dictionary when normalizing a merchant's JSON-LD-published shipping
+// destination (e.g. shippingDestination.addressCountry: "France") — one
+// controlled country-name dictionary, not two.
+export const COUNTRY_NAMES: Record<string, SupportedCountry> = {
+  allemagne: 'DE', germany: 'DE', deutschland: 'DE',
+  espagne: 'ES', spain: 'ES', españa: 'ES',
+  italie: 'IT', italy: 'IT', italia: 'IT',
+  portugal: 'PT',
+  'royaume-uni': 'GB', 'royaume uni': 'GB', angleterre: 'GB', 'united kingdom': 'GB', uk: 'GB', england: 'GB', britain: 'GB',
+  france: 'FR',
+};
+
+export interface InternationalIntent {
+  /** Countries explicitly named — empty if the text only broadens generically. */
+  targetCountries: SupportedCountry[];
+  /** "cherche partout en Europe" / "peu importe le pays" / "search abroad" —
+   *  broaden without a specific country. Resolved to a curated default set
+   *  by the caller (CapucineEngine), never an unbounded "every country". */
+  broaden: boolean;
+}
+
+/**
+ * Detects an international-search-scope follow-up ("cherche aussi en
+ * Allemagne", "also search Germany", "cherche partout en Europe"). Returns
+ * null when the text expresses no such intent — a plain "casque bluetooth"
+ * follow-up must never be misread as an international request.
+ */
+export function extractInternationalIntent(text: string): InternationalIntent | null {
+  const lower = text.toLowerCase();
+
+  // Requires a search/look/compare framing so an unrelated mention of a
+  // country name (rare, but possible) isn't misread as a scope change.
+  const FRAMING = /\b(?:cherche|regarde|compare|recherche|search|look|compare)\w*\b/i;
+  const BROADEN = /\b(?:partout|peu importe le pays|plusieurs pays|à l'étranger|a l'etranger|en europe|internationally|across europe|abroad|multiple countries|any country)\b/i;
+
+  const hasFraming = FRAMING.test(lower);
+  const broaden = BROADEN.test(lower);
+
+  const targetCountries: SupportedCountry[] = [];
+  if (hasFraming || broaden) {
+    for (const [name, code] of Object.entries(COUNTRY_NAMES)) {
+      const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (re.test(lower) && !targetCountries.includes(code)) targetCountries.push(code);
+    }
+  }
+
+  if (!hasFraming && !broaden) return null;
+  if (targetCountries.length === 0 && !broaden) return null; // framing alone ("cherche un casque") is not an international intent
+
+  return { targetCountries, broaden };
+}
+
+// ============================================================================
+// RETRY / RELAUNCH INTENT — "cherche ailleurs" / "trouve une meilleure offre"
+// (megaprompt PARTIE 3/4). Three DISTINCT intents, not one "try again"
+// bucket — see capucine-engine.ts's interpretFollowUp() / server.ts for how
+// each maps to a genuinely different, real mechanism:
+//   SEARCH_ELSEWHERE — avoid the merchants already shown (reuses the SAME
+//     excludedMerchantNames presentation filter as "exclue Amazon" — see
+//     ConversationSession).
+//   SEARCH_AGAIN — SEARCH_ELSEWHERE's merchant avoidance PLUS broadens the
+//     international search scope if it hasn't been already (reuses
+//     extractInternationalIntent's broaden mechanism — no new discovery
+//     engine).
+//   FIND_BETTER — avoids the exact PRODUCTS already shown (not merchants —
+//     a different offer from the SAME merchant is fine), keeping every
+//     existing constraint and the current ranking preference, so "better"
+//     is judged by whatever the user already asked for (cost if
+//     PRICE_LOWEST, relevance otherwise) — never a redefined notion of
+//     "better".
+// A bare re-run with IDENTICAL parameters would return IDENTICAL results
+// (CapucineEngine's ranking is deterministic — see determinism tests), so
+// every retry intent must change SOMETHING real, never just replay the
+// same search and call it a relaunch.
+// ============================================================================
+
+export type RetryIntent = 'SEARCH_AGAIN' | 'SEARCH_ELSEWHERE' | 'FIND_BETTER';
+
+export function extractRetryIntent(text: string): RetryIntent | null {
+  const FIND_BETTER_PATTERNS = [
+    /\bmeilleure?\s+offre\b/i,
+    /\btrouve\s+mieux\b/i,
+    /\bune\s+meilleure\s+offre\b/i,
+    /\bfind\s+(?:a\s+)?better\b/i,
+    /\bsomething\s+better\b/i,
+    /\bbetter\s+deal\b/i,
+  ];
+  if (FIND_BETTER_PATTERNS.some(re => re.test(text))) return 'FIND_BETTER';
+
+  const SEARCH_ELSEWHERE_PATTERNS = [
+    /\bcherch(?:e|ez|ons)\s+ailleurs\b/i,
+    /\bautres?\s+sites?\b/i,
+    /\bautres?\s+magasins?\b/i,
+    /\btrouve\s+autre\s+chose\b/i,
+    /\blook\s+elsewhere\b/i,
+    /\bother\s+(?:stores|websites|shops|sites)\b/i,
+    /\bfind\s+another\s+(?:one)?\b/i,
+  ];
+  if (SEARCH_ELSEWHERE_PATTERNS.some(re => re.test(text))) return 'SEARCH_ELSEWHERE';
+
+  const SEARCH_AGAIN_PATTERNS = [
+    /\b(?:cherche|regarde)[a-zàâäéèêëïîôùûüç -]*\bencore\b/i,
+    /\b(?:cherche|recherche)[a-zàâäéèêëïîôùûüç -]*\bdavantage\b/i,
+    // No leading \b before "é" — accented letters aren't \w in JS regex, so
+    // a word-boundary check right before one never fires (same fix as
+    // extractCondition()'s "reconditionné" pattern earlier in this file).
+    /élargis?\s+la\s+recherche\b/i,
+    /\bcontinue(?:r|z)?\b/i,
+    /\bd'?autres?\s+r[ée]sultats\b/i,
+    /\bsearch\s+again\b/i,
+    /\bsearch\s+more\b/i,
+    /\bkeep\s+searching\b/i,
+  ];
+  if (SEARCH_AGAIN_PATTERNS.some(re => re.test(text))) return 'SEARCH_AGAIN';
+
+  return null;
+}

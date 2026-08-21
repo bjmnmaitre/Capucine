@@ -261,3 +261,20 @@ export function detectWebSearchAdapter(): WebSearchAdapter {
   // Neither key available — return a NoOp to make status explicit
   return new NoOpWebSearchAdapter();
 }
+
+/**
+ * Detect ALL web search adapters actually configured (not just the
+ * highest-priority one) — lets ToolRegistry register a source PER configured
+ * adapter, so RealWebDiscoveryStrategy can query them in parallel instead of
+ * being limited to whichever one detectWebSearchAdapter() would have picked.
+ *
+ * Returns [NoOpWebSearchAdapter] (never an empty array) when nothing is
+ * configured, so callers always have at least one explicit, honest source to
+ * register rather than special-casing "zero adapters".
+ */
+export function detectWebSearchAdapters(): WebSearchAdapter[] {
+  const adapters: WebSearchAdapter[] = [];
+  if (process.env['BRAVE_API_KEY']) adapters.push(new BraveSearchAdapter());
+  if (process.env['SERPER_API_KEY']) adapters.push(new SerperAdapter());
+  return adapters.length > 0 ? adapters : [new NoOpWebSearchAdapter()];
+}

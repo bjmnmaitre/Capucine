@@ -1115,17 +1115,31 @@ export class InMemoryDiscoveryStrategy implements IDiscoveryStrategy {
     const allMatched: Array<{ offer: Offer; matchScore: number; matchReason: string }> = [];
 
     for (const entry of this.catalog) {
-      // 1. Category filter
+      // 1. Category filter — underscore/space-agnostic (accepts 'ordinateur_portable'
+      // or 'ordinateur portable' as the same id, since callers may pass
+      // either the raw catalog id or a human-normalized form).
       if (criteria.categories && criteria.categories.length > 0) {
-        if (!criteria.categories.includes(entry.category)) continue;
+        const normalize = (s: string) => s.replace(/[_\s]+/g, ' ').trim().toLowerCase();
+        const wanted = criteria.categories.map(normalize);
+        if (!wanted.includes(normalize(entry.category))) continue;
       }
 
-      // 2. Keyword filter (all keywords must appear)
+      // 2. Keyword filter (all keywords must appear). Matches a keyword
+      // that's a simple French/English plural of a corpus word too (e.g.
+      // "casques" against a corpus that only says "casque") — the fixture
+      // corpora are hand-written in singular form, but a real user query
+      // naturally says "montre-moi des casques". A REAL search engine
+      // (Brave/Serper — see RealWebDiscoveryStrategy) already stems this
+      // itself, so this only matters for the local demo catalog's simple
+      // substring matcher, never the real Web path.
       if (criteria.keywords && criteria.keywords.length > 0) {
-        const corpus = entry.searchCorpus + ' ' + entry.tags.join(' ');
-        const allMatch = criteria.keywords.every(kw =>
-          corpus.toLowerCase().includes(kw.toLowerCase())
-        );
+        const corpus = (entry.searchCorpus + ' ' + entry.tags.join(' ')).toLowerCase();
+        const allMatch = criteria.keywords.every(kw => {
+          const k = kw.toLowerCase();
+          if (corpus.includes(k)) return true;
+          const singular = k.replace(/s$/, '');
+          return singular.length >= 3 && singular !== k && corpus.includes(singular);
+        });
         if (!allMatch) continue;
       }
 

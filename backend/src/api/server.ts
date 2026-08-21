@@ -25,11 +25,13 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { CapucineEngine, SearchRequest } from '../application/capucine-engine';
 import { buildDefaultToolRegistry } from '../application/tools';
-import { detectWebSearchAdapter } from '../application/web-search-adapters';
+import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import { buildAIOrchestrator } from '../application/ai-providers';
 import { InMemoryProfileStore } from '../application/profile-store';
-import { ConversationManager } from '../application/conversation-manager';
+import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality } from '../domain/types';
+import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
+import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE } from '../application/ranking-preference';
 
 // ============================================================================
 // APP FACTORY
@@ -62,10 +64,12 @@ export function buildApp(): express.Application {
     console.log(`[CapucineAPI] AI providers: MockAI (set ANTHROPIC_API_KEY or OPENAI_API_KEY for real AI)`);
   }
 
-  // Web search adapter status
-  const webAdapter = detectWebSearchAdapter();
-  if (webAdapter.isConfigured()) {
-    console.log(`[CapucineAPI] Web search: ${webAdapter.adapterName} (configured)`);
+  // Web search adapters — ALL configured sources, not just the first one, so
+  // ToolRegistry can register each as its own source (multi-source discovery).
+  const webAdapters = detectWebSearchAdapters();
+  const configuredAdapters = webAdapters.filter(a => a.isConfigured());
+  if (configuredAdapters.length > 0) {
+    console.log(`[CapucineAPI] Web search: ${configuredAdapters.map(a => a.adapterName).join(', ')} (configured)`);
   } else {
     console.log(`[CapucineAPI] Web search: NOT_EXECUTABLE (set BRAVE_API_KEY or SERPER_API_KEY)`);
   }
@@ -81,7 +85,7 @@ export function buildApp(): express.Application {
   // Tool registry — the single registry for this server process.
   // Shared with the engine so both use the same audit log and rate-limit counters.
   // In production this is the ONLY path tool calls take (enforces timeout/rate-limit/audit).
-  const toolRegistry = buildDefaultToolRegistry(webAdapter);
+  const toolRegistry = buildDefaultToolRegistry(webAdapters);
 
   // Engine (one instance per process, shared across requests)
   // Injecting toolRegistry ensures CapucineEngine routes all web search calls through it.
@@ -110,8 +114,8 @@ export function buildApp(): express.Application {
           blocked: aiSetup.blocked,
         },
         webSearch: {
-          status: webAdapter.isConfigured() ? 'configured' : 'not_configured',
-          adapter: webAdapter.adapterName,
+          status: configuredAdapters.length > 0 ? 'configured' : 'not_configured',
+          adapters: webAdapters.map(a => a.adapterName),
         },
       },
     });
@@ -244,12 +248,16 @@ export function buildApp(): express.Application {
   app.post('/search', async (req: Request, res: Response, next: NextFunction) => {
     try {
       // ── Validate ──────────────────────────────────────────────────────────
-      const { query, requestId, userId, criteria, skipInterpreter } = req.body as {
+      const { query, requestId, userId, criteria, skipInterpreter, language } = req.body as {
         query?: string;
         requestId?: string;
         userId?: string;
         criteria?: PreferenceCriterion[];
         skipInterpreter?: boolean;
+        /** Optional — BCP-47/ISO 639-1 (e.g. "fr", "en-US"). Never required:
+         *  detected from `query` when absent, defaulting to 'fr' (see
+         *  CapucineEngine.search()'s resolveLanguage()). */
+        language?: string;
       };
 
       if (!query || typeof query !== 'string' || query.trim().length === 0) {
@@ -279,15 +287,25 @@ export function buildApp(): express.Application {
         profile,
         preInterpretedCriteria: Array.isArray(criteria) ? criteria : [],
         skipAIInterpretation: skipInterpreter === true,
+        language,
       };
 
       // ── Execute pipeline ──────────────────────────────────────────────────
       const result = await engine.search(searchRequest);
 
-      // ── Create clarification session (if needed) ──────────────────────────
-      // Session is created only when clarification opportunities exist.
-      // The sessionId is returned to the client for use with POST /clarify.
+      // ── Create a continuable session ────────────────────────────────────────
+      // createSession() only returns an id when the backend has an actual
+      // clarification question to ask (unchanged contract). Every OTHER
+      // completed search still gets a session via createFollowUpSession(),
+      // so the user can continue conversationally afterwards — "uniquement
+      // du neuf", "élargis à 1100€", "et avec 32 Go ?" — via POST /clarify
+      // without a questionId (see below). The sessionId is always returned.
       const sessionId = conversationManager.createSession(
+        effectiveUserId,
+        query.trim(),
+        profile,
+        result
+      ) ?? conversationManager.createFollowUpSession(
         effectiveUserId,
         query.trim(),
         profile,
@@ -295,7 +313,7 @@ export function buildApp(): express.Application {
       );
 
       // ── Serialize ─────────────────────────────────────────────────────────
-      return res.json(serializeResult(result, sessionId ?? undefined));
+      return res.json(serializeResult(result, sessionId));
 
     } catch (err) {
       return next(err);
@@ -305,19 +323,34 @@ export function buildApp(): express.Application {
   /**
    * POST /clarify
    *
-   * Continue a search session by answering a clarification question.
+   * Continues a search session — either by answering a specific clarification
+   * question the backend asked, OR by sending a free-form conversational
+   * follow-up that refines the current search (megaprompt PARTIE 1/3):
+   * "uniquement du neuf", "élargis à 1100€", "et avec 32 Go ?".
    *
    * Request body:
    * {
-   *   "sessionId": "sess-...",      // required — from a previous POST /search response
-   *   "questionId": "clarif-0",     // required — which question is being answered
-   *   "answer": "500 euros max"     // required — the user's free-text answer
+   *   "sessionId": "sess-...",         // required — from any previous POST /search
+   *   "questionId": "clarif-0",        // required — see FOLLOWUP_QUESTION_ID below
+   *   "answer": "500 euros max"        // required — the user's free-text answer/follow-up
    * }
    *
-   * Response: same shape as POST /search, with updated results reflecting the answer.
+   * questionId selects which of the two modes this is:
+   *   - a real pending question id (from clarifications.questions[].id) → answers
+   *     that specific question (unchanged behavior/contract).
+   *   - the FOLLOWUP_QUESTION_ID sentinel → `answer` is interpreted as a free-form
+   *     refinement of the CURRENT search (works even when there was no pending
+   *     clarification question — every POST /search response now carries a
+   *     continuable sessionId, see createFollowUpSession()).
+   * questionId stays REQUIRED either way (never silently inferred) so a
+   * client always states explicitly which mode it means.
    *
-   * INVARIANT 5: The answer is appended to context — the original query is NEVER modified.
-   * The engine re-runs interpretation on the enriched text, which may produce refined criteria.
+   * Response: same shape as POST /search, with updated results.
+   *
+   * INVARIANT 5: The original query text is NEVER modified — clarification
+   * answers extend it via enrichedQuery; follow-ups extend the criteria
+   * snapshot instead (see ConversationManager.applyFollowUp()). Either way
+   * the engine re-runs the real pipeline — no shortcut, no fabricated delta.
    */
   app.post('/clarify', async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -346,7 +379,70 @@ export function buildApp(): express.Application {
         });
       }
 
-      // Apply the answer → enriched query
+      if (questionId === FOLLOWUP_QUESTION_ID) {
+        // ── Free-form conversational follow-up ──────────────────────────────
+        const followUp = engine.interpretFollowUp(answer, session.userId, session.destinationCountry);
+        const followUpResult = conversationManager.applyFollowUp(sessionId, answer, followUp.criteria, undefined, {
+          rankingPreference: followUp.rankingPreference ?? undefined,
+          internationalIntent: followUp.internationalIntent ?? undefined,
+          resultLimit: followUp.resultLimit ?? undefined,
+          excludeMerchantName: followUp.excludeMerchantName ?? undefined,
+          retryIntent: followUp.retryIntent ?? undefined,
+        });
+        const updatedSession = followUpResult.updatedSession;
+
+        // targetCountries → search languages (COUNTRY_TO_SEARCH_LANGUAGE),
+        // minus the language already used for phase 1-2 — a "cherche aussi
+        // en France" on a French search would otherwise ask
+        // RealWebDiscoveryStrategy to redundantly re-query in French.
+        const additionalSearchLanguages = [...new Set(
+          updatedSession.targetCountries
+            .map(c => COUNTRY_TO_SEARCH_LANGUAGE[c])
+            .filter((l): l is SupportedLanguage => !!l && l !== updatedSession.language)
+        )];
+
+        const searchRequest: SearchRequest = {
+          // session.searchText (NOT originalQuery) — clean product terms
+          // only, no budget/RAM noise. preInterpretedCriteria makes the
+          // engine skip re-interpretation, so queryText's only remaining
+          // job this turn is driving discovery search terms; see
+          // ConversationSession.searchText's doc comment for why the raw
+          // original text would otherwise pollute them.
+          queryText: session.searchText,
+          requestId: `followup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          profile: session.profile,
+          preInterpretedCriteria: followUpResult.mergedCriteria,
+          skipAIInterpretation: true,
+          // Explicit — searchText is often too short for reliable re-detection
+          // (see ConversationSession.language's doc comment). Reuses the
+          // language resolved for the ORIGINAL search instead.
+          language: session.language,
+          additionalSearchLanguages,
+        };
+
+        const result = await engine.search(searchRequest);
+        conversationManager.updateResult(sessionId, result);
+
+        return res.json(serializeResult(result, sessionId, {
+          turn: updatedSession.turn,
+          originalQuery: session.originalQuery,
+          answeredQuestions: updatedSession.answeredQuestions.map(aq => ({
+            questionId: aq.questionId,
+            question: aq.question,
+            answer: aq.answer,
+          })),
+          remainingQuestions: updatedSession.unansweredQuestions.length,
+        }, {
+          rankingPreference: updatedSession.rankingPreference,
+          targetCountries: updatedSession.targetCountries,
+          destinationCountry: updatedSession.destinationCountry,
+          resultLimit: updatedSession.resultLimit,
+          excludedMerchantNames: updatedSession.excludedMerchantNames,
+          excludedOfferIds: updatedSession.excludedOfferIds,
+        }));
+      }
+
+      // ── Answering a specific pending clarification question (unchanged) ──
       let applyResult;
       try {
         applyResult = conversationManager.applyAnswer(sessionId, questionId, answer);
@@ -421,41 +517,114 @@ interface ConversationContext {
 }
 
 /**
- * Translates the internal MatchQuality value into a user-facing label.
- * The interface must NEVER show the raw enum value (e.g. 'exact_match') —
- * see mégaprompt §9.
+ * Translates the internal MatchQuality value into a user-facing label, in
+ * `language`. The interface must NEVER show the raw enum value (e.g.
+ * 'exact_match') — see mégaprompt §9. Codes registered by
+ * explanation-engine.ts (MATCH_EXACT etc.) so fr/en (and future locales)
+ * agree in one place.
  */
-function describeMatchQuality(quality: SearchMatchQuality | undefined): string {
+function describeMatchQuality(quality: SearchMatchQuality | undefined, language: SupportedLanguage): string {
   switch (quality) {
     case 'exact_match':
-      return 'Correspondance exacte';
+      return translate('MATCH_EXACT', language);
     case 'close_match':
-      return 'Très bonne correspondance';
+      return translate('MATCH_CLOSE', language);
     case 'partial_match':
-      return 'Correspondance partielle';
+      return translate('MATCH_PARTIAL', language);
     case 'alternative':
-      return 'Alternative';
+      return translate('MATCH_ALTERNATIVE', language);
     case 'unknown':
     default:
-      return 'Informations insuffisantes';
+      return translate('MATCH_UNKNOWN', language);
   }
 }
 
 function serializeResult(
   result: ReturnType<CapucineEngine['searchSync']>,
   sessionId?: string,
-  conversation?: ConversationContext
+  conversation?: ConversationContext,
+  sessionState?: {
+    rankingPreference: RankingPreference;
+    targetCountries: string[];
+    destinationCountry: string;
+    resultLimit?: number;
+    excludedMerchantNames?: string[];
+    excludedOfferIds?: string[];
+  }
 ): object {
+  // "montre-moi les moins chers" reorders PriorityEngine's already-ranked
+  // output using real cost (product + shipping + known fees), it never
+  // re-evaluates admissibility/relevance — see ranking-preference.ts. Every
+  // result carries its CostBreakdown regardless of preference, since "is
+  // the cost known" is useful information on its own (mégaprompt PARTIE 10).
+  const rankingPreference = sessionState?.rankingPreference ?? DEFAULT_RANKING_PREFERENCE;
+  let preferenceResult = sortByPreference(result.ranking.rankedOffers, rankingPreference);
+
+  // "exclue Amazon" — filtered at presentation time (free-text merchant
+  // name, not a catalog id — see extractMerchantExclusion()). Applied AFTER
+  // ranking, never re-runs discovery/admissibility for fewer candidates.
+  const excludedNames = sessionState?.excludedMerchantNames ?? [];
+  if (excludedNames.length > 0) {
+    const excludedOffers = preferenceResult.offers.filter(ro =>
+      excludedNames.some(name => ro.offer.merchant.name.toLowerCase().includes(name.toLowerCase()))
+    );
+    preferenceResult = {
+      ...preferenceResult,
+      offers: preferenceResult.offers.filter(ro => !excludedOffers.includes(ro)),
+    };
+  }
+
+  // "trouve une meilleure offre" — excludes PRODUCTS already shown across
+  // this conversation (see ConversationSession.excludedOfferIds /
+  // SeenOffers), so a re-run genuinely surfaces something new instead of
+  // repeating the same top result CapucineEngine's deterministic ranking
+  // would otherwise produce again.
+  const excludedProductIds = sessionState?.excludedOfferIds ?? [];
+  if (excludedProductIds.length > 0) {
+    preferenceResult = {
+      ...preferenceResult,
+      offers: preferenceResult.offers.filter(ro => !excludedProductIds.includes(ro.offer.productId)),
+    };
+  }
+
+  // "montre-moi les 3 meilleures" — a pure presentation cap, applied last
+  // (after reordering/exclusion) so it always caps the FINAL list the user
+  // actually sees.
+  const resultLimit = sessionState?.resultLimit;
+  if (resultLimit !== undefined) {
+    preferenceResult = { ...preferenceResult, offers: preferenceResult.offers.slice(0, resultLimit) };
+  }
+
   return {
     requestId: result.requestId,
     completedAt: result.completedAt.toISOString(),
     durationMs: result.durationMs,
 
+    // Effective query language actually used to drive interpretation and
+    // Web-search phrasing (see CapucineEngine.search()'s resolveLanguage()) —
+    // explicit request.language > detected from query text > profile > 'fr'.
+    language: result.language,
+
     // Multi-turn session (present only when there are/were clarification questions)
     session: sessionId ? { sessionId, ...(conversation ?? {}) } : null,
 
-    // Ranked results (most relevant first)
-    results: result.ranking.rankedOffers.map((ro, idx) => ({
+    // rankingPreference: which preference produced this order (`applied`
+    // is false for a preference that's accepted but not yet implemented —
+    // e.g. BEST_VALUE — so the order silently stayed BEST_MATCH; never
+    // claim a preference was honored when it wasn't).
+    rankingPreference: { preference: preferenceResult.preference, applied: preferenceResult.applied },
+
+    // destination: where the user would receive the product (FR by default)
+    // vs. which countries Capucine actually searched IN this turn — kept
+    // separate on purpose (mégaprompt PARTIE 4: never conflate destination
+    // with search scope).
+    destination: {
+      destinationCountry: sessionState?.destinationCountry ?? DEFAULT_COUNTRY,
+      targetCountries: sessionState?.targetCountries ?? [DEFAULT_COUNTRY],
+    },
+
+    // Ranked results (in the order `rankingPreference` above produced)
+    results: preferenceResult.offers.map((ro, idx) => ({
       rank: idx + 1,
       offerId: ro.offer.id,
       productId: ro.offer.productId,
@@ -463,16 +632,68 @@ function serializeResult(
         id: ro.offer.merchant.id,
         name: ro.offer.merchant.name,
       },
+      // verifiedAt/source let a client honestly say "prix vérifié sur cette
+      // page à telle date" (mégaprompt PARTIE 10) instead of an unqualified
+      // price — null whenever the price's own provenance wasn't recorded
+      // (e.g. the local in-memory catalog's fixed test prices), never guessed.
       price: ro.offer.price.value !== null ? {
         amount: ro.offer.price.value,
         currency: ro.offer.currency,
         status: ro.offer.price.status,
+        verifiedAt: ro.offer.price.provenance?.retrievedAt?.toISOString() ?? null,
+        source: ro.offer.price.provenance?.source ?? null,
       } : null,
+      // Real total cost (CostEngine) — NEVER just `price` re-labeled.
+      // certainty is 'known' only when every component (shipping/taxes/
+      // importDuties/fees) was actually reported by a source; otherwise
+      // 'partially_known'/'unknown' — see cost-engine.ts. unknownComponents
+      // names exactly what's missing so a client can render "+ frais de
+      // douane inconnus" instead of a false total.
+      cost: {
+        totalKnown: ro.cost.totalKnown,
+        currency: ro.cost.currency,
+        certainty: ro.cost.certainty,
+        unknownComponents: ro.cost.unknownComponents,
+      },
+      // Language-independent — translate(code, result.language) at render
+      // time, same reasonCode/translate() pattern as `explanation` below.
+      rankingReasonCode: reasonCodeFor(rankingPreference, ro, idx + 1),
       score: Math.round(ro.overallScore),
       satisfiesAllConstraints: ro.satisfiesAllConstraints,
-      explanation: result.explanation.rankedExplanations[idx]?.headline ?? '',
-      matchQuality: describeMatchQuality(ro.offer.matchQuality),
+      // Localized in result.language (i18n.ts translate()) from the
+      // language-independent headlineCode ExplanationEngine produced — falls
+      // back to the French `.headline` text only if code/params are absent
+      // (defensive; ExplanationEngine always sets both today).
+      explanation: (() => {
+        // Looked up by offer id, NOT array index — `preferenceResult.offers`
+        // may be in a DIFFERENT order than result.explanation.rankedExplanations
+        // (PriorityEngine's original order) once a non-BEST_MATCH preference
+        // has reordered them (see sortByPreference() above).
+        const exp = result.explanation.rankedExplanations.find(e => e.offerId === ro.offer.id);
+        if (!exp) return '';
+        return exp.headlineCode
+          ? translate(exp.headlineCode, result.language, exp.headlineParams)
+          : exp.headline;
+      })(),
+      matchQuality: describeMatchQuality(ro.offer.matchQuality, result.language),
       offerUrl: ro.offer.executionUrl ?? null,
+      // Per-criterion breakdown, exposing the SATISFIED / VIOLATED / UNKNOWN
+      // distinction the admissibility engine already computes (see
+      // domain/admissibility.ts) — 'dataUsed.status' is the authoritative
+      // signal (not re-derived from score alone), so UNKNOWN never gets
+      // silently reported as VIOLATED or SATISFIED. requiredOrForbidden
+      // marks which criteria are hard constraints vs soft preferences, so
+      // the UI can group "your criteria" separately from "nice to have".
+      criteria: ro.criterionScores.map(cs => ({
+        id: cs.criterionId,
+        name: cs.criterionName,
+        level: cs.level,
+        requiredOrForbidden: cs.level === 'required' || cs.level === 'forbidden',
+        status: cs.dataUsed.status === 'unknown'
+          ? 'unknown'
+          : (cs.score >= 50 ? 'satisfied' : 'violated'),
+        reasoning: cs.reasoning,
+      })),
       // Provenance: which source(s) contributed to this offer's data.
       // '+' separator means data was merged from multiple sources.
       // CONFLICTING fields are tracked here — a '+' in source means multi-source merge occurred.
@@ -486,7 +707,11 @@ function serializeResult(
     summary: {
       totalFound: result.ranking.rankedOffers.length,
       totalRejected: result.admissibility.rejectedOffers.length,
-      resultSummary: result.explanation.resultSummary,
+      // Localized in result.language — falls back to the French text only
+      // defensively (resultSummaryCode is always set by ExplanationEngine).
+      resultSummary: result.explanation.resultSummaryCode
+        ? translate(result.explanation.resultSummaryCode, result.language, result.explanation.resultSummaryParams)
+        : result.explanation.resultSummary,
     },
 
     // Criteria used (transparency)
@@ -518,13 +743,17 @@ function serializeResult(
       })),
     } : null,
 
-    // No-results diagnosis (only present when 0 results)
+    // No-results diagnosis (only present when 0 results). message/description/
+    // impact are localized in result.language from the (code, params) pair
+    // NoResultsAnalyzer produced — same split as `explanation` above.
     noResultsDiagnosis: result.noResultsDiagnosis ? {
       primaryCause: result.noResultsDiagnosis.primaryCause,
-      message: result.noResultsDiagnosis.diagnosis,
+      message: translate(result.noResultsDiagnosis.diagnosisCode, result.language, result.noResultsDiagnosis.diagnosisParams),
       recoveryOptions: result.noResultsDiagnosis.recoveryOptions.map(r => ({
+        id: r.id,
         type: r.type,
-        description: r.description,
+        description: translate(r.descriptionCode, result.language, r.descriptionParams),
+        impact: translate(r.impactCode, result.language),
         requiresConfirmation: r.requiresUserConfirmation,
       })),
     } : null,
@@ -541,6 +770,14 @@ function serializeResult(
 
     // Provenance summary — which sources contributed to the ranked results
     provenanceSummary: result.provenanceSummary,
+
+    // Search coverage (SearchCoverage — see application/search-coverage.ts):
+    // real counts from THIS search only (queries executed, sources
+    // attempted/failed, unique domains, saturation) — never fabricated, and
+    // absent entirely when the discovery strategy that ran didn't compute
+    // one (e.g. the local in-memory catalog path, which isn't a multi-phase
+    // Web search and has nothing to report here).
+    coverage: result.discovery.statistics.coverage ?? null,
 
     // Pipeline timing (for debugging/monitoring)
     timing: result.timing,

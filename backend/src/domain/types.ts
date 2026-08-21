@@ -129,6 +129,18 @@ export interface UserProfile {
 
   // Optional: User-facing description of what they want
   description?: string;
+
+  // ── Localization / interaction preferences (permanent, lowest priority in
+  // the resolution chain — an explicit request or session override always
+  // wins; see application/i18n.ts resolveLanguage()). Plain strings here
+  // (not a closed union) so domain/ doesn't depend on application/ — the
+  // application layer validates/parses them via SUPPORTED_LANGUAGES etc. ──
+  preferredLanguage?: string;  // e.g. 'fr', 'en' — ISO 639-1
+  preferredLocale?: string;    // e.g. 'fr-FR', 'en-US' — BCP-47
+  preferredCurrency?: string;  // ISO 4217, e.g. 'EUR'
+  preferredUnits?: 'metric' | 'imperial';
+  preferredVoice?: string;     // provider-specific voice id (see voice-providers.ts)
+  preferredResponseMode?: 'text' | 'voice' | 'hybrid'; // see interaction-preferences.ts OutputModality
 }
 
 // ============================================================================
@@ -253,6 +265,21 @@ export interface Offer {
   currency?: string;               // ISO 4217 code
   shippingCost: DataPoint<number>;
   shippingTime?: DataPoint<string>;
+  /**
+   * Additional real-cost components beyond price/shipping — see
+   * application/cost-engine.ts's CostEngine, which turns these (plus price
+   * and shippingCost above) into a CostBreakdown with explicit UNKNOWN
+   * propagation. All optional: no current extraction source (JSON-LD via
+   * ProductPageExtractor, the local catalog fixtures) populates them yet, so
+   * they are absent — never defaulted to a DataPoint with value 0 — on
+   * every offer today. Added here (not stuffed into `characteristics`)
+   * because, like price/shippingCost, they are financial terms of the
+   * offer itself, not descriptive product characteristics.
+   */
+  taxes?: DataPoint<number>;
+  importDuties?: DataPoint<number>;
+  fees?: DataPoint<number>;
+  discount?: DataPoint<number>;
 
   // Product-specific offer characteristics
   // These are the actual values for THIS offer of THIS product

@@ -902,10 +902,10 @@ describe('Scenario J — ToolRegistry wiring into CapucineEngine', () => {
     expect(engine.toolRegistry).toBeInstanceOf(ToolRegistry);
   });
 
-  it('J2 — ToolRegistry has web_search tool registered', () => {
+  it('J2 — ToolRegistry has a web_search tool registered (name may be "web_search" or "web_search_<source>" in multi-source mode)', () => {
     const engine = new CapucineEngine({ enableWebDiscovery: false });
     const tools = engine.toolRegistry.listTools();
-    const webTool = tools.find(t => t.name === 'web_search');
+    const webTool = tools.find(t => t.name === 'web_search' || t.name.startsWith('web_search_'));
     expect(webTool).toBeDefined();
   });
 
@@ -1336,7 +1336,7 @@ describe('Scenario N — Quality-based escalation', () => {
           strategy: 'quality-test',
         };
       },
-      discoverSync: async (criteria) => {
+      discoverSync: (criteria) => {
         const result = levelResults[callIndex] ?? [];
         callIndex++;
         return {
@@ -1493,7 +1493,30 @@ describe('Scenario N — Quality-based escalation', () => {
           strategy: 'constraint-test',
         };
       },
-      discoverSync: async (criteria) => strategy.discover(criteria),
+      discoverSync(criteria: DiscoveryCriteria): DiscoveryResult {
+        callIndex++;
+        if (callIndex === 1) {
+          // Level 1: empty (triggers escalation)
+          return {
+            id: `constraint-sync-l1`, timestamp: new Date(), criteria,
+            candidates: [],
+            statistics: { queriedSources: 1, candidatesFound: 0, candidatesFiltered: 0, searchTimeMs: 0, relevanceEstimate: 'low' },
+            strategy: 'constraint-test',
+          };
+        }
+        // Level 2: one candidate OVER the hard budget constraint
+        return {
+          id: `constraint-sync-l2`, timestamp: new Date(), criteria,
+          candidates: [{
+            offer: makeOffer('over-budget', { price: 500 }), // exceeds 200€ required budget
+            matchScore: 0.9,
+            matchReason: 'test',
+            matchQuality: 'exact_match' as const,
+          }],
+          statistics: { queriedSources: 1, candidatesFound: 1, candidatesFiltered: 0, searchTimeMs: 0, relevanceEstimate: 'high' },
+          strategy: 'constraint-test',
+        };
+      },
       async health() { return { status: 'healthy' as const }; },
     };
 
@@ -1516,5 +1539,316 @@ describe('Scenario N — Quality-based escalation', () => {
     // Even though escalation brought it in, the constraint is NOT weakened
     expect(result.ranking.rankedOffers.length).toBe(0);
     expect(result.admissibility.rejectedOffers.length).toBeGreaterThanOrEqual(0); // rejected at admissibility or filtered at discovery
+  });
+});
+
+// ============================================================================
+// SCENARIO O — FRENCH TECHNICAL CONSTRAINT INTERPRETATION
+// End-to-end: raw French query with screen size + RAM + budget →
+// clean SearchPlan.query.primaryTerms → structured hard constraints →
+// correct admissibility filtering → honest ranked/rejected result.
+//
+// This is the reference test for the "ordinateur portable 14 pouces 16 Go
+// RAM moins de 1000 €" case: SearchPlanBuilder / SearchPhaseQueryBuilder used
+// to receive noisy fragments ("pouces-16", "de-1000") as search terms because
+// BasicPatternInterpreter's product-term extraction ran on raw, unstripped
+// text. See request-interpreter.ts (extractScreenSize/extractRAM/extractStorage
+// + span-stripping in parseText) and admissibility.ts (checkNumericConstraint).
+// ============================================================================
+
+describe('Scenario O — French technical constraint interpretation', () => {
+  it('O1 — critical example: clean SearchPlan terms, structured hard constraints, correct filtering', async () => {
+    // Distinct productId per offer — these are 4 different products, not
+    // multiple merchants of the same one, so DeduplicationEngine must not
+    // merge them into a single group.
+    const withinSpec = makeOffer('within-spec', {
+      price: 900, merchant: 'shop-a', productId: 'product-within-spec',
+      characteristics: { screen_size: dp('14'), ram: dp('16 Go') },
+    });
+    const overBudget = makeOffer('over-budget', {
+      price: 1500, merchant: 'shop-b', productId: 'product-over-budget',
+      characteristics: { screen_size: dp('14'), ram: dp('16 Go') },
+    });
+    const wrongScreen = makeOffer('wrong-screen', {
+      price: 800, merchant: 'shop-c', productId: 'product-wrong-screen',
+      characteristics: { screen_size: dp('13.3'), ram: dp('16 Go') }, // outside ±0.5" tolerance
+    });
+    const notEnoughRam = makeOffer('not-enough-ram', {
+      price: 800, merchant: 'shop-d', productId: 'product-not-enough-ram',
+      characteristics: { screen_size: dp('14'), ram: dp('8 Go') }, // below 16GB minimum
+    });
+
+    const engine = buildEngineWith({
+      name: 'catalog',
+      offers: [withinSpec, overBudget, wrongScreen, notEnoughRam],
+    });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable 14 pouces 16 Go RAM moins de 1000 €',
+      requestId: 'req-o1',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    // 1-4: category/constraints recognized, no noisy fragments (5) —
+    // SearchPlan.query.primaryTerms must stay clean.
+    const terms = result.searchPlan.query.primaryTerms;
+    for (const t of terms) {
+      expect(t).not.toMatch(/^pouces-/);
+      expect(t).not.toMatch(/^de-\d/);
+    }
+    expect(terms).toEqual(expect.arrayContaining(['ordinateur', 'portable']));
+
+    // Structured constraints reached the pipeline as required criteria.
+    const budgetC = result.effectiveCriteria.find(c => c.id === 'budget');
+    const screenC = result.effectiveCriteria.find(c => c.id === 'screen_size');
+    const ramC = result.effectiveCriteria.find(c => c.id === 'ram');
+    expect(budgetC?.parameters?.maxBudget).toBe(1000);
+    expect(screenC?.level).toBe('required');
+    expect(ramC?.level).toBe('required');
+
+    // 8-9: filtering applied correctly — only the fully-compliant offer ranks.
+    const rankedIds = result.ranking.rankedOffers.map(r => r.offer.id);
+    expect(rankedIds).toEqual(['within-spec']);
+
+    // 10: explanation/rejection reasons are available for the eliminated offers.
+    // "over-budget" is filtered upstream at discovery (maxPrice pre-filter) rather
+    // than at admissibility — both are legitimate elimination points; only the
+    // technical-constraint mismatches are expected to surface as admissibility
+    // rejections here.
+    const rejectedIds = result.admissibility.rejectedOffers.map(r => r.offer.id);
+    expect(rejectedIds).toEqual(expect.arrayContaining(['wrong-screen', 'not-enough-ram']));
+  });
+
+  it('O2 — "sous 1000 €" budget variant is respected end-to-end', async () => {
+    const cheap = makeOffer('cheap', { price: 700, productId: 'product-cheap' });
+    const pricey = makeOffer('pricey', { price: 1200, productId: 'product-pricey' });
+    const engine = buildEngineWith({ name: 'catalog', offers: [cheap, pricey] });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable sous 1000 €',
+      requestId: 'req-o2',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    const rankedIds = result.ranking.rankedOffers.map(r => r.offer.id);
+    expect(rankedIds).toContain('cheap');
+    expect(rankedIds).not.toContain('pricey');
+  });
+
+  it('O3 — a query with no technical constraint does not fabricate any', async () => {
+    const engine = buildEngineWith({
+      name: 'catalog',
+      offers: [makeOffer('any', { price: 500 })],
+    });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable',
+      requestId: 'req-o3',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    expect(result.effectiveCriteria.find(c => c.id === 'screen_size')).toBeUndefined();
+    expect(result.effectiveCriteria.find(c => c.id === 'ram')).toBeUndefined();
+    expect(result.effectiveCriteria.find(c => c.id === 'storage')).toBeUndefined();
+    // The offer has no explicit constraint to fail, so it should still rank.
+    expect(result.ranking.rankedOffers.map(r => r.offer.id)).toContain('any');
+  });
+
+  it('O4 — unknown RAM data is not silently treated as satisfying a required minimum', async () => {
+    const knownGood = makeOffer('known-good', {
+      price: 500, merchant: 'shop-a', productId: 'product-known-good',
+      characteristics: { ram: dp('16 Go') },
+    });
+    const unknownRam = makeOffer('unknown-ram', {
+      price: 500, merchant: 'shop-b', productId: 'product-unknown-ram',
+      characteristics: { ram: dp(null, 'unknown') },
+    });
+    const engine = buildEngineWith({ name: 'catalog', offers: [knownGood, unknownRam] });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable 16 Go RAM',
+      requestId: 'req-o4',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    const rankedIds = result.ranking.rankedOffers.map(r => r.offer.id);
+    expect(rankedIds).toContain('known-good');
+    expect(rankedIds).not.toContain('unknown-ram');
+  });
+});
+
+// ============================================================================
+// SCENARIO P — CATEGORY AS A REAL STRUCTURED CONSTRAINT
+//
+// category is now detected by both interpret() and interpretSync() and wired
+// so AdmissibilityEngine actually compares its value (via preferredValues)
+// instead of accepting any category — while an offer with no explicit
+// `category` characteristic is UNKNOWN, not automatically VIOLATED
+// (unknownPolicy: 'pass', enforced identically by AdmissibilityEngine AND
+// PriorityEngine so the two stages never disagree about the same offer).
+// See request-interpreter.ts (applyCategoryDetection, extractCategories'
+// confidence sort) and admissibility.ts (resolveUnknownData) /
+// priority-engine.ts (handleMissingData/handleUnknownData unknownPolicy param).
+// ============================================================================
+
+describe('Scenario P — Category as a real structured constraint', () => {
+  // ---- 10. category + budget ----
+  it('P1 — category + budget: wrong category is rejected even within budget; right category respects budget', async () => {
+    const laptopInBudget = makeOffer('laptop-in-budget', {
+      price: 900, merchant: 'shop-a', productId: 'product-laptop-in-budget',
+      characteristics: { category: dp('ordinateur_portable') },
+    });
+    const laptopOverBudget = makeOffer('laptop-over-budget', {
+      price: 1500, merchant: 'shop-b', productId: 'product-laptop-over-budget',
+      characteristics: { category: dp('ordinateur_portable') },
+    });
+    const phoneInBudget = makeOffer('phone-in-budget', {
+      price: 900, merchant: 'shop-c', productId: 'product-phone-in-budget',
+      characteristics: { category: dp('smartphone') },
+    });
+
+    const engine = buildEngineWith({
+      name: 'catalog',
+      offers: [laptopInBudget, laptopOverBudget, phoneInBudget],
+    });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable moins de 1000 €',
+      requestId: 'req-p1',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    expect(result.ranking.rankedOffers.map(r => r.offer.id)).toEqual(['laptop-in-budget']);
+  });
+
+  // ---- 11. category + RAM ----
+  it('P2 — category + RAM: category-matching offer with insufficient RAM is rejected', async () => {
+    const laptopEnoughRam = makeOffer('laptop-16gb', {
+      price: 900, merchant: 'shop-a', productId: 'product-laptop-16gb',
+      characteristics: { category: dp('ordinateur_portable'), ram: dp('16GB') },
+    });
+    const laptopNotEnoughRam = makeOffer('laptop-8gb', {
+      price: 900, merchant: 'shop-b', productId: 'product-laptop-8gb',
+      characteristics: { category: dp('ordinateur_portable'), ram: dp('8GB') },
+    });
+
+    const engine = buildEngineWith({ name: 'catalog', offers: [laptopEnoughRam, laptopNotEnoughRam] });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable 16 Go RAM',
+      requestId: 'req-p2',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    expect(result.ranking.rankedOffers.map(r => r.offer.id)).toEqual(['laptop-16gb']);
+  });
+
+  // ---- 12. category + screen_size ----
+  it('P3 — category + screen_size: category-matching offer with incompatible screen size is rejected', async () => {
+    const laptop14 = makeOffer('laptop-14in', {
+      price: 900, merchant: 'shop-a', productId: 'product-laptop-14in',
+      characteristics: { category: dp('ordinateur_portable'), screen_size: dp('14') },
+    });
+    const laptop17 = makeOffer('laptop-17in', {
+      price: 900, merchant: 'shop-b', productId: 'product-laptop-17in',
+      characteristics: { category: dp('ordinateur_portable'), screen_size: dp('17') },
+    });
+
+    const engine = buildEngineWith({ name: 'catalog', offers: [laptop14, laptop17] });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable 14 pouces',
+      requestId: 'req-p3',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    expect(result.ranking.rankedOffers.map(r => r.offer.id)).toEqual(['laptop-14in']);
+  });
+
+  // ---- 13. category + several constraints together, including an UNKNOWN-category offer ----
+  it('P4 — category + RAM + budget + screen_size combined: exactly the fully-compliant offer ranks; unknown category is not auto-rejected', async () => {
+    const compliant = makeOffer('compliant', {
+      price: 1049, merchant: 'shop-a', productId: 'product-compliant',
+      characteristics: { category: dp('ordinateur_portable'), ram: dp('16GB'), screen_size: dp('14') },
+    });
+    const wrongCategory = makeOffer('wrong-category', {
+      price: 900, merchant: 'shop-b', productId: 'product-wrong-category',
+      characteristics: { category: dp('smartphone'), ram: dp('16GB'), screen_size: dp('14') },
+    });
+    const noCategoryData = makeOffer('no-category-data', {
+      // Legacy-style fixture: no `category` characteristic at all, but the
+      // other constraints match. Must NOT be rejected just because category
+      // is unknown here (unknownPolicy: 'pass') — it is not proven wrong.
+      price: 950, merchant: 'shop-c', productId: 'product-no-category-data',
+      characteristics: { ram: dp('16GB'), screen_size: dp('14') },
+    });
+
+    const engine = buildEngineWith({
+      name: 'catalog',
+      offers: [compliant, wrongCategory, noCategoryData],
+    });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable 14 pouces 16 Go RAM moins de 1100 €',
+      requestId: 'req-p4',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    const rankedIds = result.ranking.rankedOffers.map(r => r.offer.id);
+    expect(rankedIds).toEqual(expect.arrayContaining(['compliant', 'no-category-data']));
+    expect(rankedIds).not.toContain('wrong-category');
+
+    // Honest, no fabricated data: real prices, real characteristics.
+    const compliantRanked = result.ranking.rankedOffers.find(r => r.offer.id === 'compliant');
+    expect(compliantRanked!.offer.price.value).toBe(1049);
+  });
+
+  // ---- Full pipeline reference example from this chantier's spec ----
+  it('P5 — "ordinateur portable 16 Go RAM moins de 1100 €": full pipeline trace stays honest end-to-end', async () => {
+    const framework = makeOffer('framework', {
+      price: 1049, merchant: 'amazon-fr', productId: 'product-framework',
+      characteristics: { category: dp('ordinateur_portable'), ram: dp('16GB') },
+    });
+    const phoneNoise = makeOffer('phone-noise', {
+      price: 900, merchant: 'shop-x', productId: 'product-phone-noise',
+      characteristics: { category: dp('smartphone'), ram: dp('16GB') },
+    });
+
+    const engine = buildEngineWith({ name: 'catalog', offers: [framework, phoneNoise] });
+
+    const result = await engine.search({
+      queryText: 'ordinateur portable 16 Go RAM moins de 1100 €',
+      requestId: 'req-p5',
+      profile: createEmptyProfile(),
+      preInterpretedCriteria: [],
+      skipAIInterpretation: false,
+    });
+
+    // Structured constraints reached the pipeline.
+    expect(result.effectiveCriteria.find(c => c.id === 'category')?.parameters?.preferredValues).toEqual(['ordinateur_portable']);
+    expect(result.effectiveCriteria.find(c => c.id === 'ram')?.parameters?.minValue).toBe(16);
+    expect(result.effectiveCriteria.find(c => c.id === 'budget')?.parameters?.maxBudget).toBe(1100);
+
+    // Only the real, fully-compliant laptop is returned — nothing invented.
+    expect(result.ranking.rankedOffers.map(r => r.offer.id)).toEqual(['framework']);
+    const ranked = result.ranking.rankedOffers[0];
+    expect(ranked.offer.price.value).toBe(1049);
+    expect(ranked.offer.executionUrl ?? null).toBeNull(); // no URL fabricated
   });
 });

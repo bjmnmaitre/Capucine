@@ -35,9 +35,16 @@ describe('Première interface — fichiers statiques', () => {
     expect(res.text).toContain('Capucine');
   });
 
-  it('sert app.js', async () => {
-    const res = await getPath(app, '/app.js');
+  it('sert /js/app.js (point d\'entrée réel de la nouvelle interface AppShell)', async () => {
+    const res = await getPath(app, '/js/app.js');
     expect(res.status).toBe(200);
+  });
+
+  it('sert les modules i18n (fr et en) et les modules de rendu', async () => {
+    for (const p of ['/js/i18n.js', '/js/locales/fr.js', '/js/locales/en.js', '/js/api.js', '/js/render/results.js']) {
+      const res = await getPath(app, p);
+      expect(res.status).toBe(200);
+    }
   });
 
   it('sert style.css', async () => {

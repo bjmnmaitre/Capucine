@@ -24,6 +24,48 @@ import {
   PreferenceLevel,
   DataStatus,
 } from '../domain/types';
+import { translate, registerCatalog } from './i18n';
+
+// ============================================================================
+// MESSAGE CATALOGS — headline text lives here (i18n.ts's translate()
+// consumes it), never as literal strings scattered through buildHeadline().
+// ============================================================================
+
+registerCatalog('fr', {
+  BEST_RESULT_WITH_STRENGTH: 'Meilleur résultat ({score} pts) — {merchantName}. Point fort : {strength}.',
+  BEST_RESULT: 'Meilleur résultat ({score} pts) — {merchantName}.',
+  NOT_SELECTED_CONSTRAINTS: 'Non retenu — ne satisfait pas toutes les contraintes.',
+  RESULT_RANKED: 'Résultat #{rank} ({score} pts) — {merchantName}.',
+  RESULT_SUMMARY_EMPTY_NO_REJECTED: 'Aucun candidat trouvé pour cette recherche.',
+  RESULT_SUMMARY_EMPTY_ALL_REJECTED: '{rejected} candidat(s) trouvé(s), tous rejetés par AdmissibilityEngine (contraintes required/forbidden non satisfaites).',
+  RESULT_SUMMARY_MAIN_REJ_DELTA: '{total} offre(s) classée(s), {rejected} rejetée(s). Meilleure offre : {merchantName} ({score} pts). Écart avec #2 : {delta} pts.',
+  RESULT_SUMMARY_MAIN_REJ: '{total} offre(s) classée(s), {rejected} rejetée(s). Meilleure offre : {merchantName} ({score} pts).',
+  RESULT_SUMMARY_MAIN_DELTA: '{total} offre(s) classée(s). Meilleure offre : {merchantName} ({score} pts). Écart avec #2 : {delta} pts.',
+  RESULT_SUMMARY_MAIN: '{total} offre(s) classée(s). Meilleure offre : {merchantName} ({score} pts).',
+  MATCH_EXACT: 'Correspondance exacte',
+  MATCH_CLOSE: 'Très bonne correspondance',
+  MATCH_PARTIAL: 'Correspondance partielle',
+  MATCH_ALTERNATIVE: 'Alternative',
+  MATCH_UNKNOWN: 'Informations insuffisantes',
+});
+
+registerCatalog('en', {
+  BEST_RESULT_WITH_STRENGTH: 'Best result ({score} pts) — {merchantName}. Strength: {strength}.',
+  BEST_RESULT: 'Best result ({score} pts) — {merchantName}.',
+  NOT_SELECTED_CONSTRAINTS: 'Not selected — does not satisfy all constraints.',
+  RESULT_RANKED: 'Result #{rank} ({score} pts) — {merchantName}.',
+  RESULT_SUMMARY_EMPTY_NO_REJECTED: 'No candidates found for this search.',
+  RESULT_SUMMARY_EMPTY_ALL_REJECTED: '{rejected} candidate(s) found, all rejected by AdmissibilityEngine (required/forbidden constraints not satisfied).',
+  RESULT_SUMMARY_MAIN_REJ_DELTA: '{total} offer(s) ranked, {rejected} rejected. Best offer: {merchantName} ({score} pts). Gap with #2: {delta} pts.',
+  RESULT_SUMMARY_MAIN_REJ: '{total} offer(s) ranked, {rejected} rejected. Best offer: {merchantName} ({score} pts).',
+  RESULT_SUMMARY_MAIN_DELTA: '{total} offer(s) ranked. Best offer: {merchantName} ({score} pts). Gap with #2: {delta} pts.',
+  RESULT_SUMMARY_MAIN: '{total} offer(s) ranked. Best offer: {merchantName} ({score} pts).',
+  MATCH_EXACT: 'Exact match',
+  MATCH_CLOSE: 'Very close match',
+  MATCH_PARTIAL: 'Partial match',
+  MATCH_ALTERNATIVE: 'Alternative',
+  MATCH_UNKNOWN: 'Insufficient information',
+});
 
 // ============================================================================
 // EXPLANATION TYPES
@@ -34,8 +76,21 @@ export interface OfferExplanation {
   rank: number;
   overallScore: number;
 
-  /** One-sentence summary of why this offer ranks here */
+  /** One-sentence summary of why this offer ranks here, in French (kept for
+   *  backward compatibility — existing consumers read this field directly).
+   *  New code should prefer headlineCode + headlineParams and translate()
+   *  (i18n.ts) so the same explanation can be rendered in any supported
+   *  language without ExplanationEngine itself knowing about languages —
+   *  see buildHeadline() below for the producer side of this split. */
   headline: string;
+
+  /** Language-independent identifier for `headline` — e.g. 'BEST_RESULT',
+   *  'NOT_SELECTED_CONSTRAINTS'. Pass to translate(code, language, params). */
+  headlineCode: string;
+
+  /** Structured params for headlineCode's {placeholders} (merchant name,
+   *  score, top strength...) — never baked into a language-specific string here. */
+  headlineParams: Record<string, string | number>;
 
   /** Strongest positive factors */
   strengths: ExplanationFactor[];
@@ -118,6 +173,11 @@ export interface FullExplanation {
 
   /** Global summary for this result set */
   resultSummary: string;
+
+  /** Language-independent identifier for `resultSummary` — pass to
+   *  translate(code, language, params). See buildResultSummary(). */
+  resultSummaryCode: string;
+  resultSummaryParams: Record<string, string | number>;
 }
 
 // ============================================================================
@@ -143,7 +203,7 @@ export class ExplanationEngine {
         ? this.compareOffers(result.rankedOffers[0], result.rankedOffers[1])
         : undefined;
 
-    const resultSummary = this.buildResultSummary(result);
+    const summary = this.buildResultSummary(result);
 
     return {
       requestId: result.requestId,
@@ -153,7 +213,9 @@ export class ExplanationEngine {
       rankedExplanations,
       rejectionExplanations,
       topComparison,
-      resultSummary,
+      resultSummary: summary.text,
+      resultSummaryCode: summary.code,
+      resultSummaryParams: summary.params,
     };
   }
 
@@ -181,7 +243,9 @@ export class ExplanationEngine {
       offerId: rankedOffer.offer.id,
       rank,
       overallScore: rankedOffer.overallScore,
-      headline,
+      headline: headline.text,
+      headlineCode: headline.code,
+      headlineParams: headline.params,
       strengths,
       weaknesses,
       unknownDataImpact,
@@ -356,26 +420,36 @@ export class ExplanationEngine {
       }));
   }
 
+  /**
+   * Builds BOTH the backward-compatible French `text` and the
+   * language-independent (code, params) pair — see OfferExplanation for why.
+   * The French templates here are ALSO registered in EXPLANATION_MESSAGES_FR
+   * (bottom of file) so `text` and translate(code, 'fr', params) agree.
+   */
   private buildHeadline(
     rank: number,
     rankedOffer: RankedOffer,
     breakdown: CriterionBreakdown[]
-  ): string {
+  ): { text: string; code: string; params: Record<string, string | number> } {
     const merchantName = rankedOffer.offer.merchant.name;
     const score = rankedOffer.overallScore.toFixed(0);
 
     if (rank === 1) {
       const topStrength = breakdown.find(c => c.sentiment === 'positive');
-      return topStrength
-        ? `Meilleur résultat (${score} pts) — ${merchantName}. Point fort : ${topStrength.criterionName}.`
-        : `Meilleur résultat (${score} pts) — ${merchantName}.`;
+      if (topStrength) {
+        const params = { score, merchantName, strength: topStrength.criterionName };
+        return { text: translate('BEST_RESULT_WITH_STRENGTH', 'fr', params), code: 'BEST_RESULT_WITH_STRENGTH', params };
+      }
+      const params = { score, merchantName };
+      return { text: translate('BEST_RESULT', 'fr', params), code: 'BEST_RESULT', params };
     }
 
     if (!rankedOffer.satisfiesAllConstraints) {
-      return `Non retenu — ne satisfait pas toutes les contraintes.`;
+      return { text: translate('NOT_SELECTED_CONSTRAINTS', 'fr'), code: 'NOT_SELECTED_CONSTRAINTS', params: {} };
     }
 
-    return `Résultat #${rank} (${score} pts) — ${merchantName}.`;
+    const params = { rank, score, merchantName };
+    return { text: translate('RESULT_RANKED', 'fr', params), code: 'RESULT_RANKED', params };
   }
 
   private extractSources(rankedOffer: RankedOffer): string[] {
@@ -391,33 +465,46 @@ export class ExplanationEngine {
     return [...sources];
   }
 
-  private buildResultSummary(result: RankingResult): string {
+  /**
+   * Builds BOTH the backward-compatible French `text` and the
+   * language-independent (code, params) pair — same split as buildHeadline().
+   */
+  private buildResultSummary(
+    result: RankingResult
+  ): { text: string; code: string; params: Record<string, string | number> } {
     const total = result.rankedOffers.length;
     const rejected = (result.rejectedOffers ?? []).length;
 
     if (total === 0 && rejected === 0) {
-      return 'Aucun candidat trouvé pour cette recherche.';
+      return { text: translate('RESULT_SUMMARY_EMPTY_NO_REJECTED', 'fr'), code: 'RESULT_SUMMARY_EMPTY_NO_REJECTED', params: {} };
     }
 
     if (total === 0) {
-      return `${rejected} candidat(s) trouvé(s), tous rejetés par AdmissibilityEngine (contraintes required/forbidden non satisfaites).`;
+      const params = { rejected };
+      return { text: translate('RESULT_SUMMARY_EMPTY_ALL_REJECTED', 'fr', params), code: 'RESULT_SUMMARY_EMPTY_ALL_REJECTED', params };
     }
 
     const topOffer = result.rankedOffers[0];
     const merchantName = topOffer.offer.merchant.name;
     const score = topOffer.overallScore.toFixed(0);
+    const hasDelta = total >= 2;
+    const delta = hasDelta
+      ? (result.rankedOffers[0].overallScore - result.rankedOffers[1].overallScore).toFixed(0)
+      : undefined;
 
-    let summary = `${total} offre(s) classée(s)`;
-    if (rejected > 0) summary += `, ${rejected} rejetée(s)`;
-    summary += `. Meilleure offre : ${merchantName} (${score} pts)`;
-
-    if (total >= 2) {
-      const delta = (result.rankedOffers[0].overallScore - result.rankedOffers[1].overallScore).toFixed(0);
-      summary += `. Écart avec #2 : ${delta} pts.`;
-    } else {
-      summary += '.';
+    if (rejected > 0 && hasDelta) {
+      const params = { total, rejected, merchantName, score, delta: delta! };
+      return { text: translate('RESULT_SUMMARY_MAIN_REJ_DELTA', 'fr', params), code: 'RESULT_SUMMARY_MAIN_REJ_DELTA', params };
     }
-
-    return summary;
+    if (rejected > 0) {
+      const params = { total, rejected, merchantName, score };
+      return { text: translate('RESULT_SUMMARY_MAIN_REJ', 'fr', params), code: 'RESULT_SUMMARY_MAIN_REJ', params };
+    }
+    if (hasDelta) {
+      const params = { total, merchantName, score, delta: delta! };
+      return { text: translate('RESULT_SUMMARY_MAIN_DELTA', 'fr', params), code: 'RESULT_SUMMARY_MAIN_DELTA', params };
+    }
+    const params = { total, merchantName, score };
+    return { text: translate('RESULT_SUMMARY_MAIN', 'fr', params), code: 'RESULT_SUMMARY_MAIN', params };
   }
 }
