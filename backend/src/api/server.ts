@@ -4,9 +4,10 @@
  * Minimal Express server exposing the Capucine search pipeline via HTTP.
  *
  * Routes:
- *   POST /search     → Full pipeline → SearchEngineResult (JSON)
- *   GET  /health     → Service status
- *   GET  /tools      → List of registered tools and their availability
+ *   POST /search       → Full pipeline → SearchEngineResult (JSON)
+ *   POST /prepare-cart → Prepare the purchase of one already-ranked offer
+ *   GET  /health       → Service status
+ *   GET  /tools        → List of registered tools and their availability
  *
  * SECURITY INVARIANTS:
  * - No API keys in this file. Keys are read from env by adapters.
@@ -32,6 +33,7 @@ import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conver
 import { PreferenceCriterion, SearchMatchQuality } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
 import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE } from '../application/ranking-preference';
+import { createDefaultCartPreparationEngine } from '../application/cart-preparation-engine';
 
 // ============================================================================
 // APP FACTORY
@@ -81,6 +83,11 @@ export function buildApp(): express.Application {
 
   // Conversation manager — tracks multi-turn clarification sessions (30-min TTL)
   const conversationManager = new ConversationManager();
+
+  // Execution layer. Strictly separate from ranking: it is only ever consulted
+  // AFTER PriorityEngine has produced an order, and never feeds anything back
+  // into it (EXECUTION_INDEPENDENCE).
+  const cartPreparationEngine = createDefaultCartPreparationEngine();
 
   // Tool registry — the single registry for this server process.
   // Shared with the engine so both use the same audit log and rate-limit counters.
@@ -479,6 +486,114 @@ export function buildApp(): express.Application {
         remainingQuestions: applyResult.updatedSession.unansweredQuestions.length,
       }));
 
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * POST /prepare-cart
+   *
+   * Takes ONE offer the user has already been shown and prepares its
+   * purchase — the last step before the user leaves for the merchant.
+   *
+   * Request body:
+   * {
+   *   "sessionId": "sess-...",   // required — from a previous POST /search
+   *   "offerId": "web-fnac-3",   // required — `results[].offerId` of that search
+   *   "quantity": 1              // optional, default 1
+   * }
+   *
+   * WHY THE OFFER IS LOOKED UP, NOT POSTED
+   * ──────────────────────────────────────
+   * The client sends an id, never an offer object. The offer — and above all
+   * its purchase URL — is read back from the session's own last result, so
+   * the link handed to the user is always one Capucine actually discovered
+   * and recorded provenance for. Accepting an offer body would let a caller
+   * hand Capucine any URL and have Capucine present it to the user as a
+   * vetted result.
+   *
+   * INVARIANTS
+   * - NEVER completes a purchase. The response is a link plus instructions;
+   *   payment and final confirmation happen on the merchant's site, by the
+   *   user (NO_SILENT_MODIFICATION).
+   * - NEVER invents a URL. An offer with no verified executionUrl returns
+   *   status 'unavailable' (see cart-preparation-engine.ts).
+   * - Reads the ranking, never writes to it. Whether an offer can be
+   *   prepared has no bearing on where it ranked (EXECUTION_INDEPENDENCE).
+   */
+  app.post('/prepare-cart', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { sessionId, offerId, quantity } = req.body as {
+        sessionId?: string;
+        offerId?: string;
+        quantity?: number;
+      };
+
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'MISSING_SESSION_ID', message: '"sessionId" is required.' });
+      }
+      if (!offerId || typeof offerId !== 'string') {
+        return res.status(400).json({ error: 'MISSING_OFFER_ID', message: '"offerId" is required.' });
+      }
+
+      // Quantity must be a positive integer. A malformed value is rejected
+      // rather than silently coerced to 1 — the user asked for something
+      // specific and we must not quietly change it.
+      let requestedQuantity = 1;
+      if (quantity !== undefined) {
+        if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1) {
+          return res.status(400).json({
+            error: 'INVALID_QUANTITY',
+            message: '"quantity" must be a positive integer.',
+          });
+        }
+        requestedQuantity = quantity;
+      }
+
+      const session = conversationManager.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({
+          error: 'SESSION_NOT_FOUND',
+          message: 'Session not found or expired. Please start a new search.',
+        });
+      }
+
+      // Only offers that actually survived admissibility and were RANKED can
+      // be prepared. A candidate rejected for violating a hard constraint is
+      // not purchasable through Capucine — offering it here would reintroduce
+      // by the back door exactly what AdmissibilityEngine filtered out.
+      const rankedOffer = session.lastResult?.ranking.rankedOffers.find(ro => ro.offer.id === offerId);
+      if (!rankedOffer) {
+        return res.status(404).json({
+          error: 'OFFER_NOT_FOUND',
+          message: 'This offer is not part of the current results for this session.',
+        });
+      }
+
+      const preparation = await cartPreparationEngine.prepare({
+        offer: rankedOffer.offer,
+        quantity: requestedQuantity,
+      });
+
+      return res.json({
+        sessionId,
+        offerId,
+        quantity: requestedQuantity,
+        status: preparation.status,
+        // Null rather than absent when unknown — an unknown URL is reported
+        // as unknown, never omitted in a way a client might read as "pending".
+        checkoutUrl: preparation.checkoutUrl ?? null,
+        nextAction: preparation.nextAction ?? null,
+        error: preparation.error ?? null,
+        merchant: {
+          id: rankedOffer.offer.merchant.id,
+          name: rankedOffer.offer.merchant.name,
+        },
+        // Restated so a client never has to re-derive it: Capucine has not
+        // bought anything and never will.
+        purchaseCompleted: false,
+      });
     } catch (err) {
       return next(err);
     }

@@ -22,8 +22,9 @@
  * - Products across price ranges (budget to premium)
  */
 
-import { Offer, DataPoint, DataProvenance, Merchant } from '../domain/types';
+import { Offer, DataPoint, DataProvenance, Merchant, SearchMatchQuality } from '../domain/types';
 import { IDiscoveryStrategy, DiscoveryResult, DiscoveryCriteria } from './discovery';
+import { classifyMatchQuality } from './match-quality';
 
 // ============================================================================
 // CATALOG ENTRY (internal representation)
@@ -42,6 +43,29 @@ interface CatalogEntry {
 // ============================================================================
 // HELPERS
 // ============================================================================
+
+/**
+ * Does `corpus` (already lowercased) contain `keyword`?
+ *
+ * Tolerates a simple French/English plural on the keyword (e.g. "casques"
+ * against a corpus that only says "casque") — the fixture corpora are
+ * hand-written in singular form, but a real user query naturally says
+ * "montre-moi des casques". A REAL search engine (Brave/Serper — see
+ * RealWebDiscoveryStrategy) already stems this itself, so this only matters
+ * for the local demo catalog's simple substring matcher.
+ *
+ * SINGLE SOURCE OF TRUTH: used both by the keyword *filter* (which decides
+ * whether an entry is a candidate at all) and by the keyword *count* fed to
+ * classifyMatchQuality. If these two disagreed, an entry could pass the
+ * filter on "casques" yet be classified as matching 0 keywords — i.e. be
+ * reported as a worse match than it actually is.
+ */
+function corpusMatchesKeyword(corpus: string, keyword: string): boolean {
+  const k = keyword.toLowerCase();
+  if (corpus.includes(k)) return true;
+  const singular = k.replace(/s$/, '');
+  return singular.length >= 3 && singular !== k && corpus.includes(singular);
+}
 
 const PROV = (source: string): DataProvenance => ({
   source,
@@ -1112,7 +1136,12 @@ export class InMemoryDiscoveryStrategy implements IDiscoveryStrategy {
 
   discoverSync(criteria: DiscoveryCriteria): DiscoveryResult {
     const start = Date.now();
-    const allMatched: Array<{ offer: Offer; matchScore: number; matchReason: string }> = [];
+    const allMatched: Array<{
+      offer: Offer;
+      matchScore: number;
+      matchReason: string;
+      matchQuality: SearchMatchQuality;
+    }> = [];
 
     for (const entry of this.catalog) {
       // 1. Category filter — underscore/space-agnostic (accepts 'ordinateur_portable'
@@ -1132,14 +1161,9 @@ export class InMemoryDiscoveryStrategy implements IDiscoveryStrategy {
       // (Brave/Serper — see RealWebDiscoveryStrategy) already stems this
       // itself, so this only matters for the local demo catalog's simple
       // substring matcher, never the real Web path.
+      const corpus = (entry.searchCorpus + ' ' + entry.tags.join(' ')).toLowerCase();
       if (criteria.keywords && criteria.keywords.length > 0) {
-        const corpus = (entry.searchCorpus + ' ' + entry.tags.join(' ')).toLowerCase();
-        const allMatch = criteria.keywords.every(kw => {
-          const k = kw.toLowerCase();
-          if (corpus.includes(k)) return true;
-          const singular = k.replace(/s$/, '');
-          return singular.length >= 3 && singular !== k && corpus.includes(singular);
-        });
+        const allMatch = criteria.keywords.every(kw => corpusMatchesKeyword(corpus, kw));
         if (!allMatch) continue;
       }
 
@@ -1170,7 +1194,31 @@ export class InMemoryDiscoveryStrategy implements IDiscoveryStrategy {
       const score = this.computeRelevance(entry, criteria);
       const reason = this.buildMatchReason(entry, criteria);
 
-      allMatched.push({ offer: entry.offer, matchScore: score, matchReason: reason });
+      // Categorical match classification — deterministic, never an AI decision.
+      // Same corpus and same keyword matcher as the filter above, so the
+      // classification describes the very text that made this entry a
+      // candidate. Descriptive metadata only: never read by PriorityEngine.
+      //
+      // REACHABLE BANDS HERE: exact_match | close_match | unknown.
+      // 'partial_match' and 'alternative' are unreachable BY CONSTRUCTION,
+      // and that is honest rather than a gap: the keyword filter above is an
+      // AND filter, so any entry that reaches this line matched EVERY
+      // keyword — ratio is always 1.0. A partially-matching product is not
+      // classified as partial, it is simply not a candidate at all. (Those
+      // two bands are reachable in RealWebDiscoveryStrategy, where a search
+      // engine returns loosely-related results Capucine did not filter.)
+      // With no keywords at all (e.g. a category-only search) there is
+      // nothing to measure, so the classification is 'unknown' — never
+      // guessed, never left undefined.
+      const keywords = criteria.keywords ?? [];
+      const matchQuality = classifyMatchQuality({
+        text: corpus,
+        exactRefs: criteria.exactRefs ?? [],
+        keywordsMatched: keywords.filter(kw => corpusMatchesKeyword(corpus, kw)).length,
+        keywordsTotal: keywords.length,
+      });
+
+      allMatched.push({ offer: entry.offer, matchScore: score, matchReason: reason, matchQuality });
     }
 
     // Deterministic sort: score DESC, then offer.id ASC (stable)
@@ -1189,9 +1237,14 @@ export class InMemoryDiscoveryStrategy implements IDiscoveryStrategy {
       timestamp: new Date(),
       criteria,
       candidates: paged.map(m => ({
-        offer: m.offer,
+        // Copy rather than hand out the catalog entry's own Offer object:
+        // matchQuality is per-search (it depends on the criteria), so writing
+        // it onto the shared catalog offer would leak one search's
+        // classification into the next.
+        offer: { ...m.offer, matchQuality: m.matchQuality },
         matchScore: m.matchScore,
         matchReason: m.matchReason,
+        matchQuality: m.matchQuality,
       })),
       statistics: {
         queriedSources: 1,

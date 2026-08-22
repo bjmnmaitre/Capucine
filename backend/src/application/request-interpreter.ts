@@ -293,7 +293,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
       interpretation.budget = {
         minimum: structured.budget.min,
         maximum: structured.budget.max,
-        currency: structured.budget.currency || 'EUR',
+        currency: structured.budget.currency || 'unknown',
       };
 
       interpretation.extractedCriteria.push({
@@ -302,7 +302,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
         level: 'required',
         parameters: {
           maxBudget: structured.budget.max,
-          currency: structured.budget.currency || 'EUR',
+          currency: structured.budget.currency || 'unknown',
         },
       });
     }
@@ -526,16 +526,26 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
       if (match) {
         const amount = parseInt(match[1], 10);
         if (!interpretation.budget) {
+          // Determine currency from the matched string
+          let currency = 'unknown';
+          const matchedStr = match[0];
+          if (/€/i.test(matchedStr) || /euros?/i.test(matchedStr)) {
+            currency = 'EUR';
+          } else if (/£/i.test(matchedStr) || /pounds?/i.test(matchedStr) || /gbp/i.test(matchedStr)) {
+            currency = 'GBP';
+          } else if (/\$/i.test(matchedStr) || /dollars?/i.test(matchedStr) || /usd/i.test(matchedStr)) {
+            currency = 'USD';
+          }
           interpretation.budget = {
             maximum: amount,
-            currency: 'EUR', // TODO: extract currency from pattern
+            currency: currency,
           };
 
           interpretation.extractedCriteria.push({
             id: 'budget',
             name: 'Budget',
             level: 'required',
-            parameters: { maxBudget: amount, currency: 'EUR' },
+            parameters: { maxBudget: amount, currency: currency },
           });
         }
         return match[0];
@@ -977,7 +987,7 @@ export class RequestResolver {
       finalBudget: finalBudget
         ? {
             maximum: finalBudget.maximum!,
-            currency: finalBudget.currency || 'EUR',
+            currency: finalBudget.currency || 'unknown',
             flexible: finalBudget.flexible,
             flexibilityPercent: finalBudget.flexibilityPercent,
           }
@@ -1182,7 +1192,7 @@ export function extractFreeShippingIntent(text: string): PreferenceCriterion | n
     id: 'shipping_cost',
     name: 'Livraison gratuite',
     level: 'required',
-    parameters: { exactValue: 0, unit: 'EUR', unknownPolicy: 'pass' },
+    parameters: { exactValue: 0, unit: 'unknown', unknownPolicy: 'pass' },
   };
 }
 

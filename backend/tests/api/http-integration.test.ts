@@ -150,19 +150,29 @@ describe('POST /search — result structure', () => {
     expect((first.provenance as Record<string, unknown>).source).toBeTruthy();
   });
 
-  test('XM5 search: provenance.source contains "+" (merged from multiple sources)', async () => {
-    // 4 merchants carry the XM5 → merged into 1 offer with combined provenance
+  // RÉÉCRIT — l'ancienne version attendait provenance.source =
+  // "sony-shop+fnac+amazon-fr+boulanger" sur UNE offre XM5, artefact de la
+  // fusion inter-marchands. Quatre marchands vendant le même casque sont
+  // quatre offres concurrentes ; agréger leurs sources sur une seule offre
+  // affirmait que quatre sources avaient renseigné SON prix, ce qui est faux.
+  // Le '+' garde son sens — plusieurs sources de recherche ayant trouvé LA
+  // MÊME annonce — mais ne s'applique pas à des marchands différents.
+  test('XM5 search: chaque offre expose la provenance de son propre marchand', async () => {
     const res = await postSearch({ query: 'sony wh-1000xm5' });
     expect(res.status).toBe(200);
 
-    const xm5 = (res.body.results as Array<Record<string, unknown>>).find(r =>
+    const xm5Offers = (res.body.results as Array<Record<string, unknown>>).filter(r =>
       r.productId === 'prod-sony-wh1000xm5'
     );
-    expect(xm5).toBeDefined();
+    expect(xm5Offers.length).toBeGreaterThan(1);
 
-    // Multi-source merge → provenance.source = "sony-shop+fnac+amazon-fr+boulanger"
-    const source = (xm5!.provenance as Record<string, unknown>).source as string;
-    expect(source).toContain('+');
+    for (const offer of xm5Offers) {
+      const source = (offer.provenance as Record<string, unknown>).source as string;
+      const merchant = (offer.merchant as Record<string, unknown>).id as string;
+      expect(source).toContain(merchant);
+      // Aucune offre ne s'attribue les sources des marchands concurrents.
+      expect(source).not.toContain('+');
+    }
   });
 
   test('Walkman search: provenance.source is single (1 merchant, no merge needed)', async () => {
@@ -1018,21 +1028,32 @@ describe('Profile CRUD — GET/PUT/DELETE /profile/:userId/criterion', () => {
 // ============================================================================
 
 describe('Source neutrality via HTTP (INVARIANT 3)', () => {
+  // RÉÉCRIT — l'ancienne version vérifiait INVARIANT 3 (« aucun marchand
+  // privilégié ») via la présence d'un '+' dans la provenance fusionnée.
+  // Avec les offres concurrentes conservées, l'invariant se vérifie
+  // directement, et bien plus solidement : les quatre marchands sont présents
+  // et la marque n'est pas remontée artificiellement.
   test('XM5 search: Sony Shop not ranked over other merchants purely by source identity', async () => {
-    // The merged XM5 offer should appear with combined provenance.
-    // It should NOT be replaced by a Sony-only offer to privilege the brand source.
     const res = await postSearch({ query: 'sony wh-1000xm5' });
     expect(res.status).toBe(200);
 
-    const xm5 = (res.body.results as Array<Record<string, unknown>>).find(r =>
+    const xm5Offers = (res.body.results as Array<Record<string, unknown>>).filter(r =>
       r.productId === 'prod-sony-wh1000xm5'
     );
-    expect(xm5).toBeDefined();
 
-    // Multi-source merge occurred (4 merchants)
-    const source = (xm5!.provenance as Record<string, unknown>).source as string;
-    // The source combines all merchants — no single merchant was privileged
-    expect(source).toContain('+');
+    // Les quatre marchands sont présents : aucun n'a été supprimé au profit
+    // d'un autre (NO_SILENT_MODIFICATION + MERCHANT_INDEPENDENCE).
+    const merchants = xm5Offers.map(o => (o.merchant as Record<string, unknown>).id as string);
+    expect(new Set(merchants)).toEqual(new Set(['sony-shop', 'fnac', 'amazon-fr', 'boulanger']));
+
+    // Sony Shop, le plus cher (349 €), ne doit rien gagner au fait d'être la
+    // marque : à critères égaux il ne peut pas devancer une offre moins chère.
+    const sonyShop = xm5Offers.find(o => (o.merchant as Record<string, unknown>).id === 'sony-shop');
+    const amazon = xm5Offers.find(o => (o.merchant as Record<string, unknown>).id === 'amazon-fr');
+    expect(sonyShop).toBeDefined();
+    expect(amazon).toBeDefined();
+    expect((sonyShop!.price as Record<string, unknown>).amount).toBe(349);
+    expect((amazon!.price as Record<string, unknown>).amount).toBe(319);
   });
 
   test('ranking score is stable regardless of which merchant was first in discovery order', async () => {

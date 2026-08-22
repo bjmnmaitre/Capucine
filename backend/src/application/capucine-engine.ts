@@ -530,8 +530,13 @@ export class CapucineEngine {
     // For single-offer groups: pass through unchanged.
     const deduplicationStart = Date.now();
     const deduplication = this.deduplicationEngine.deduplicate(candidates);
-    const deduplicatedOffers: Offer[] = deduplication.groups.map(g =>
-      this.deduplicationEngine.mergeGroup(g).merged
+    // One group is one PRODUCT; a product legitimately has several competing
+    // commercial offers (four merchants, four prices). resolveOffers() merges
+    // product-level data across the group while keeping each distinct offer —
+    // see deduplication.ts. Collapsing to one offer per group would delete
+    // real, often cheaper, prices.
+    const deduplicatedOffers: Offer[] = deduplication.groups.flatMap(g =>
+      this.deduplicationEngine.resolveOffers(g)
     );
     timing.deduplicationMs = Date.now() - deduplicationStart;
 
@@ -703,8 +708,13 @@ export class CapucineEngine {
     candidates = this.normalizeCandidates(candidates);
 
     const deduplication = this.deduplicationEngine.deduplicate(candidates);
-    const deduplicatedOffers: Offer[] = deduplication.groups.map(g =>
-      this.deduplicationEngine.mergeGroup(g).merged
+    // One group is one PRODUCT; a product legitimately has several competing
+    // commercial offers (four merchants, four prices). resolveOffers() merges
+    // product-level data across the group while keeping each distinct offer —
+    // see deduplication.ts. Collapsing to one offer per group would delete
+    // real, often cheaper, prices.
+    const deduplicatedOffers: Offer[] = deduplication.groups.flatMap(g =>
+      this.deduplicationEngine.resolveOffers(g)
     );
 
     const admissibility = this.admissibilityEngine.filter(

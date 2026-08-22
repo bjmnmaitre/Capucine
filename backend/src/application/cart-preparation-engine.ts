@@ -98,8 +98,24 @@ export interface CartPreparationRequest {
 // ============================================================================
 
 export interface CartPreparationResult {
-  status: 'success' | 'partial' | 'failed';
+  /**
+   * 'success'     — cart fully prepared, checkoutUrl is a verified merchant URL.
+   * 'partial'     — some steps prepared, user must finish manually.
+   * 'unavailable' — nothing could be prepared for this offer (no usable
+   *                 execution capability, or no verified purchase URL is
+   *                 known). This is the `not_available` outcome: an honest
+   *                 "Capucine cannot take you further", NEVER a fabricated
+   *                 link. An offer being 'unavailable' here says nothing
+   *                 about its ranking — see EXECUTION_INDEPENDENCE.
+   * 'failed'      — preparation was attempted and errored.
+   */
+  status: 'success' | 'partial' | 'unavailable' | 'failed';
   cart?: PreparedCart;
+  /**
+   * A REAL merchant URL, taken verbatim from the offer's provenance-tracked
+   * executionUrl. Never synthesized from a merchant id, never decorated with
+   * parameters Capucine invented.
+   */
   checkoutUrl?: string;
   nextAction?: string; // What user should do next
   error?: string;
@@ -147,10 +163,10 @@ export class CartPreparationEngine {
 
     if (!handler) {
       return {
-        status: 'partial',
+        status: 'unavailable',
         nextAction:
-          'Manual checkout required. No automatic cart integration available for this merchant. ' +
-          'Redirect to merchant checkout page to complete your purchase.',
+          'No automated cart preparation is available for this merchant. ' +
+          'Complete the purchase yourself on the merchant page shown with this offer.',
       };
     }
 
@@ -213,7 +229,29 @@ export class CartPreparationEngine {
 
 /**
  * Web Redirect Handler — Simple and universal.
- * Constructs a merchant checkout URL with pre-filled parameters.
+ *
+ * Hands the user the offer's REAL, provenance-tracked purchase URL.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO
+ * ──────────────────────────────────
+ * It does not synthesize a checkout URL from the merchant id (the old
+ * `https://<merchant-id>.com/checkout?product_id=…` construction). Such a URL
+ * is invented data: Capucine never verified that the host exists, that the
+ * path is a checkout, or that the merchant reads those parameters. Handing a
+ * user a fabricated link that merely *looks* authoritative is exactly the
+ * failure DATA_DISCIPLINE forbids — an unknown purchase URL must stay
+ * unknown ('unavailable'), never be guessed.
+ *
+ * It also does not append the user's email or name to the URL. Those
+ * parameters were invented too (no merchant agreed to read them), and putting
+ * personal data in a query string leaks it into browser history, referer
+ * headers and server logs for no benefit.
+ *
+ * A promo code is reported as an instruction, not smuggled into the URL as a
+ * `coupon` parameter Capucine has no evidence the merchant accepts.
+ *
+ * MERCHANT_INDEPENDENCE: this handler has no per-merchant table. It treats
+ * every merchant that declares `web_redirect` identically.
  */
 export class WebRedirectHandler implements MerchantExecutionHandler {
   readonly capability: ExecutionCapabilityType = 'web_redirect';
@@ -224,78 +262,87 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
 
   async prepareCart(request: CartPreparationRequest): Promise<CartPreparationResult> {
     const offer = request.offer;
-    const merchant = offer.merchant;
+    const now = new Date();
 
-    // Build checkout URL with pre-filled parameters
-    const checkoutUrl = new URL(`https://${this.getMerchantDomain(merchant)}/checkout`);
+    // The ONLY acceptable source of a purchase URL: the one carried by the
+    // offer itself, set at discovery time from the page actually retrieved.
+    const checkoutUrl = offer.executionUrl;
 
-    // Add product info
-    checkoutUrl.searchParams.set('product_id', offer.productId);
-    checkoutUrl.searchParams.set('quantity', String(request.quantity));
-
-    // Add user info (for pre-fill)
-    if (request.userEmail) {
-      checkoutUrl.searchParams.set('email', request.userEmail);
-    }
-    if (request.userFirstName) {
-      checkoutUrl.searchParams.set('first_name', request.userFirstName);
-    }
-    if (request.userLastName) {
-      checkoutUrl.searchParams.set('last_name', request.userLastName);
-    }
-    if (request.shippingCountry) {
-      checkoutUrl.searchParams.set('country', request.shippingCountry);
+    if (!checkoutUrl) {
+      return {
+        status: 'unavailable',
+        nextAction:
+          'No verified purchase URL is known for this offer, so Capucine cannot ' +
+          'take you to the merchant. Search this offer on the merchant site to continue.',
+      };
     }
 
-    // Add promo code (if applicable)
-    if (request.appliedPromo) {
-      checkoutUrl.searchParams.set('coupon', request.appliedPromo.promotion.code);
-    }
+    const cart: PreparedCart = {
+      id: `cart-${offer.id}`,
+      offer,
+      quantity: request.quantity,
+      selectedVariants: request.selectedVariants,
+      appliedPromo: request.appliedPromo,
+      merchantCheckoutUrl: checkoutUrl,
+      executionCapability: this.capability,
+      // Status is 'partially_prepared', not 'prepared': a web redirect hands
+      // over a page, it does not create a cart on the merchant's side. Saying
+      // 'prepared' would overstate what actually happened.
+      status: 'partially_prepared',
+      createdAt: now,
+      updatedAt: now,
+      preparedAt: now,
+    };
+
+    const steps = [
+      'Open the merchant page to complete your purchase.',
+      request.quantity > 1 ? `Set the quantity to ${request.quantity}.` : null,
+      request.appliedPromo
+        ? `Enter the promo code ${request.appliedPromo.promotion.code} at checkout.`
+        : null,
+      'You will log in and confirm payment on the merchant site — Capucine never takes payment.',
+    ].filter((step): step is string => step !== null);
 
     return {
       status: 'partial',
-      checkoutUrl: checkoutUrl.toString(),
-      nextAction:
-        'Click the checkout link to complete your purchase. ' +
-        'You will need to log in to your merchant account and confirm payment.',
+      cart,
+      checkoutUrl,
+      nextAction: steps.join(' '),
     };
-  }
-
-  private getMerchantDomain(merchant: Merchant): string {
-    // Map merchant ID to domain
-    const domains: Record<string, string> = {
-      amazon: 'amazon.com',
-      fnac: 'fnac.com',
-      cdiscount: 'cdiscount.com',
-    };
-
-    return domains[merchant.id.toLowerCase()] || `${merchant.id.toLowerCase()}.com`;
   }
 }
 
 /**
- * OAuth Redirect Handler — Medium integration with auto-fill.
- * Initiates OAuth login and pre-fills cart on merchant's end.
+ * OAuth Redirect Handler — NOT IMPLEMENTED (architectural stub).
+ *
+ * A real OAuth checkout needs three things Capucine does not have: an OAuth
+ * client registered with each merchant, client credentials held in a secure
+ * vault, and a callback endpoint. Until those exist this handler cannot
+ * prepare anything.
+ *
+ * WHY canHandle() RETURNS FALSE
+ * ─────────────────────────────
+ * selectHandler() prefers oauth_redirect over web_redirect. If this stub
+ * claimed the capability, an offer from a merchant that declares
+ * `oauth_redirect` would be routed here and the user would receive a promise
+ * with no URL — while WebRedirectHandler, sitting right behind it, could have
+ * handed over the offer's real page. A stub must never claim a capability it
+ * cannot honour: it declines, and selection falls through to something that
+ * actually works.
  */
 export class OAuthRedirectHandler implements MerchantExecutionHandler {
   readonly capability: ExecutionCapabilityType = 'oauth_redirect';
 
-  canHandle(merchant: Merchant): boolean {
-    return merchant.executionCapabilities.includes('oauth_redirect');
+  canHandle(_merchant: Merchant): boolean {
+    return false;
   }
 
-  async prepareCart(request: CartPreparationRequest): Promise<CartPreparationResult> {
-    // OAuth would need:
-    // 1. OAuth endpoint registration with merchant
-    // 2. Client ID / Secret (stored securely, not in Capucine)
-    // 3. Callback redirect after auth
-
-    // For now, return partial — actual OAuth implementation requires merchant API keys
+  async prepareCart(_request: CartPreparationRequest): Promise<CartPreparationResult> {
     return {
-      status: 'partial',
+      status: 'unavailable',
       nextAction:
-        'OAuth-based checkout: you will be redirected to log in to your merchant account. ' +
-        'Once authenticated, your cart will be pre-filled automatically.',
+        'OAuth-based checkout is not available: Capucine has no OAuth client registered ' +
+        'with this merchant.',
     };
   }
 }
@@ -321,10 +368,13 @@ export class MerchantAPIHandler implements MerchantExecutionHandler {
     // 1. Fetch API credentials for merchant from secure vault
     // 2. Call merchant's cart API to create cart
     // 3. Return cart ID and checkout URL
-
+    //
+    // Unreachable in practice: canHandle() already requires credentials that
+    // no deployment currently provides. Kept explicit rather than throwing so
+    // the outcome stays a described 'unavailable' rather than an error.
     return {
-      status: 'partial',
-      nextAction: 'Merchant API preparation not yet implemented. Falling back to web redirect.',
+      status: 'unavailable',
+      nextAction: 'Merchant API cart preparation is not implemented for this merchant.',
     };
   }
 

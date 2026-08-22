@@ -211,6 +211,8 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     let queriesExecuted = 0;
     let sourcesAttempted = 0;
     let sourcesFailed = 0;
+    const newOffersPerQuery: number[] = [];
+    const seenUrls = new Set<string>();
 
     const runStrategies = async (strategies: SearchStrategy[]): Promise<void> => {
       if (strategies.length === 0) return;
@@ -259,18 +261,45 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
               return;
             }
             output = toolResp.data;
+
+            // Count new unique URLs from this query
+            const newUrls = output.results
+              .map(r => ({ ...r, __sourceName: toolResp.provenance.source }))
+              .filter(r => r.url && !seenUrls.has(r.url))
+              .length;
+
+            // Add new URLs to seen set
+            output.results
+              .filter(r => r.url)
+              .forEach(r => seenUrls.add(r.url));
+
             allResults.push(...output.results.map(r => ({ ...r, __sourceName: toolResp.provenance.source })));
+            newOffersPerQuery.push(newUrls);
           } else {
             output = await task.adapter!.search({
               query: task.strategy.query,
               maxResults: Math.min(criteria.limit ?? 10, 20),
               language: task.strategy.language,
             });
+
+            // Count new unique URLs from this query
+            const newUrls = output.results
+              .map(r => ({ ...r, __sourceName: task.adapter!.adapterName }))
+              .filter(r => r.url && !seenUrls.has(r.url))
+              .length;
+
+            // Add new URLs to seen set
+            output.results
+              .filter(r => r.url)
+              .forEach(r => seenUrls.add(r.url));
+
             allResults.push(...output.results.map(r => ({ ...r, __sourceName: task.adapter!.adapterName })));
+            newOffersPerQuery.push(newUrls);
           }
         } catch {
           // One source/query failing is recoverable — never aborts the rest.
           sourcesFailed += 1;
+          newOffersPerQuery.push(0); // Record 0 new offers for failed query
         }
       });
     };
@@ -313,6 +342,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     // is opt-in, never automatic, per Part 24: it multiplies query/enrichment
     // cost and must not run on every request). Reuses the SAME
     // SearchCoverage/budget machinery as phases 1-2 — no second budget system.
+    // Recompute coverage after phases 1-2 to determine if phase 3 is needed
     const midCoverage = computeSearchCoverage(
       {
         queriesExecuted,
@@ -662,8 +692,8 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         seenUrls.add(result.url);
       }
 
-      // Extract price from snippet (heuristic)
-      const price = this.extractPrice(result.snippet);
+      // Extract price and currency from snippet (heuristic)
+      const { price, currency } = this.extractPriceAndCurrency(result.snippet);
 
       // Apply price filter early (hard filter — not ranking)
       if (criteria.maxPrice !== undefined && price !== null && price > criteria.maxPrice) {
@@ -671,7 +701,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
       }
 
       // Build a minimal offer from the search result
-      const offer = this.buildOfferSkeleton(result, price);
+      const offer = this.buildOfferSkeleton(result, price, currency);
       const keywords = criteria.keywords ?? [];
       const text = `${result.title} ${result.snippet}`.toLowerCase();
       const keywordsMatched = keywords.filter((kw) => text.includes(kw.toLowerCase())).length;
@@ -700,7 +730,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     return candidates.slice(0, criteria.limit ?? 20);
   }
 
-  private buildOfferSkeleton(result: SourcedWebResult, price: number | null): Offer {
+  private buildOfferSkeleton(result: SourcedWebResult, price: number | null, currency: string): Offer {
     const id = `web-${result.domain}-${result.position}`;
 
     // Price DataPoint — provenance names the EXACT source that produced this
@@ -724,7 +754,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         executionCapabilities: [],
       },
       price: priceDP,
-      currency: 'EUR',
+      currency: currency,
       shippingCost: { value: null, status: 'unknown' },
       characteristics: {
         title: { value: result.title, status: 'known', provenance: prov },
@@ -738,26 +768,35 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     };
   }
 
-  /** Heuristic price extraction from snippet text */
-  private extractPrice(snippet: string): number | null {
-    // Match patterns like "€599", "599€", "599,00 €", "599.00€"
+  /** Heuristic price and currency extraction from snippet text */
+  private extractPriceAndCurrency(snippet: string): { price: number | null; currency: string } {
+    // Patterns for price and currency
     const patterns = [
-      /€\s*(\d[\d\s]*(?:[.,]\d{1,2})?)/,
-      /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*€/,
-      /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*euros?/i,
+      // € patterns
+      { re: /€\s*(\d[\d\s]*(?:[.,]\d{1,2})?)/, currency: 'EUR' },
+      { re: /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*€/, currency: 'EUR' },
+      { re: /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*euros?/i, currency: 'EUR' },
+      // £ patterns
+      { re: /£\s*(\d[\d\s]*(?:[.,]\d{1,2})?)/, currency: 'GBP' },
+      { re: /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*£/, currency: 'GBP' },
+      { re: /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*pounds?/i, currency: 'GBP' },
+      // $ patterns
+      { re: /\$\s*(\d[\d\s]*(?:[.,]\d{1,2})?)/, currency: 'USD' },
+      { re: /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*\$/, currency: 'USD' },
+      { re: /(\d[\d\s]*(?:[.,]\d{1,2})?)\s*dollars?/i, currency: 'USD' },
     ];
 
-    for (const pattern of patterns) {
-      const match = snippet.match(pattern);
+    for (const { re, currency } of patterns) {
+      const match = snippet.match(re);
       if (match) {
         const raw = match[1].replace(/\s/g, '').replace(',', '.');
         const price = parseFloat(raw);
         if (!isNaN(price) && price > 0 && price < 100000) {
-          return price;
+          return { price, currency };
         }
       }
     }
 
-    return null;
+    return { price: null, currency: 'unknown' };
   }
 }

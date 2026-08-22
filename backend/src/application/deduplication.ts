@@ -151,7 +151,16 @@ export interface DeduplicationResult {
   /** Total distinct products/groups output */
   distinctProducts: number;
 
-  /** Offers removed as duplicates */
+  /**
+   * How many input rows were folded into an existing PRODUCT group
+   * (`totalInput - groups.length`).
+   *
+   * NOT the number of offers dropped from the results. Grouping is by product,
+   * and one product group legitimately yields several competing offers — four
+   * merchants selling one headset count as 3 here while all four offers are
+   * kept (see resolveOffers()). The count of real duplicates collapsed is
+   * therefore `totalInput - resolveOffers(...).length`, which is usually 0.
+   */
   duplicatesRemoved: number;
 
   processingTimeMs?: number;
@@ -427,6 +436,140 @@ export class DeduplicationEngine {
     };
   }
 
+  /**
+   * Turn ONE product group into the set of distinct COMMERCIAL OFFERS it holds.
+   *
+   * PRODUCT IDENTITY ≠ OFFER IDENTITY — the distinction this method exists to
+   * enforce. deduplicate() groups by product: a group is "every row we believe
+   * describes the Sony WH-1000XM5". That group legitimately contains four
+   * competing offers at 319 / 329 / 335 / 349 € from four merchants. Collapsing
+   * it to a single Offer (what `groups.map(mergeGroup)` used to do) deleted
+   * three real prices — including the cheapest — which is the opposite of what
+   * a shopping agent exists to do.
+   *
+   * So the group is resolved at two levels:
+   *
+   *   PRODUCT level → `characteristics` are merged across the WHOLE group, so
+   *     agreement between merchants still upgrades a field to 'verified' and
+   *     disagreement is still preserved as 'contradictory'. Cross-merchant
+   *     conflict detection is kept exactly as it was.
+   *
+   *   OFFER level → every distinct offer identity in the group yields its own
+   *     Offer, keeping ITS OWN price, merchant, shipping, URL and provenance.
+   *     Only genuine duplicates of the same offer (one listing seen by two
+   *     search sources) are collapsed.
+   *
+   * DATA_DISCIPLINE: an offer's own commercial fields are never overwritten by
+   * another merchant's, and its provenance names only the sources that actually
+   * reported THAT offer — never the union of the whole group.
+   */
+  resolveOffers(group: DeduplicationGroup): Offer[] {
+    if (group.offers.length === 0) return [];
+
+    // Product-level merge over the whole group (conflict detection lives here).
+    const mergedCharacteristics = group.offers.length === 1
+      ? group.offers[0].characteristics
+      : this.mergeGroup(group).merged.characteristics;
+
+    // Partition into distinct commercial offers, in two passes.
+    const byLocation = new Map<string, Offer[]>();
+    for (const offer of group.offers) {
+      const key = this.offerLocationKey(offer);
+      const bucket = byLocation.get(key);
+      if (bucket) bucket.push(offer);
+      else byLocation.set(key, [offer]);
+    }
+
+    const offerBuckets: Offer[][] = [];
+    for (const sameLocation of byLocation.values()) {
+      offerBuckets.push(...this.splitByCondition(sameLocation));
+    }
+
+    const resolved: Offer[] = [];
+    for (const duplicates of offerBuckets) {
+      // Same offer reported by several sources: pick the most complete row as
+      // the structural base, exactly as before.
+      const base = duplicates.length === 1
+        ? duplicates[0]
+        : this.selectBestOffer({ ...group, offers: duplicates }).best;
+
+      const sources = [...new Set(duplicates.map(o => o.provenance?.source ?? o.merchant.id))];
+
+      resolved.push({
+        ...base,
+        // Product-level knowledge, shared by every offer of this product.
+        characteristics: mergedCharacteristics,
+        provenance: {
+          // Only the sources that reported THIS offer. A '+' here means "two
+          // search sources found this same listing", never "several merchants".
+          source: sources.join('+'),
+          retrievedAt: base.provenance?.retrievedAt ?? new Date(),
+          reliability: base.provenance?.reliability,
+        },
+      });
+    }
+
+    return resolved;
+  }
+
+  /**
+   * WHERE an offer is sold — the first half of offer identity.
+   *
+   * A purchase URL identifies a listing outright, so it wins when known.
+   * Otherwise the merchant is what locates the offer. When neither is known
+   * there is nothing to prove two rows are the same offer, so the offer's own
+   * id is used and it merges with nothing: keeping a possible duplicate costs
+   * a redundant row, whereas merging on a guess would destroy a real offer
+   * (DATA_DISCIPLINE — unknown is not a value).
+   */
+  private offerLocationKey(offer: Offer): string {
+    const url = this.normalizeOfferUrl(offer.executionUrl);
+    if (url) return `url:${url}`;
+
+    const merchantId = offer.merchant?.id?.trim().toLowerCase();
+    if (!merchantId) return `offer:${offer.id}`;
+
+    return `merchant:${merchantId}`;
+  }
+
+  /**
+   * Split one merchant's offers by CONDITION — the second half of offer
+   * identity. The same product sold new and refurbished by one merchant is two
+   * offers at two prices, not one.
+   *
+   * Splitting happens ONLY when the merchant really does list two or more
+   * DIFFERENT known conditions. A single known condition — even alongside rows
+   * that say nothing about condition — splits nothing: an absent condition is
+   * not evidence of a different one (DATA_DISCIPLINE). When the merchant does
+   * list several conditions, rows with an unknown condition cannot be
+   * attributed to either and are kept on their own rather than guessed into
+   * one of them.
+   */
+  private splitByCondition(offers: Offer[]): Offer[][] {
+    if (offers.length <= 1) return [offers];
+
+    const conditionOf = (offer: Offer): string | null => {
+      const condition = this.getCharValue(offer, 'condition');
+      if (condition === null || condition === undefined) return null;
+      const normalized = String(condition).trim().toLowerCase();
+      return normalized === '' ? null : normalized;
+    };
+
+    const knownConditions = new Set(
+      offers.map(conditionOf).filter((c): c is string => c !== null)
+    );
+    if (knownConditions.size <= 1) return [offers];
+
+    const byCondition = new Map<string, Offer[]>();
+    for (const offer of offers) {
+      const key = conditionOf(offer) ?? 'condition:unknown';
+      const bucket = byCondition.get(key);
+      if (bucket) bucket.push(offer);
+      else byCondition.set(key, [offer]);
+    }
+    return [...byCondition.values()];
+  }
+
   // ── Matching ──────────────────────────────────────────────────────────────
 
   /**
@@ -456,6 +599,38 @@ export class DeduplicationEngine {
     const identitySignals: IdentitySignal[] = [];
     let accumulatedWeight = 0;
     let hasDefinitiveSignal = false;
+
+    // ── 0. Identical purchase URL ────────────────────────────────────────────
+    //
+    // The strongest identity signal available: one URL is one listing of one
+    // product at one merchant, so it settles PRODUCT identity (grouping, here)
+    // and OFFER identity (partitioning, see offerIdentityKey()) at once.
+    // It is what makes the multi-source case work — Brave and Serper both
+    // returning the same product page describe one offer, even when the two
+    // adapters spelled the merchant differently or recorded none at all.
+    //
+    // NOTE ON SCOPE: everything below this point establishes that two rows
+    // describe the same PRODUCT — never that they are the same OFFER. Two
+    // merchants listing the same EAN are the same product and two competing
+    // offers. That distinction is enforced in resolveOffers(), not here: this
+    // method's job is product identity, and grouping by product is what lets
+    // cross-merchant data conflicts be detected at all.
+    if (this.isSameOfferUrl(a, b)) {
+      const url = String(a.executionUrl);
+      const signal: IdentitySignal = {
+        type: 'url_redirect',
+        matchedValue: url,
+        weight: 1.0,
+        isDefinitive: true,
+      };
+      return {
+        shouldGroup: true,
+        confidence: 'certain',
+        quality: 'EXACT_MATCH',
+        reasons: [{ type: 'url_redirect', description: `Identical offer URL: ${url}`, weight: 1.0 }],
+        identitySignals: [signal],
+      };
+    }
 
     // ── 1. Definitive identifier signals (weight = 1.0) ──────────────────────
 
@@ -490,7 +665,9 @@ export class DeduplicationEngine {
       hasDefinitiveSignal = true;
     }
 
-    // Definitive → EXACT_MATCH immediately (don't bother accumulating more)
+    // Definitive → EXACT_MATCH immediately (don't bother accumulating more).
+    // Reaching this point already means the two offers passed the offer-identity
+    // gate above, so a shared product identifier really does mean same offer.
     if (hasDefinitiveSignal) {
       return {
         shouldGroup: true,
@@ -572,6 +749,40 @@ export class DeduplicationEngine {
       confidence === 'certain' ? 'HIGH_CONFIDENCE' : toMatchQuality(confidence);
 
     return { shouldGroup: true, confidence, quality, reasons, identitySignals };
+  }
+
+  /**
+   * Are these two offers sold by the SAME merchant?
+   *
+   * Returns false when either merchant id is missing: an unknown merchant is
+   * not evidence of a shared one (DATA_DISCIPLINE — unknown is not a value).
+   * Erring towards "different" keeps both offers, which at worst shows a
+   * duplicate row; erring the other way would destroy a real, possibly
+   * cheaper offer.
+   */
+  /**
+   * Do these two rows point at the exact same purchase URL?
+   *
+   * Normalization is deliberately conservative: case and a trailing slash
+   * carry no meaning, and a fragment addresses a position within one page.
+   * Query parameters are KEPT — on many merchants they select the actual
+   * variant being sold (?size=42, ?variant=256gb), so stripping them would
+   * merge two genuinely different offers.
+   */
+  private isSameOfferUrl(a: Offer, b: Offer): boolean {
+    const urlA = this.normalizeOfferUrl(a.executionUrl);
+    const urlB = this.normalizeOfferUrl(b.executionUrl);
+    if (!urlA || !urlB) return false;
+    return urlA === urlB;
+  }
+
+  private normalizeOfferUrl(url: string | undefined): string | null {
+    if (!url) return null;
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+    const withoutFragment = trimmed.split('#')[0];
+    const normalized = withoutFragment.replace(/\/+$/, '').toLowerCase();
+    return normalized || null;
   }
 
   private deduplicateSignals(signals: IdentitySignal[]): IdentitySignal[] {

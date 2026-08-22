@@ -81,7 +81,7 @@ export class NormalizationEngine {
       });
 
       if (candidateRules.length === 0) {
-        // No rules apply; return value as-is with unknown status
+        // No rules apply; return value as-is with known status
         return {
           success: true,
           normalizedValue: {

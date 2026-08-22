@@ -719,32 +719,62 @@ describe('Business Scenarios — Extended Catalog', () => {
     // Product is ranked despite contradictory data (INVARIANT 5: not silently excluded)
   });
 
-  test('BS-07: Multiple offers per product — 4 XM5 offers merged into 1', () => {
+  // RÉÉCRIT — l'ancienne version affirmait « 4 offres XM5 fusionnées en 1 ».
+  // Cette hypothèse confond identité PRODUIT et identité OFFRE : quatre
+  // marchands vendant le même casque à 319 / 329 / 335 / 349 € sont quatre
+  // offres commerciales concurrentes, et les comparer est la fonction même de
+  // Capucine. Fusionner supprimait trois prix réels, dont le moins cher.
+  // Ce qui est réellement protégé ici — « les 4 entrées catalogue du XM5 sont
+  // reconnues comme UN SEUL produit » — est conservé, au niveau du produit.
+  test('BS-07: Multiple offers per product — 4 XM5 offers stay 4 comparable offers', () => {
     const result = engine.searchSync(createSearchRequest('sony wh-1000xm5 casque'));
 
-    // There are 4 catalog entries for XM5 (Sony Shop, Fnac, Amazon, Boulanger)
-    // Deduplication should produce exactly 1 merged offer
     const xm5Results = result.ranking.rankedOffers.filter(ro =>
       ro.offer.characteristics.model?.value === 'WH-1000XM5'
     );
-    expect(xm5Results).toHaveLength(1);
 
-    // Deduplication stats show grouping happened
+    // Les 4 offres concurrentes sont conservées…
+    expect(xm5Results).toHaveLength(4);
+
+    // …et proviennent de 4 marchands distincts, chacun avec son propre prix.
+    const merchants = xm5Results.map(ro => ro.offer.merchant.id);
+    expect(new Set(merchants).size).toBe(4);
+    const prices = xm5Results.map(ro => ro.offer.price.value).sort((a, b) => Number(a) - Number(b));
+    expect(prices).toEqual([319, 329, 335, 349]);
+
+    // …tout en étant reconnues comme UN SEUL produit par la déduplication.
     expect(result.deduplication.totalInput).toBeGreaterThanOrEqual(4);
-    expect(result.deduplication.duplicatesRemoved).toBeGreaterThanOrEqual(3);
+    const xm5Group = result.deduplication.groups.find(g =>
+      g.offers.some(o => o.characteristics.model?.value === 'WH-1000XM5')
+    );
+    expect(xm5Group).toBeDefined();
+    expect(xm5Group!.offers).toHaveLength(4);
   });
 
-  test('BS-08: Same product at multiple merchants — merged offer tracks all merchant sources', () => {
+  // RÉÉCRIT — l'ancienne version attendait une provenance fusionnée
+  // « sony-shop+fnac+amazon-fr+boulanger » sur UNE offre. C'était l'artefact de
+  // la fusion inter-marchands : agréger ces sources sur une seule offre
+  // laissait entendre que quatre marchands avaient renseigné SON prix, ce qui
+  // est faux. La provenance de chaque offre ne doit nommer que les sources qui
+  // ont réellement rapporté CETTE offre (DATA_DISCIPLINE).
+  test('BS-08: Same product at multiple merchants — chaque offre garde sa propre provenance', () => {
     const result = engine.searchSync(createSearchRequest('sony wh-1000xm5'));
-    const xm5 = result.ranking.rankedOffers.find(ro =>
+    const xm5Results = result.ranking.rankedOffers.filter(ro =>
       ro.offer.characteristics.model?.value === 'WH-1000XM5'
     );
-    expect(xm5).toBeDefined();
+    expect(xm5Results.length).toBeGreaterThan(1);
 
-    // Merged provenance should reference multiple sources
-    const provenanceSource = xm5!.offer.provenance?.source ?? '';
-    // After mergeGroup, source is concatenated with '+': "sony-shop+fnac+amazon-fr+boulanger"
-    expect(provenanceSource).toContain('+');
+    // Chaque offre est attribuée à son propre marchand, jamais à l'union.
+    for (const ro of xm5Results) {
+      const provenance = ro.offer.provenance?.source ?? '';
+      expect(provenance).toContain(ro.offer.merchant.id);
+      expect(provenance).not.toContain('+');
+    }
+
+    // Les quatre marchands du catalogue sont tous représentés : aucun n'a été
+    // silencieusement supprimé (NO_SILENT_MODIFICATION).
+    const merchants = new Set(xm5Results.map(ro => ro.offer.merchant.id));
+    expect(merchants).toEqual(new Set(['sony-shop', 'fnac', 'amazon-fr', 'boulanger']));
   });
 
   test('BS-09: UNKNOWN field does not count as zero for repairability scoring', () => {
@@ -778,19 +808,23 @@ describe('Business Scenarios — Extended Catalog', () => {
     }
   });
 
-  test('BS-11: Sneaker search returns Nike Air Max 90 from multiple merchants merged into 1', () => {
+  // RÉÉCRIT — même raison que BS-07/BS-08 : les 3 entrées catalogue Nike sont
+  // 3 offres commerciales concurrentes, pas 3 doublons.
+  test('BS-11: Sneaker search returns Nike Air Max 90 from multiple merchants, kept distinct', () => {
     const result = engine.searchSync(createSearchRequest('nike air max 90 baskets sneakers blanc homme 44'));
     const ranked = result.ranking.rankedOffers;
 
     expect(ranked.length).toBeGreaterThan(0);
 
-    // 3 catalog entries for Nike Air Max 90 → merged into 1
-    const nike = ranked.find(ro => ro.offer.characteristics.model?.value === 'Air Max 90');
-    expect(nike).toBeDefined();
+    const nikeOffers = ranked.filter(ro => ro.offer.characteristics.model?.value === 'Air Max 90');
+    expect(nikeOffers.length).toBeGreaterThan(1);
 
-    // Provenance includes multiple sources (Amazon + Fnac + Cdiscount)
-    const provenance = nike!.offer.provenance?.source ?? '';
-    expect(provenance).toContain('+');
+    // Marchands distincts, provenance honnête pour chacun.
+    const merchants = nikeOffers.map(ro => ro.offer.merchant.id);
+    expect(new Set(merchants).size).toBe(merchants.length);
+    for (const ro of nikeOffers) {
+      expect(ro.offer.provenance?.source ?? '').toContain(ro.offer.merchant.id);
+    }
   });
 
   test('BS-12: Refurb product (BackMarket) not systematically excluded from results', () => {
