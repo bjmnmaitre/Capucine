@@ -30,7 +30,7 @@
  * SECURITY: No API keys in this file. AI provider configuration is injected.
  */
 
-import { UserProfile, PreferenceCriterion, RankingResult, Offer } from '../domain/types';
+import { UserProfile, PreferenceCriterion, RankingResult, Offer, UsageContext } from '../domain/types';
 import { AdmissibilityEngine, AdmissibilityBatch, RejectedOffer } from '../domain/admissibility';
 import { ProfileEngine, ProfileOverride } from '../domain/profile';
 import { rankOffers } from '../decision/priority-engine';
@@ -449,7 +449,12 @@ export class CapucineEngine {
     const profileMergeStart = Date.now();
     const effectiveCriteriaSet = this.profileEngine.resolve(
       request.profile,
-      { criteria: preProfileCriteria, createdAt: new Date(), queryText: request.queryText },
+      {
+        criteria: preProfileCriteria,
+        createdAt: new Date(),
+        queryText: request.queryText,
+        usageContext: interpretedRequest?.usageContext,
+      },
       request.overrides ?? [],
       request.requestId
     );
@@ -462,7 +467,8 @@ export class CapucineEngine {
       effectiveCriteria,
       request.queryText,
       request.requestId,
-      interpretedRequest
+      interpretedRequest,
+      effectiveCriteriaSet.usageContext
     );
 
     // If AI orchestrator available, enrich plan with synonyms / alternative terms
@@ -805,7 +811,8 @@ export class CapucineEngine {
     criteria: PreferenceCriterion[],
     queryText: string,
     requestId: string,
-    interpreted?: InterpretedRequest
+    interpreted?: InterpretedRequest,
+    usageContext?: UsageContext
   ): SearchPlan {
     // Use interpreter's product terms if available (brand names, model numbers, etc.)
     // Fall back to keyword extraction from raw text.
@@ -1141,6 +1148,11 @@ export class CapucineEngine {
     // At deeper levels (4+), include secondary market
     if (plan.expansion.currentLevel >= 4) {
       criteria.verifiedOnly = false;
+    }
+
+    // Copy usage context from plan to discovery criteria (contextual signals, not hard constraints)
+    if (plan.usageContext) {
+      criteria.usageContext = plan.usageContext;
     }
 
     criteria.limit = this.options.maxCandidates;

@@ -22,7 +22,7 @@
  * GATE 14 + GATE 15 + GATE 16 IMPLEMENTATION
  */
 
-import { PreferenceCriterion } from '../domain/types';
+import { PreferenceCriterion, UsageContext } from '../domain/types';
 
 // ============================================================================
 // SEARCH LEVEL
@@ -224,6 +224,9 @@ export interface SearchPlan {
     maxResults?: number;
     searchDepth?: 'shallow' | 'normal' | 'deep';
   };
+
+  // Usage context for contextual signals (not hard constraints)
+  usageContext?: UsageContext;
 
   // ── Fallback strategy ─────────────────────────────────────────────────────
   /**
@@ -454,6 +457,7 @@ export class SearchPlanBuilder {
     secondaryMarketIncluded?: boolean;
     maxPrice?: number;
     currency?: string;
+    usageContext?: UsageContext;
   }): SearchPlan {
 
     const rarityLevel = config.rarityLevel || 'common';
@@ -503,6 +507,8 @@ export class SearchPlanBuilder {
         maxResults: 50,
         searchDepth: rarityLevel === 'common' ? 'shallow' : 'deep',
       },
+
+      usageContext: config.usageContext,
 
       onNoResults: 'expand_and_report',
     };

@@ -11,7 +11,7 @@
  * - ClarificationNeeded: prompt for user to disambiguate
  */
 
-import { PreferenceCriterion, PreferenceLevel } from '../domain/types';
+import { PreferenceCriterion, PreferenceLevel, UsageContext } from '../domain/types';
 
 // ============================================================================
 // USER QUERY (INPUT)
@@ -95,6 +95,9 @@ export interface InterpretedRequest {
     proposedLevel: PreferenceLevel;
     reason: string;
   }[];
+
+  // Usage context from interpretation (non-binding contextual signals)
+  usageContext?: UsageContext;
 
   /**
    * Suggested search terms extracted from the query.

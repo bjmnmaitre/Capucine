@@ -13,7 +13,7 @@
  * GATE 4 + GATE 5 IMPLEMENTATION
  */
 
-import { PreferenceLevel, PreferenceCriterion, UserProfile, CurrentSearchRequirements } from './types';
+import { PreferenceLevel, PreferenceCriterion, UserProfile, CurrentSearchRequirements, UsageContext } from './types';
 import { GenericCriterion, CriterionOrigin } from './criterion';
 
 // ============================================================================
@@ -87,6 +87,7 @@ export interface EffectiveCriteriaSet {
 
   // Conflicts between profile and request (user chose explicitly)
   resolvedConflicts: ConflictResolution[];
+  usageContext?: UsageContext;
 
   // Metadata
   resolvedAt: Date;
@@ -260,6 +261,7 @@ export class ProfileEngine {
       traceability,
       appliedOverrides,
       resolvedConflicts,
+      usageContext: request.usageContext,
       resolvedAt: new Date(),
       searchId,
     };

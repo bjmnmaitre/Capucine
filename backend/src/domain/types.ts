@@ -31,6 +31,90 @@ export type PreferenceLevel =
   | 'none';
 
 // ============================================================================
+// USAGE CONTEXT DEFINITIONS
+// ============================================================================
+
+/**
+ * Usage context represents how the user intends to use a product.
+ * This is contextual information that influences attribute relevance
+ * but does NOT become a hard constraint.
+ */
+export interface UsageContext {
+  /** Primary use case (music, transport, sport, etc.) */
+  usage: UsageType;
+  /** Specific context or environment (transport, office, home, etc.) */
+  context?: ContextType;
+  /** Source of this information */
+  source: 'user' | 'inferred' | 'profile';
+  /** Confidence in this interpretation (0-1) */
+  confidence: number;
+  /** When this was determined */
+  timestamp: Date;
+}
+
+/** Types of usage contexts supported */
+export type UsageType =
+  | 'music'
+  | 'transport'
+  | 'travel'
+  | 'sport'
+  | 'office'
+  | 'gaming'
+  | 'home'
+  | 'outdoor'
+  | 'other';
+
+/** Specific contexts that refine usage */
+export type ContextType =
+  | 'transport'
+  | 'office'
+  | 'home'
+  | 'outdoor'
+  | 'gaming'
+  | 'studio'
+  | 'classroom'
+  | 'gym'
+  | 'travel'
+  | 'other';
+
+/**
+ * Contextual signals indicate which product attributes are relevant
+ * for a given usage context. These are NOT hard constraints - they
+ * merely indicate relevance for ranking and search strategy.
+ */
+export interface ContextualSignals {
+  /** Whether portability is relevant (e.g., for transport usage) */
+  portability?: RelevanceLevel;
+  /** Whether weight is relevant */
+  weight?: RelevanceLevel;
+  /** Whether battery life is relevant */
+  batteryLife?: RelevanceLevel;
+  /** Whether noise cancellation is relevant */
+  noiseCancellation?: RelevanceLevel;
+  /** Whether comfort is relevant */
+  comfort?: RelevanceLevel;
+  /** Whether audio quality is relevant */
+  audioQuality?: RelevanceLevel;
+  /** Whether microphone quality is relevant */
+  microphone?: RelevanceLevel;
+  /** Whether latency is relevant */
+  latency?: RelevanceLevel;
+  /** Whether stability is relevant */
+  stability?: RelevanceLevel;
+  /** Whether sweat resistance is relevant */
+  sweatResistance?: RelevanceLevel;
+  /** Whether spatial audio is relevant */
+  spatialAudio?: RelevanceLevel;
+  /** Whether foldability is relevant */
+  foldability?: RelevanceLevel;
+  /** Whether compatibility is relevant */
+  compatibility?: RelevanceLevel;
+}
+
+/** Levels of relevance for contextual signals */
+export type RelevanceLevel = 'relevant' | 'neutral' | 'not_relevant';
+
+// ============================================================================
 // DATA QUALITY & PROVENANCE
 // ============================================================================
 
@@ -141,6 +225,9 @@ export interface UserProfile {
   preferredUnits?: 'metric' | 'imperial';
   preferredVoice?: string;     // provider-specific voice id (see voice-providers.ts)
   preferredResponseMode?: 'text' | 'voice' | 'hybrid'; // see interaction-preferences.ts OutputModality
+
+  // Usage context history (for learning, not for hard constraints)
+  usageContextHistory?: UsageContext[];
 }
 
 // ============================================================================
@@ -167,6 +254,9 @@ export interface CurrentSearchRequirements {
     temporaryLevel: PreferenceLevel;
     reason?: string; // Why this exception exists
   }[];
+
+  // Usage context for this search (contextual, not hard constraint)
+  usageContext?: UsageContext;
 
   // Clarifications made during AI interpretation
   clarifications?: {
@@ -432,6 +522,9 @@ export interface MergedContext {
   // The effective criteria after merging profile + requirements
   effectiveCriteria: PreferenceCriterion[];
 
+  // Usage context for this search (contextual signals, not hard constraints)
+  usageContext?: UsageContext;
+
   // Traceability: which criteria came from where?
   criteriaOrigin: {
     criterionId: string;
@@ -476,6 +569,9 @@ export interface AIInterpretationResult {
 
   // Detected exceptions to the profile
   detectedExceptions: CurrentSearchRequirements['profileExceptions'];
+
+  // Usage context from AI interpretation (non-binding)
+  usageContext?: UsageContext;
 
   // Overall confidence in interpretation
   confidence: number; // 0-1

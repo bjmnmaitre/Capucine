@@ -18,7 +18,7 @@
  */
 
 import { DiscoveryCriteria } from './discovery';
-import { PreferenceCriterion } from '../domain/types';
+import { PreferenceCriterion, UsageContext } from '../domain/types';
 import { SupportedLanguage, DEFAULT_LANGUAGE } from './i18n';
 
 // ============================================================================
@@ -100,7 +100,9 @@ export class SearchStrategyPlanner {
     }
 
     // ── Phase 2: only spent if phase 1 doesn't reach coverage ────────────────
-    const specTerms = this.buildSpecTerms(hardConstraints);
+    const baseSpecTerms = this.buildSpecTerms(hardConstraints);
+    const usageTerms = this.buildUsageTerms(criteria.usageContext, queryLanguage);
+    const specTerms = [...baseSpecTerms, ...usageTerms];
     if (specTerms.length > 0) {
       strategies.push({
         channel: 'technical_specs',
@@ -184,6 +186,81 @@ export class SearchStrategyPlanner {
       if (p['exactValue'] !== undefined) terms.push(`${p['exactValue']}${unit}`);
       else if (p['minValue'] !== undefined) terms.push(`${p['minValue']}${unit}`);
     }
+    return terms;
+  }
+
+  /** Build usage-based terms from usage context, translated to the query language. */
+  private buildUsageTerms(usageContext?: UsageContext, queryLanguage: SupportedLanguage = DEFAULT_LANGUAGE): string[] {
+    if (!usageContext) return [];
+
+    const { usage } = usageContext;
+    let terms: string[] = [];
+    switch (usage) {
+      case 'transport':
+        terms = ['transport', 'commuting', 'portable', 'lightweight', 'battery', 'noise cancellation'];
+        break;
+      case 'music':
+        terms = ['music', 'audio', 'sound quality', 'noise cancellation', 'comfort'];
+        break;
+      case 'sport':
+        terms = ['sport', 'sweat resistant', 'stable', 'lightweight'];
+        break;
+      case 'office':
+        terms = ['office', 'microphone', 'comfort', 'noise cancellation', 'battery'];
+        break;
+      case 'gaming':
+        terms = ['gaming', 'low latency', 'microphone', 'soundstage', 'compatibility'];
+        break;
+      case 'travel':
+        terms = ['travel', 'portable', 'battery', 'noise cancellation', 'comfort'];
+        break;
+      case 'home':
+        terms = ['home', 'comfort', 'sound quality'];
+        break;
+      case 'outdoor':
+        terms = ['outdoor', 'durable', 'weather resistant', 'battery'];
+        break;
+      default:
+        return [];
+    }
+
+    // If queryLanguage is English, return as is
+    if (queryLanguage === 'en') {
+      return terms;
+    }
+
+    // French translation map
+    const frMap: Record<string, string> = {
+      transport: 'transport',
+      commuting: 'navettage',
+      portable: 'portable',
+      lightweight: 'léger',
+      battery: 'batterie',
+      'noise cancellation': 'réduction de bruit',
+      music: 'musique',
+      audio: 'audio',
+      'sound quality': 'qualité sonore',
+      comfort: 'confort',
+      sport: 'sport',
+      'sweat resistant': 'résistant à la sueur',
+      stable: 'stable',
+      office: 'bureau',
+      microphone: 'microphone',
+      'low latency': 'faible latence',
+      soundstage: 'scène sonore',
+      compatibility: 'compatibilité',
+      travel: 'voyage',
+      home: 'maison',
+      outdoor: 'extérieur',
+      durable: 'durable',
+      'weather resistant': 'résistant aux intempéries'
+    };
+
+    if (queryLanguage === 'fr') {
+      return terms.map(term => frMap[term] ?? term);
+    }
+
+    // For other languages, fallback to English
     return terms;
   }
 }

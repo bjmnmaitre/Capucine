@@ -10,7 +10,7 @@
  * DETERMINISTIC: Same criteria = same results (required for testing)
  */
 
-import { Product, Offer, SearchMatchQuality, PreferenceCriterion } from '../domain/types';
+import { Product, Offer, SearchMatchQuality, PreferenceCriterion, UsageContext } from '../domain/types';
 import { SearchCoverage } from './search-coverage';
 import { SupportedLanguage } from './i18n';
 
@@ -68,6 +68,12 @@ export interface DiscoveryCriteria {
    * duplicating that logic or hardcoding specific criterion ids.
    */
   hardConstraints?: PreferenceCriterion[];
+
+  /**
+   * Usage context from the request (contextual signals, not hard constraints).
+   * This influences search strategy and ranking but does not affect admissibility.
+   */
+  usageContext?: UsageContext;
 
   /**
    * The QUERY's language — separate from the user's interface/response

@@ -26,7 +26,7 @@ import {
   QueryValidationError,
   QueryValidationWarning,
 } from './request';
-import { PreferenceCriterion, PreferenceLevel } from '../domain/types';
+import { PreferenceCriterion, PreferenceLevel, UsageContext, UsageType, ContextType } from '../domain/types';
 import { SupportedCountry } from './i18n';
 import { RankingPreference } from './ranking-preference';
 
@@ -336,6 +336,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     track(this.extractRAM(text, interpretation));
     track(this.extractStorage(text, interpretation));
     track(this.extractCondition(text, interpretation));
+    track(this.extractUsageContext(text, interpretation));
 
     // Extract must-have/required patterns
     this.extractRequirements(text, interpretation);
@@ -353,6 +354,127 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
 
     // Detect ambiguities
     this.detectAmbiguities(text, interpretation);
+  }
+
+  /**
+   * Extract usage context from text (e.g., "pour les transports", "pour écouter de la musique")
+   * This returns contextual signals that influence relevance but are NOT hard constraints.
+   * Returns the matched substring (for span-stripping), or null.
+   */
+  private extractUsageContext(text: string, interpretation: InterpretedRequest): string | null {
+    // Don't add duplicate usage context
+    if (interpretation.usageContext) {
+      return null;
+    }
+
+    // Patterns for usage context
+    const usagePatterns: Array<{ usage: UsageType; context?: ContextType; patterns: RegExp[]; confidence: number }> = [
+      // Transport/commuting usage
+      {
+        usage: 'transport',
+        patterns: [
+          /pour\s+(?:les?\s+)?transports?\b/i,
+          /dans\s+(?:les?\s+)?transports?\b/i,
+          /surtout\s+(?:dans|pour)\s+(?:les?\s+)?transports?\b/i,
+          /pour\s+(?:prendre|aller\s+en)\s+(?:le\s+)?(?:métro|bus|train|tramway?)\b/i,
+          /pour\s+(?:voyager|déplacements?)\b/i,
+          /en\s+(?:déplacement|mobilité)\b/i
+        ],
+        context: 'transport',
+        confidence: 0.9
+      },
+      // Music listening
+      {
+        usage: 'music',
+        patterns: [
+          /pour\s+(?:écouter|écoute)\s+(?:de\s+)?la?\s+musique\b/i,
+          /principalement\s+pour\s+(?:la\s+)?musique\b/i,
+          /écoute\s+(?:de\s+)?musique\b/i
+        ],
+        confidence: 0.85
+      },
+      // Sport/fitness
+      {
+        usage: 'sport',
+        patterns: [
+          /pour\s+(?:faire\s+)?du?\s+sport\b/i,
+          /pour\s+courir\b/i,
+          /pour\s+(?:faire\s+)?de\s+l'exercice\b/i,
+          /pour\s+(?:la\s+)?gym(?:nase)?\b/i,
+          /pour\s+(?:fitness|cardio)\b/i
+        ],
+        context: 'gym',
+        confidence: 0.8
+      },
+      // Office/work
+      {
+        usage: 'office',
+        patterns: [
+          /pour\s+(?:travailler|le\s+travail)\b/i,
+          /au\s+bureau\b/i,
+          /pour\s+(?:le\s+)?bureau\b/i,
+          /pour\s+(?:télé)?travail\b/i,
+          /au\s+travail\b/i
+        ],
+        context: 'office',
+        confidence: 0.8
+      },
+      // Gaming
+      {
+        usage: 'gaming',
+        patterns: [
+          /pour\s+(?:jouer|le\s+jeu)\b/i,
+          /pour\s+gaming\b/i,
+          /pour\s+(?:pc\s+)?gaming\b/i,
+          /jouer\s+sur\s+(?:pc|ordinateur)\b/i
+        ],
+        context: 'gaming',
+        confidence: 0.85
+      },
+      // Travel
+      {
+        usage: 'travel',
+        patterns: [
+          /pour\s+voyager\b/i,
+          /en\s+voyage\b/i,
+          /pour\s+(?:les\s+)?vacances?\b/i,
+          /en\s+weekend\b/i
+        ],
+        context: 'travel',
+        confidence: 0.75
+      },
+      // Home usage
+      {
+        usage: 'home',
+        patterns: [
+          /chez\s+soi\b/i,
+          /à\s+la\s+maison\b/i,
+          /pour\s+(?:la\s+)?maison\b/i,
+          /utilisation\s+(?:domestique|à\s+la\s+maison)\b/i
+        ],
+        context: 'home',
+        confidence: 0.7
+      }
+    ];
+
+    for (const { usage, context, patterns, confidence } of usagePatterns) {
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) {
+          // Create usage context object
+          interpretation.usageContext = {
+            usage,
+            context: context ?? undefined,
+            source: 'user',
+            confidence,
+            timestamp: new Date()
+          };
+          return match[0];
+        }
+      }
+    }
+
+    return null;
   }
 
   /** Remove each matched constraint substring (first occurrence, case-insensitive) from text. */
