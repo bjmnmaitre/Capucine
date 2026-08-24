@@ -24,84 +24,7 @@ import { DataPoint, DataStatus, DataProvenance } from '../domain/types';
 // PROMOTION TYPES
 // ============================================================================
 
-export type PromotionType =
-  | 'percentage_discount'
-  | 'fixed_discount'
-  | 'free_shipping'
-  | 'combined'
-  | 'loyalty_points'
-  | 'cashback'
-  | 'bundle';
-
-export type PromotionVerificationStatus = 'verified' | 'unverified' | 'expired' | 'invalid';
-
-/**
- * Condition that must be met for promo to apply.
- */
-export interface PromotionCondition {
-  type: 'minimum_amount' | 'category' | 'quantity' | 'customer_type' | 'validity_date';
-  operator: '>' | '>=' | '=' | '<' | '<=';
-  value: unknown;
-  description?: string;
-}
-
-/**
- * A promotional offer (code, voucher, or automatic discount).
- */
-export interface Promotion {
-  id: string;
-  code: string; // E.g., "CAPUCINE10", "SUMMER50"
-
-  // Type and value
-  type: PromotionType;
-  discountValue?: number; // For percentage or fixed discount
-  discountUnit?: 'percent' | 'euro' | 'shipping';
-
-  // Conditions for applicability
-  conditions: PromotionCondition[];
-
-  // Validity
-  validFrom: Date;
-  validUntil: Date;
-  isActive: boolean;
-
-  // Source and verification
-  source: string; // E.g., 'merchant_api', 'web_search', 'affiliate_network'
-  verificationStatus: PromotionVerificationStatus;
-  lastVerified?: Date;
-
-  // Merchant-specific
-  merchantId?: string;
-  applicableToCategories?: string[];
-  applicableToProducts?: string[];
-
-  // Metadata
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-/**
- * Result of applying a promotion to an offer.
- */
-export interface PromotionApplication {
-  promotion: Promotion;
-  applicabilityStatus: 'applicable' | 'not_applicable' | 'expired' | 'invalid_conditions';
-  originalPrice: number;
-  discountedPrice: number;
-  savingsAmount: number;
-  savingsPercent: number;
-  reasoning: string;
-}
-
-/**
- * Promo savings summary for an offer.
- */
-export interface PromoSavings {
-  bestPromoAvailable?: PromotionApplication;
-  applicablePromos: PromotionApplication[];
-  totalSavingsPossible: number;
-  summary: string;
-}
+import { PromotionType, PromotionVerificationStatus, PromotionCondition, Promotion, PromotionApplication, PromoSavings } from '../domain/types';
 
 // ============================================================================
 // PROMOTION ENGINE
@@ -481,4 +404,15 @@ export function createUnverifiedPromo(
     createdAt: new Date(),
     updatedAt: new Date(),
   };
+}
+
+// ============================================================================
+// FACTORY HELPERS
+// ============================================================================
+
+/**
+ * Create a default promotion engine.
+ */
+export function createDefaultPromotionEngine(): PromotionEngine {
+  return new PromotionEngine();
 }

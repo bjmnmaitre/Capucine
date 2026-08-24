@@ -12,6 +12,7 @@
  */
 
 import { PreferenceCriterion, PreferenceLevel, UsageContext } from '../domain/types';
+import { ExtractedAttribute } from '../domain/attributes';
 
 // ============================================================================
 // USER QUERY (INPUT)
@@ -98,6 +99,18 @@ export interface InterpretedRequest {
 
   // Usage context from interpretation (non-binding contextual signals)
   usageContext?: UsageContext;
+
+  /**
+   * Typed attributes read from the request — brand, model, compatibility,
+   * connectivity, material, quantities with units, destination, delivery
+   * deadline. Each carries its own provenance, confidence and constraint
+   * class, which is what lets a later layer say "you asked for a Sony"
+   * without having to re-parse the sentence. The subset that cleared its
+   * confidence threshold also appears in `extractedCriteria`; this field
+   * keeps ALL of them, including the ones deliberately too uncertain to
+   * filter on. See domain/attributes.ts.
+   */
+  attributes?: ExtractedAttribute[];
 
   /**
    * Suggested search terms extracted from the query.

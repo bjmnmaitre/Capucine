@@ -18,8 +18,7 @@
  * - browser_automation: Last resort (slow, unreliable)
  */
 
-import { Offer, Merchant, ExecutionCapabilityType } from '../domain/types';
-import { PromotionApplication } from './promotion-engine';
+import { Offer, Merchant, ExecutionCapabilityType, PromotionApplication } from '../domain/types';
 
 // ============================================================================
 // CART STATE
@@ -63,6 +62,12 @@ export interface PreparedCart {
 
   // Merchant link to complete purchase
   merchantCheckoutUrl?: string;
+
+  // Purchase tracking fields
+  merchantCartId?: string; // ID of cart in merchant's system
+  webhookUrl?: string; // URL for merchant to notify purchase completion
+  purchaseTrackingUrl?: string; // URL user can visit to check purchase status
+  expirationDate?: Date; // When the prepared cart expires
 
   // Execution details
   executionCapability: ExecutionCapabilityType;
@@ -119,6 +124,11 @@ export interface CartPreparationResult {
   checkoutUrl?: string;
   nextAction?: string; // What user should do next
   error?: string;
+
+  // Purchase tracking fields
+  merchantCartId?: string; // Correlates with PreparedCart.merchantCartId
+  webhookUrl?: string; // For merchant notifications
+  purchaseInitiatedAt?: Date; // Timestamp when purchase process started
 }
 
 // ============================================================================
@@ -284,6 +294,8 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
       selectedVariants: request.selectedVariants,
       appliedPromo: request.appliedPromo,
       merchantCheckoutUrl: checkoutUrl,
+      // For web redirect, we don't have merchant cart ID or webhook URLs
+      // since we're just redirecting to the merchant's page
       executionCapability: this.capability,
       // Status is 'partially_prepared', not 'prepared': a web redirect hands
       // over a page, it does not create a cart on the merchant's side. Saying

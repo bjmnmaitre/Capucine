@@ -636,6 +636,54 @@ describe('French technical constraint interpretation', () => {
 
   // ---- 15. Conversational RAM-refinement phrasing (megaprompt's own
   // conversation scenario: "uniquement 16 Go" / "finalement 32 Go" as
+// ---- Budget follow-up phrasing tests for Megaprompt compliance ----
+it("'300 € maximum' → budget maxBudget = 300", async () => {
+  const result = await interp.interpret(q("300 € maximum"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+});
+
+it("'maximum 300 €' → budget maxBudget = 300", async () => {
+  const result = await interp.interpret(q("maximum 300 €"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+});
+
+it("'300 euros max' → budget maxBudget = 300", async () => {
+  const result = await interp.interpret(q("300 euros max"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+});
+
+it("'pas plus de 300 €' → budget maxBudget = 300", async () => {
+  const result = await interp.interpret(q("pas plus de 300 €"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+});
+
+it("'jusqu'à 300 €' → budget maxBudget = 300", async () => {
+  const result = await interp.interpret(q("jusqu'à 300 €"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+});
+
+it("'300 €, neuf uniquement' → budget maxBudget = 300 AND condition = new", async () => {
+  const result = await interp.interpret(q("300 €, neuf uniquement"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+  expect(findCriterion(result, "condition")?.parameters?.preferredValues).toEqual(["new"]);
+});
+
+// Test contradiction handling (later response overrides earlier)
+it("'400 €' after '300 € maximum' → budget maxBudget = 400 (last wins)", async () => {
+  // First establish 300 EUR budget
+  let result = await interp.interpret(q("300 € maximum"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(300);
+  
+  // Update with 400 EUR
+  result = await interp.interpret(q("400 € maximum"));
+  expect(findCriterion(result, "budget")?.parameters?.maxBudget).toBe(400);
+});
+
+// Test vague response does not invent budget
+it("'pas trop cher' → no budget invented", async () => {
+  const result = await interp.interpret(q("pas trop cher"));
+  expect(findCriterion(result, "budget")).toBeUndefined();
+});
   // follow-ups never repeat the word "ram") ----
   it('15. "uniquement 16 Go" → ram minValue = 16, without the word "ram"', async () => {
     const result = await interp.interpret(q('uniquement 16 Go'));

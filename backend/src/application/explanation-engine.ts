@@ -23,7 +23,15 @@ import {
   CriterionScore,
   PreferenceLevel,
   DataStatus,
+  ContextualSignalScore,
 } from '../domain/types';
+import {
+  describeSignal,
+  describeUsageContext,
+} from '../domain/usage-context-mapping';
+import { OfferReadiness } from '../domain/purchase-readiness';
+import { OfferDataQuality } from '../domain/data-quality';
+import { CostBreakdown } from './cost-engine';
 import { translate, registerCatalog } from './i18n';
 
 // ============================================================================
@@ -101,6 +109,22 @@ export interface OfferExplanation {
   /** How unknown data affected the score */
   unknownDataImpact: string;
 
+  /**
+   * Usage-context contribution, present only when a usage context was part of
+   * this search AND produced signals. Absent → the offer was ranked purely on
+   * the user's own criteria, and no sentence about usage is generated.
+   */
+  contextual?: ContextualExplanation;
+
+  /** What it really costs, and what part of that is unknown. */
+  cost?: CostExplanation;
+
+  /** Whether it can actually be bought, dimension by dimension. */
+  readiness?: ReadinessExplanation;
+
+  /** How solid the underlying data is. Never a reason to accept or reject. */
+  dataQuality?: DataQualityExplanation;
+
   /** Per-criterion breakdown */
   criterionBreakdown: CriterionBreakdown[];
 
@@ -129,11 +153,97 @@ export interface CriterionBreakdown {
   sentiment: 'positive' | 'neutral' | 'negative' | 'unknown';
 }
 
+/**
+ * How the usage context — and ONLY the usage context — affected this offer.
+ *
+ * Kept as its own block, never merged into `strengths`, because the two are
+ * epistemically different and the user is entitled to tell them apart:
+ * `strengths` are things measured against what the user ASKED FOR;
+ * this is what Capucine INFERRED was relevant. `attributedTo` names which of
+ * the two it is, and the generated prose is worded accordingly — an
+ * inference is never phrased as "vous avez demandé".
+ */
+export interface ContextualExplanation {
+  /** e.g. "pour l'écoute de musique, dans les transports" */
+  usageDescription: string;
+  /**
+   * 'user'     — the user stated this usage themselves
+   * 'inferred' — Capucine deduced it
+   * 'profile'  — it came from the permanent profile
+   */
+  usageSource: 'user' | 'inferred' | 'profile';
+  /** Points the contextual signals added to this offer's score (>= 0). */
+  bonusApplied: number;
+  /** Signals that actually scored, with the value that was read. */
+  appliedSignals: Array<{ signal: string; label: string; detail: string; points: number }>;
+  /** Signals whose data was missing — explicitly reported as neutral. */
+  unknownSignals: string[];
+  /** Signals dropped because the user set an explicit criterion on them. */
+  supersededSignals: string[];
+  /**
+   * One honest sentence, safe to show as-is. Always attributes contextual
+   * factors to the usage, never to a request the user did not make.
+   */
+  statement: string;
+}
+
 export interface ExplanationFactor {
   criterionId: string;
   criterionName: string;
   description: string;
   impact: 'high' | 'medium' | 'low';
+}
+
+/**
+ * What this offer will really cost, and how much of that is actually known.
+ *
+ * Deliberately separate from the headline: "299 €" and "299 € plus unknown
+ * shipping" are different statements, and only one of them is a price.
+ */
+export interface CostExplanation {
+  /** Sum of the components that ARE known. Never called "the price". */
+  totalKnown: number;
+  currency: string;
+  certainty: 'known' | 'partially_known' | 'unknown';
+  /** Components with no published value — named, not hidden. */
+  unknownComponents: string[];
+  /** Components that provably cannot apply (e.g. duties inside a customs union). */
+  notApplicableComponents: string[];
+  /** True when part of the total was derived rather than published. */
+  containsEstimate: boolean;
+  /** One honest sentence. */
+  statement: string;
+  /**
+   * Set when the user stated a budget AND the known total exceeds it even
+   * though the product price alone did not. The offer stays admissible — the
+   * user's budget criterion is about the price they were shown — but pretending
+   * the total is within budget would be misleading.
+   */
+  budgetWarning?: string;
+}
+
+/** Can it be bought, and what is still unknown. */
+export interface ReadinessExplanation {
+  ready: boolean;
+  /** Dimensions not yet confirmed. */
+  pending: string[];
+  /** Dimensions positively unavailable. */
+  blocked: string[];
+  /** Per-dimension plain-language state. */
+  details: Array<{ dimension: string; state: string; reason: string }>;
+  /** Points this offer earned for CONFIRMED availability facts (>= 0). */
+  bonusApplied: number;
+  statement: string;
+}
+
+/** How solid the evidence behind this offer is. */
+export interface DataQualityExplanation {
+  overall: string;
+  priceConfidence: string;
+  priceRationale: string;
+  /** Constraint-bearing fields the merchant does not publish. */
+  missingForConstraints: string[];
+  statement: string;
 }
 
 export interface RejectionExplanation {
@@ -154,6 +264,18 @@ export interface ComparativeExplanation {
     worseScore: number;
     delta: number;
   }>;
+}
+
+/**
+ * Everything the explanation needs that the RankingResult does not carry.
+ * All optional: an explanation of a ranking computed without them is simply
+ * quieter, never wrong.
+ */
+export interface ExplanationContext {
+  costs?: Map<string, CostBreakdown>;
+  dataQuality?: Map<string, OfferDataQuality>;
+  /** The budget the user actually stated, for the total-cost warning. */
+  maxBudget?: number;
 }
 
 export interface FullExplanation {
@@ -189,9 +311,9 @@ export class ExplanationEngine {
    * Generate full explanations for a RankingResult.
    * Completely deterministic — no randomness, no AI.
    */
-  explain(result: RankingResult): FullExplanation {
+  explain(result: RankingResult, context: ExplanationContext = {}): FullExplanation {
     const rankedExplanations = result.rankedOffers.map((ro, idx) =>
-      this.explainOffer(ro, idx + 1)
+      this.explainOffer(ro, idx + 1, context)
     );
 
     const rejectionExplanations = (result.rejectedOffers ?? []).map(r =>
@@ -222,7 +344,7 @@ export class ExplanationEngine {
   /**
    * Explain a single ranked offer.
    */
-  explainOffer(rankedOffer: RankedOffer, rank: number): OfferExplanation {
+  explainOffer(rankedOffer: RankedOffer, rank: number, context: ExplanationContext = {}): OfferExplanation {
     const criterionBreakdown = rankedOffer.criterionScores.map(cs =>
       this.explainCriterion(cs)
     );
@@ -239,6 +361,11 @@ export class ExplanationEngine {
 
     const dataSources = this.extractSources(rankedOffer);
 
+    const contextual = this.explainContextualRelevance(rankedOffer);
+    const cost = this.explainCost(context.costs?.get(rankedOffer.offer.id), context.maxBudget);
+    const readiness = this.explainReadiness(rankedOffer);
+    const dataQuality = this.explainDataQuality(context.dataQuality?.get(rankedOffer.offer.id));
+
     return {
       offerId: rankedOffer.offer.id,
       rank,
@@ -251,6 +378,181 @@ export class ExplanationEngine {
       unknownDataImpact,
       criterionBreakdown,
       dataSources,
+      ...(contextual ? { contextual } : {}),
+      ...(cost ? { cost } : {}),
+      ...(readiness ? { readiness } : {}),
+      ...(dataQuality ? { dataQuality } : {}),
+    };
+  }
+
+  /**
+   * Turn the ranking's ContextualRelevance into prose that cannot mislead.
+   *
+   * Three separations are enforced here:
+   *  - what the user ASKED (criterionBreakdown) vs what Capucine INFERRED
+   *    was relevant (this block) — never merged;
+   *  - a usage the user STATED ("source: user") vs one Capucine deduced
+   *    ("source: inferred") — the sentence says which;
+   *  - data that was read vs data that was missing — missing signals are
+   *    named and declared neutral rather than quietly omitted.
+   */
+  private explainContextualRelevance(rankedOffer: RankedOffer): ContextualExplanation | undefined {
+    const relevance = rankedOffer.contextualRelevance;
+    if (!relevance) return undefined;
+
+    const usageDescription = describeUsageContext(relevance.usageContext);
+    const applied = relevance.signals.filter(s => s.outcome === 'applied');
+    const unknown = relevance.signals.filter(s => s.outcome === 'unknown');
+    const superseded = relevance.signals.filter(s => s.outcome === 'superseded');
+
+    const appliedSignals = applied.map((s: ContextualSignalScore) => ({
+      signal: String(s.signal),
+      label: describeSignal(s.signal),
+      detail: s.reasoning,
+      points: s.contribution,
+    }));
+
+    // The usage itself: stated by the user, or deduced by Capucine? The
+    // ATTRIBUTES are inferred either way — that is said explicitly below.
+    const origin = relevance.usageContext.source === 'user'
+      ? "que vous avez indiqué"
+      : relevance.usageContext.source === 'profile'
+        ? 'issu de votre profil'
+        : 'déduit de votre demande';
+
+    let statement: string;
+    if (appliedSignals.length > 0) {
+      const names = appliedSignals.map(s => s.label).join(', ');
+      statement =
+        `Pour votre usage ${usageDescription} (${origin}), ${names} ` +
+        `${appliedSignals.length > 1 ? 'ont été pris' : 'a été pris'} en compte comme signaux contextuels ` +
+        `(+${relevance.bonus} pts). Ce ne sont pas des exigences que vous avez formulées.`;
+    } else {
+      statement =
+        `Pour votre usage ${usageDescription} (${origin}), aucune donnée contextuelle exploitable ` +
+        `n'était disponible pour cette offre : elle n'a été ni valorisée ni pénalisée à ce titre.`;
+    }
+    if (superseded.length > 0) {
+      statement += ` ${superseded.length} dimension(s) laissée(s) à vos critères explicites.`;
+    }
+
+    return {
+      usageDescription,
+      usageSource: relevance.usageContext.source,
+      bonusApplied: relevance.bonus,
+      appliedSignals,
+      unknownSignals: unknown.map(s => describeSignal(s.signal)),
+      supersededSignals: superseded.map(s => describeSignal(s.signal)),
+      statement,
+    };
+  }
+
+  /**
+   * Turn a CostBreakdown into a statement that never overstates what is known.
+   *
+   * The rule enforced here: a total with unknown components is described as
+   * "au moins X" — never as "X". The user must be able to tell a confirmed
+   * total from a partial one at a glance.
+   */
+  private explainCost(cost: CostBreakdown | undefined, maxBudget?: number): CostExplanation | undefined {
+    if (!cost) return undefined;
+
+    const notApplicable = Object.entries(cost.componentStates)
+      .filter(([, state]) => state === 'not_applicable')
+      .map(([name]) => name);
+
+    let statement: string;
+    if (cost.certainty === 'known') {
+      statement = `Coût total confirmé : ${cost.totalKnown} ${cost.currency} (toutes les composantes sont connues).`;
+    } else if (cost.certainty === 'partially_known') {
+      statement =
+        `Coût total partiellement connu : au moins ${cost.totalKnown} ${cost.currency}. ` +
+        `Composantes encore inconnues : ${cost.unknownComponents.join(', ')} — non estimées, non ignorées.`;
+    } else {
+      statement = "Coût inconnu : aucun prix exploitable n'a été relevé pour cette offre.";
+    }
+    if (cost.containsEstimate) {
+      statement += ' Une partie du total résulte d’une conversion de devise à taux non contractuel — montant indicatif.';
+    }
+
+    // The budget criterion is checked against the PRICE by
+    // AdmissibilityEngine, which is what the user was shown and what they
+    // meant. When the KNOWN extras push the real total past that budget, the
+    // offer stays admissible but saying nothing would mislead.
+    let budgetWarning: string | undefined;
+    if (maxBudget !== undefined && cost.totalKnown > maxBudget) {
+      const price = cost.productPrice.value;
+      if (price !== null && price <= maxBudget) {
+        budgetWarning =
+          `Le prix affiché (${price} ${cost.currency}) respecte votre budget de ${maxBudget} ${cost.currency}, ` +
+          `mais le coût total connu atteint ${cost.totalKnown} ${cost.currency} une fois les frais connus ajoutés.`;
+      }
+    }
+
+    return {
+      totalKnown: cost.totalKnown,
+      currency: cost.currency,
+      certainty: cost.certainty,
+      unknownComponents: cost.unknownComponents,
+      notApplicableComponents: notApplicable,
+      containsEstimate: cost.containsEstimate,
+      statement,
+      ...(budgetWarning ? { budgetWarning } : {}),
+    };
+  }
+
+  /**
+   * Report readiness dimension by dimension.
+   *
+   * 'unknown' is always worded as unknown. Turning "le marchand ne publie pas
+   * son stock" into "indisponible" is exactly the fabrication INVARIANT 2 and
+   * INVARIANT 9 forbid, so the two states get visibly different sentences.
+   */
+  private explainReadiness(rankedOffer: RankedOffer): ReadinessExplanation | undefined {
+    const readiness = rankedOffer.readiness as OfferReadiness | undefined;
+    if (!readiness) return undefined;
+
+    const details = ([
+      ['verified', readiness.verified],
+      ['purchasable', readiness.purchasable],
+      ['inStock', readiness.inStock],
+      ['deliverable', readiness.deliverable],
+    ] as const).map(([dimension, assessment]) => ({
+      dimension,
+      state: assessment.state,
+      reason: assessment.reason,
+    }));
+
+    return {
+      ready: readiness.ready,
+      pending: [...readiness.pending],
+      blocked: [...readiness.blocked],
+      details,
+      bonusApplied: rankedOffer.readinessBonus ?? 0,
+      statement: readiness.summary,
+    };
+  }
+
+  private explainDataQuality(quality: OfferDataQuality | undefined): DataQualityExplanation | undefined {
+    if (!quality) return undefined;
+
+    const LEVELS: Record<string, string> = {
+      high: 'élevée', medium: 'moyenne', low: 'faible', none: 'aucune donnée',
+    };
+
+    let statement = `Confiance dans les données : ${LEVELS[quality.overall] ?? quality.overall} — prix ${quality.price.rationale}.`;
+    if (quality.missingForConstraints.length > 0) {
+      statement +=
+        ` ${quality.missingForConstraints.length} critère(s) que vous avez exprimé(s) ne peuvent pas être vérifiés ` +
+        `sur cette offre (${quality.missingForConstraints.join(', ')}) : information inconnue, pas information contraire.`;
+    }
+
+    return {
+      overall: quality.overall,
+      priceConfidence: quality.price.level,
+      priceRationale: quality.price.rationale,
+      missingForConstraints: quality.missingForConstraints,
+      statement,
     };
   }
 

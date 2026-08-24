@@ -295,6 +295,10 @@ export function buildApp(): express.Application {
         preInterpretedCriteria: Array.isArray(criteria) ? criteria : [],
         skipAIInterpretation: skipInterpreter === true,
         language,
+        // Where the product must ARRIVE — drives the delivery dimension of
+        // purchase readiness and the customs-border rule in CostEngine.
+        // Never conflated with which countries Capucine searches in.
+        destinationCountry: DEFAULT_COUNTRY,
       };
 
       // ── Execute pipeline ──────────────────────────────────────────────────
@@ -395,6 +399,9 @@ export function buildApp(): express.Application {
           resultLimit: followUp.resultLimit ?? undefined,
           excludeMerchantName: followUp.excludeMerchantName ?? undefined,
           retryIntent: followUp.retryIntent ?? undefined,
+          // "pour écouter de la musique, surtout dans les transports" said on
+          // turn 2 — merged into the session so turns 3, 4… still know it.
+          usageContext: followUp.usageContext ?? undefined,
         });
         const updatedSession = followUpResult.updatedSession;
 
@@ -425,6 +432,11 @@ export function buildApp(): express.Application {
           // language resolved for the ORIGINAL search instead.
           language: session.language,
           additionalSearchLanguages,
+          // Replayed explicitly: this turn skips interpretation, so the engine
+          // cannot re-derive the usage from the (deliberately stripped) search
+          // text. Everything the user has said about usage so far, in one place.
+          usageContext: updatedSession.usageContext,
+          destinationCountry: updatedSession.destinationCountry,
         };
 
         const result = await engine.search(searchRequest);
@@ -586,6 +598,10 @@ export function buildApp(): express.Application {
         checkoutUrl: preparation.checkoutUrl ?? null,
         nextAction: preparation.nextAction ?? null,
         error: preparation.error ?? null,
+        // Purchase tracking fields
+        merchantCartId: preparation.merchantCartId ?? null,
+        webhookUrl: preparation.webhookUrl ?? null,
+        purchaseInitiatedAt: preparation.purchaseInitiatedAt?.toISOString() ?? null,
         merchant: {
           id: rankedOffer.offer.merchant.id,
           name: rankedOffer.offer.merchant.name,
@@ -764,12 +780,24 @@ function serializeResult(
       // 'partially_known'/'unknown' — see cost-engine.ts. unknownComponents
       // names exactly what's missing so a client can render "+ frais de
       // douane inconnus" instead of a false total.
-      cost: {
-        totalKnown: ro.cost.totalKnown,
-        currency: ro.cost.currency,
-        certainty: ro.cost.certainty,
-        unknownComponents: ro.cost.unknownComponents,
-      },
+      cost: (() => {
+        // The engine computed the cost ONCE, with the delivery destination in
+        // hand (so duties inside a customs union are 'not_applicable' rather
+        // than 'unknown'). Prefer it; fall back to the presentation-time
+        // computation only if it is somehow absent.
+        const engineCost = result.costs?.get(ro.offer.id) ?? ro.cost;
+        const exp = result.explanation.rankedExplanations.find(e => e.offerId === ro.offer.id);
+        return {
+          totalKnown: engineCost.totalKnown,
+          currency: engineCost.currency,
+          certainty: engineCost.certainty,
+          unknownComponents: engineCost.unknownComponents,
+          componentStates: engineCost.componentStates,
+          containsEstimate: engineCost.containsEstimate,
+          statement: exp?.cost?.statement ?? null,
+          budgetWarning: exp?.cost?.budgetWarning ?? null,
+        };
+      })(),
       // Language-independent — translate(code, result.language) at render
       // time, same reasonCode/translate() pattern as `explanation` below.
       rankingReasonCode: reasonCodeFor(rankingPreference, ro, idx + 1),
@@ -791,6 +819,48 @@ function serializeResult(
           : exp.headline;
       })(),
       matchQuality: describeMatchQuality(ro.offer.matchQuality, result.language),
+      // Can this actually be bought? Each dimension separately, each with its
+      // own unknown state — 'unknown' is never rendered as 'unavailable'.
+      readiness: (() => {
+        const exp = result.explanation.rankedExplanations.find(e => e.offerId === ro.offer.id);
+        if (!exp?.readiness) return null;
+        return {
+          ready: exp.readiness.ready,
+          pending: exp.readiness.pending,
+          blocked: exp.readiness.blocked,
+          details: exp.readiness.details,
+          statement: exp.readiness.statement,
+        };
+      })(),
+      // How solid the evidence is. Informational only — it never decided
+      // whether this offer is here.
+      dataQuality: (() => {
+        const exp = result.explanation.rankedExplanations.find(e => e.offerId === ro.offer.id);
+        if (!exp?.dataQuality) return null;
+        return {
+          overall: exp.dataQuality.overall,
+          priceConfidence: exp.dataQuality.priceConfidence,
+          missingForConstraints: exp.dataQuality.missingForConstraints,
+          statement: exp.dataQuality.statement,
+        };
+      })(),
+      // Usage-context contribution, kept in its OWN field and never folded
+      // into `explanation` or `criteria` above: what the user asked for and
+      // what Capucine inferred was relevant must stay tellable apart.
+      // `bonus` is always >= 0 — an unknown attribute costs an offer nothing.
+      contextualRelevance: ro.contextualRelevance ? {
+        bonus: ro.contextualRelevance.bonus,
+        maxBonus: ro.contextualRelevance.maxBonus,
+        statement: result.explanation.rankedExplanations
+          .find(e => e.offerId === ro.offer.id)?.contextual?.statement ?? null,
+        signals: ro.contextualRelevance.signals.map(sig => ({
+          signal: sig.signal,
+          outcome: sig.outcome,
+          attribute: sig.attribute ?? null,
+          points: sig.contribution,
+          reasoning: sig.reasoning,
+        })),
+      } : null,
       offerUrl: ro.offer.executionUrl ?? null,
       // Per-criterion breakdown, exposing the SATISFIED / VIOLATED / UNKNOWN
       // distinction the admissibility engine already computes (see
@@ -845,6 +915,39 @@ function serializeResult(
         level: c.level,
       })),
       ambiguities: result.interpretedRequest.ambiguities.length,
+      // Typed attributes with their provenance and confidence — what Capucine
+      // understood, and how sure it is. Includes the ones deliberately too
+      // uncertain to filter on, so a client can show them without them ever
+      // having rejected an offer.
+      attributes: (result.interpretedRequest.attributes ?? []).map(a => ({
+        kind: a.kind,
+        criterionId: a.criterionId,
+        classification: a.classification,
+        confidence: a.provenance.confidence,
+        matchedText: a.provenance.matchedText,
+        values: a.values ?? null,
+        quantity: a.quantity
+          ? { operator: a.quantity.operator, value: a.quantity.value, unit: a.quantity.unit, normalized: a.quantity.normalized }
+          : null,
+      })),
+    } : null,
+
+    // What Capucine understood about HOW the product will be used. Reported
+    // with its provenance (source/confidence/matchedText) so a client can say
+    // "vous avez indiqué…" only when the user really did.
+    usageContext: result.usageContext ? {
+      usage: result.usageContext.usage,
+      context: result.usageContext.context ?? null,
+      source: result.usageContext.source,
+      confidence: result.usageContext.confidence,
+      matchedText: result.usageContext.matchedText ?? null,
+      additional: (result.usageContext.additional ?? []).map(entry => ({
+        usage: entry.usage,
+        context: entry.context ?? null,
+        source: entry.source,
+        confidence: entry.confidence,
+        matchedText: entry.matchedText ?? null,
+      })),
     } : null,
 
     // Clarification opportunities (if any)

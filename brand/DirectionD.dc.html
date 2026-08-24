@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Marcellus&family=Space+Grotesk:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif; }
+    a { color: #C8A24A; } a:hover { color: #E6C97F; }
+  </style>
+</helmet>
+<div style="width: 560px; height: 640px; box-sizing: border-box; background: #0B1B33; display: flex; flex-direction: column; padding: 40px 40px 32px; position: relative; overflow: hidden;">
+
+  <div style="position: absolute; top: -120px; left: 50%; transform: translateX(-50%); width: 420px; height: 420px; border-radius: 50%; background: radial-gradient(circle, rgba(200,162,74,0.16) 0%, rgba(200,162,74,0) 68%); pointer-events: none;"></div>
+
+  <div style="display: flex; align-items: baseline; gap: 10px; position: relative;">
+    <span style="font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: #C8A24A; font-weight: 500;">Direction D</span>
+    <span style="flex-grow: 1; height: 1px; background: #16304F;"></span>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; position: relative;">
+    <svg width="200" height="200" viewBox="0 0 100 100" fill="none" aria-label="Capucine ascending check mark">
+      <path d="M10 56 L36 82 L84 22" stroke="#C8A24A" stroke-width="10" stroke-linecap="square" stroke-linejoin="miter"/>
+      <path d="M88 10 L90 40 L60 20 Z" fill="#E6C97F"/>
+    </svg>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px; position: relative;">
+    <h2 style="margin: 0; font-family: 'Marcellus', Georgia, serif; font-size: 30px; font-weight: 400; color: #F4F1EA; letter-spacing: 0.01em;">Le Signe</h2>
+    <p style="margin: 0; font-size: 13.5px; line-height: 1.55; color: #8FA3BC; max-width: 42ch; text-wrap: pretty;">
+      La coche de validation dont la branche longue ne s'arrête pas&nbsp;: elle monte et se termine en pointe. Un seul geste pour dire «&nbsp;c'est validé&nbsp;» et «&nbsp;c'est mieux&nbsp;».
+    </p>
+    <p style="margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: #6C819C;">
+      <strong style="color: #C8A24A; font-weight: 500;">Contrepartie&nbsp;:</strong> imbattable en 16&nbsp;px et instantanément compris, mais c'est aussi la forme la plus vue du secteur&nbsp;: peu de mémorabilité propre.
+    </p>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 14px; margin-top: 24px; padding-top: 20px; border-top: 1px solid #16304F; position: relative;">
+    <span style="font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #6C819C;">Tenue en petit</span>
+    <div style="display: flex; align-items: center; gap: 12px; flex-grow: 1; justify-content: flex-end;">
+      <svg width="28" height="28" viewBox="0 0 100 100" fill="none"><path d="M10 56 L36 82 L84 22" stroke="#C8A24A" stroke-width="12" stroke-linecap="square"/><path d="M88 10 L90 40 L60 20 Z" fill="#E6C97F"/></svg>
+      <div style="width: 44px; height: 44px; border-radius: 10px; background: #F4F1EA; display: flex; align-items: center; justify-content: center;">
+        <svg width="26" height="26" viewBox="0 0 100 100" fill="none"><path d="M10 56 L36 82 L84 22" stroke="#0B1B33" stroke-width="12" stroke-linecap="square"/><path d="M88 10 L90 40 L60 20 Z" fill="#16304F"/></svg>
+      </div>
+      <svg width="20" height="20" viewBox="0 0 100 100" fill="none"><path d="M10 56 L36 82 L84 22" stroke="#C8A24A" stroke-width="14" stroke-linecap="square"/><path d="M88 10 L90 40 L60 20 Z" fill="#E6C97F"/></svg>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

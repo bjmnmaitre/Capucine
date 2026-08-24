@@ -21,6 +21,8 @@ import {
   DataStatus,
 } from '../domain/types';
 import { AdmissibilityResult } from '../domain/admissibility';
+import { scoreContextualRelevance } from './contextual-relevance';
+import { OfferReadiness, scoreReadiness } from '../domain/purchase-readiness';
 
 // ============================================================================
 // CORE RANKING LOGIC
@@ -631,7 +633,14 @@ function formatValue(value: unknown): string {
  */
 export function rankOffers(
   request: RankingRequest,
-  admissibilityByOfferId?: Map<string, AdmissibilityResult>
+  admissibilityByOfferId?: Map<string, AdmissibilityResult>,
+  /**
+   * Purchase readiness per offer, when the caller computed it (CapucineEngine
+   * always does). Same contract as `admissibilityByOfferId`: this engine reads
+   * a verdict someone else owns, it never recomputes one. Only CONFIRMED facts
+   * add points, so omitting this map changes no score.
+   */
+  readinessByOfferId?: Map<string, OfferReadiness>
 ): RankingResult {
   const rankedOffers: RankedOffer[] = [];
   const rejectedOffers: RankingResult['rejectedOffers'] = [];
@@ -642,19 +651,41 @@ export function rankOffers(
       scoreOffer(offer, request.effectiveCriteria, admissibilityByOfferId?.get(offer.id));
 
     if (!satisfiesAllConstraints) {
-      // Offer violates hard constraints; reject it
+      // Offer violates hard constraints; reject it.
+      // NOTE the ordering: this happens BEFORE any contextual bonus is even
+      // computed. A usage context cannot rescue an inadmissible offer — there
+      // is no branch here in which it could.
       rejectedOffers.push({
         offer,
         reason: violatedConstraints.map((c) => c.reason).join('; '),
       });
     } else {
-      // Offer is acceptable; include in ranking
+      // Offer is acceptable. Only now may the usage context (if any) add a
+      // bounded, non-negative bonus on top of the criteria score.
+      // `bonus >= 0` by construction (see contextual-relevance.ts), so an
+      // offer whose contextual attributes are all UNKNOWN scores exactly what
+      // it would have scored with no usage context at all.
+      const contextualRelevance = request.usageContext
+        ? scoreContextualRelevance(offer, request.usageContext, request.effectiveCriteria)
+        : undefined;
+      // Readiness adds points for CONFIRMED availability facts only — never
+      // subtracts for unknown ones, exactly like the contextual bonus.
+      const readiness = readinessByOfferId?.get(offer.id);
+      const readinessScore = readiness ? scoreReadiness(readiness) : undefined;
+
+      const bonus = (contextualRelevance?.bonus ?? 0) + (readinessScore?.bonus ?? 0);
+      const finalScore = bonus > 0
+        ? Math.min(100, Math.round(overallScore + bonus))
+        : overallScore;
+
       rankedOffers.push({
         offer,
-        overallScore,
+        overallScore: finalScore,
         criterionScores,
-        summary: generateSummary(offer, criterionScores, overallScore),
+        summary: generateSummary(offer, criterionScores, finalScore),
         satisfiesAllConstraints: true,
+        ...(contextualRelevance ? { contextualRelevance } : {}),
+        ...(readiness ? { readiness, readinessBonus: readinessScore!.bonus } : {}),
       });
     }
   }

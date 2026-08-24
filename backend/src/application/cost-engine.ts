@@ -30,6 +30,34 @@ import { SupportedCurrency, convertPrice, DEFAULT_CURRENCY } from './i18n';
 
 export type CostCertainty = 'known' | 'partially_known' | 'unknown';
 
+/**
+ * State of ONE cost component. Four states, because collapsing them loses
+ * information the user needs:
+ *
+ *  'known'          a source published it. Counted in totalKnown.
+ *  'unknown'        nobody published it. NOT zero, NOT ignored — reported.
+ *  'not_applicable' it provably cannot apply to this transaction (e.g. import
+ *                   duties on a purchase that never crosses a customs border).
+ *                   Counted as zero because it IS zero, not because we guessed.
+ *  'estimated'      derived rather than published — currently only a currency
+ *                   conversion made with a non-live rate. Never presented as
+ *                   a confirmed amount.
+ */
+export type CostComponentState = 'known' | 'unknown' | 'not_applicable' | 'estimated';
+
+export type CostComponentName = 'productPrice' | 'shipping' | 'taxes' | 'importDuties' | 'fees' | 'discount';
+
+/**
+ * Where the purchase happens, so the engine can tell a component that is
+ * genuinely inapplicable from one that is merely unreported.
+ */
+export interface CostContext {
+  /** ISO country the buyer wants delivery to. */
+  destinationCountry?: string;
+  /** ISO country the merchant ships from, when known. */
+  merchantCountry?: string;
+}
+
 export interface CostBreakdown {
   productPrice: DataPoint<number>;
   shipping: DataPoint<number>;
@@ -54,6 +82,20 @@ export interface CostBreakdown {
 
   /** Which named components are NOT known — empty when certainty === 'known'. */
   unknownComponents: string[];
+
+  /**
+   * Per-component state. Strictly richer than `unknownComponents`, which is
+   * kept unchanged for existing consumers: a component can now be reported as
+   * provably inapplicable instead of being lumped in with the unknowns.
+   */
+  componentStates: Record<CostComponentName, CostComponentState>;
+
+  /**
+   * True when `totalKnown` includes an estimated part (today: a currency
+   * conversion made with a non-live rate). A caller must never present an
+   * estimated total as a confirmed price.
+   */
+  containsEstimate: boolean;
 }
 
 export interface ExchangeRate {
@@ -117,7 +159,7 @@ export class CostEngine {
    * is inferred from another (e.g. a known price never implies a guessed
    * shipping cost).
    */
-  computeCost(offer: Offer): CostBreakdown {
+  computeCost(offer: Offer, context: CostContext = {}): CostBreakdown {
     const currency = (offer.currency as SupportedCurrency | undefined) ?? DEFAULT_CURRENCY;
 
     const price = offer.price;
@@ -131,28 +173,44 @@ export class CostEngine {
       (dp.status === 'known' || dp.status === 'verified') && dp.value !== null;
 
     const unknownComponents: string[] = [];
+    const componentStates: Record<CostComponentName, CostComponentState> = {
+      productPrice: 'unknown',
+      shipping: 'unknown',
+      taxes: 'unknown',
+      importDuties: 'unknown',
+      fees: 'unknown',
+      discount: 'unknown',
+    };
     let total = 0;
 
-    if (isKnown(price)) total += price.value as number;
+    if (isKnown(price)) { total += price.value as number; componentStates.productPrice = 'known'; }
     else unknownComponents.push('productPrice');
 
-    if (isKnown(shipping)) total += shipping.value as number;
+    if (isKnown(shipping)) { total += shipping.value as number; componentStates.shipping = 'known'; }
     else unknownComponents.push('shipping');
 
-    if (isKnown(taxes)) total += taxes.value as number;
+    if (isKnown(taxes)) { total += taxes.value as number; componentStates.taxes = 'known'; }
     else unknownComponents.push('taxes');
 
-    if (isKnown(importDuties)) total += importDuties.value as number;
+    // Import duties are NOT unknown when the transaction crosses no customs
+    // border: a domestic purchase, or one inside the EU customs union, incurs
+    // none. Reporting that as 'unknown' would understate what Capucine
+    // actually knows and would keep a fully-known cost from ever reaching
+    // certainty 'known'. This is a legal fact about the transaction, not an
+    // estimate — see NO_CUSTOMS_BORDER.
+    if (isKnown(importDuties)) { total += importDuties.value as number; componentStates.importDuties = 'known'; }
+    else if (crossesNoCustomsBorder(context)) { componentStates.importDuties = 'not_applicable'; }
     else unknownComponents.push('importDuties');
 
-    if (isKnown(fees)) total += fees.value as number;
+    if (isKnown(fees)) { total += fees.value as number; componentStates.fees = 'known'; }
     else unknownComponents.push('fees');
 
     // A discount is subtracted, but its ABSENCE is not evidence of an
     // unreported discount — most offers simply have none. Only price/
     // shipping/taxes/importDuties/fees drive certainty; discount is applied
     // when known, ignored (not flagged as a gap) when not.
-    if (isKnown(discount)) total -= discount.value as number;
+    if (isKnown(discount)) { total -= discount.value as number; componentStates.discount = 'known'; }
+    else componentStates.discount = 'not_applicable'; // no discount reported is a fact, not a gap
 
     const certainty: CostCertainty = !isKnown(price)
       ? 'unknown'
@@ -171,6 +229,8 @@ export class CostEngine {
       totalKnown: total,
       certainty,
       unknownComponents,
+      componentStates,
+      containsEstimate: false,
     };
   }
 
@@ -196,7 +256,17 @@ export class CostEngine {
       [targetCurrency]: rate.rate,
     } as Record<SupportedCurrency, number>);
 
-    return { ...breakdown, currency: targetCurrency, totalKnown: converted };
+    // The converted amount is DERIVED, not published — and today's only rate
+    // provider is an explicitly static table. Marking it estimated is what
+    // keeps a caller from presenting it as a confirmed price. The certainty of
+    // the underlying components is unchanged; what became uncertain is the
+    // currency, and that is said separately.
+    return {
+      ...breakdown,
+      currency: targetCurrency,
+      totalKnown: converted,
+      containsEstimate: true,
+    };
   }
 
   /**
@@ -221,6 +291,28 @@ export class CostEngine {
     }
     return a.totalKnown - b.totalKnown;
   }
+}
+
+/**
+ * Countries between which a purchase crosses no customs border.
+ *
+ * EU member states form a customs union: goods moving between them incur no
+ * import duties. This is a legal fact, not a guess, which is why the resulting
+ * component is 'not_applicable' rather than 'estimated'. A pair not covered
+ * here stays UNKNOWN — never assumed duty-free.
+ */
+const EU_CUSTOMS_UNION: ReadonlySet<string> = new Set([
+  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU',
+  'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
+]);
+
+function crossesNoCustomsBorder(context: CostContext): boolean {
+  const { destinationCountry, merchantCountry } = context;
+  if (!destinationCountry || !merchantCountry) return false;
+  const from = merchantCountry.toUpperCase();
+  const to = destinationCountry.toUpperCase();
+  if (from === to) return true;
+  return EU_CUSTOMS_UNION.has(from) && EU_CUSTOMS_UNION.has(to);
 }
 
 export const defaultCostEngine = new CostEngine();

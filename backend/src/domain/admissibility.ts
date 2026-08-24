@@ -273,7 +273,7 @@ export class AdmissibilityEngine {
     }
 
     if (preferredValues && typeof value === 'string') {
-      return this.checkPreferredValues(constraint, value, preferredValues, level);
+      return this.checkPreferredValues(constraint, value, preferredValues, level, constraint.parameters?.matchMode as string | undefined);
     }
 
     // For required: if no specific check, treat as satisfied if data exists
@@ -522,15 +522,44 @@ export class AdmissibilityEngine {
     };
   }
 
+  /**
+   * String-valued constraint check.
+   *
+   * Two match modes, because two genuinely different questions are being asked:
+   *
+   *  - 'equals' (default, unchanged): the offer's value must BE one of the
+   *    accepted values. Right for colour, condition, category — single-valued
+   *    fields where "Noir" and "Argenté" are simply different answers.
+   *
+   *  - 'contains_any': the offer's value must CONTAIN one of them. Right for
+   *    two shapes the equality test silently failed on:
+   *      • a partial reference — the user's "XM5" against a merchant's
+   *        "WH-1000XM5". Capucine recognises the user's own words inside the
+   *        merchant's fuller string; it never expands "XM5" into a model it
+   *        was not told about (INVARIANT 9).
+   *      • a multi-valued field — "PS5, PC, Switch" is a list, and asking
+   *        whether it EQUALS "ps5" is the wrong question.
+   *    The containment is checked in both directions so a merchant's terser
+   *    value ("PS5") also matches a longer accepted spelling ("playstation 5").
+   *
+   * UNKNOWN never reaches here — an absent or unknown value is resolved
+   * earlier by resolveUnknownData(), so "we don't know" can never be reported
+   * as "wrong value" (INVARIANT 2).
+   */
   private checkPreferredValues(
     constraint: PreferenceCriterion,
     value: string,
     preferredValues: string[],
-    level: string
+    level: string,
+    matchMode?: string
   ): ReturnType<AdmissibilityEngine['checkConstraint']> {
-    const matches = preferredValues.some(
-      v => v.toLowerCase() === value.toLowerCase()
-    );
+    const offerValue = value.toLowerCase();
+    const matches = matchMode === 'contains_any'
+      ? preferredValues.some(v => {
+          const accepted = v.toLowerCase();
+          return offerValue.includes(accepted) || accepted.includes(offerValue);
+        })
+      : preferredValues.some(v => v.toLowerCase() === offerValue);
 
     if (level === 'required' && !matches) {
       return {

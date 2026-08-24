@@ -26,8 +26,10 @@ import {
   QueryValidationError,
   QueryValidationWarning,
 } from './request';
-import { PreferenceCriterion, PreferenceLevel, UsageContext, UsageType, ContextType } from '../domain/types';
+import { PreferenceCriterion, PreferenceLevel, UsageContext, UsageContextEntry, UsageType, ContextType } from '../domain/types';
 import { SupportedCountry } from './i18n';
+import { extractAttributes } from './attribute-extraction';
+import { attributeToCriterion, ExtractedAttribute } from '../domain/attributes';
 import { RankingPreference } from './ranking-preference';
 
 // ============================================================================
@@ -76,6 +78,277 @@ const GENERIC_CATEGORY_PATTERNS: Record<string, string[]> = {
  * capucine-engine.ts.
  */
 export const DOMAIN_PRODUCT_CATEGORIES: ReadonlySet<string> = new Set(Object.keys(DOMAIN_CATEGORY_PATTERNS));
+
+// ============================================================================
+// USAGE CONTEXT VOCABULARY
+//
+// Two families, deliberately separate — see extractUsageContext() for why:
+//   ACTIVITY    = what the user will DO with the product (music, sport, work)
+//   ENVIRONMENT = WHERE they will do it (transport, office, gym, studio)
+// A sentence can state both ("de la musique, surtout dans les transports"),
+// one, or neither. Every pattern requires an explicit usage marker — "pour",
+// "dans", "au", "en", "for", "while", "on the" — so a product name that
+// merely contains a usage word ("casque gaming hyperx cloud 3") is never
+// mistaken for a stated usage.
+//
+// End-of-match uses a lookahead rather than \b: JS treats accented letters as
+// non-word characters, so "\b" after "é" never fires (same trap already
+// documented in extractCondition()).
+// ============================================================================
+
+const END = String.raw`(?=[\s,.;:!?]|$)`;
+
+// ============================================================================
+// COLOUR VOCABULARY
+//
+// Both spellings per colour: a French catalogue says "Noir" where a merchant
+// page says "Black", and AdmissibilityEngine.checkPreferredValues() accepts
+// any listed value (case-insensitively). Deliberately NOT exhaustive — a
+// colour that isn't here is simply not extracted, never guessed.
+//
+// 'orange' is intentionally absent: in French e-commerce text it is far more
+// often the telecom brand than a colour, and a wrong hard constraint is worse
+// than a missing soft one.
+// ============================================================================
+
+const COLOR_PATTERNS: Array<{ canonical: string; values: string[]; pattern: RegExp }> = [
+  { canonical: 'noir',        values: ['noir', 'noire', 'black'],              pattern: /\b(?:noire?s?|black)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'blanc',       values: ['blanc', 'blanche', 'white'],           pattern: /\b(?:blanche?s?|white)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'gris',        values: ['gris', 'grise', 'grey', 'gray'],       pattern: /\b(?:grise?s?|grey|gray)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'argent',      values: ['argent', 'argenté', 'silver'],         pattern: /(?:\bargent(?:é|e)?s?|silver)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'bleu',        values: ['bleu', 'bleue', 'blue'],               pattern: /\b(?:bleue?s?|blue)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'rouge',       values: ['rouge', 'red'],                        pattern: /\b(?:rouges?|red)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'vert',        values: ['vert', 'verte', 'green'],              pattern: /\b(?:verte?s?|green)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'rose',        values: ['rose', 'pink'],                        pattern: /\b(?:roses?|pink)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'violet',      values: ['violet', 'violette', 'purple'],        pattern: /\b(?:violette?s?|purple)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'jaune',       values: ['jaune', 'yellow'],                     pattern: /\b(?:jaunes?|yellow)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'beige',       values: ['beige'],                               pattern: /\b(?:beiges?)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'marron',      values: ['marron', 'brun', 'brown'],             pattern: /\b(?:marrons?|bruns?|brown)(?=[\s,.;:!?]|$)/i },
+  { canonical: 'or',          values: ['or', 'doré', 'gold'],                  pattern: /(?:\bdor(?:é|e)e?s?|\bgold)(?=[\s,.;:!?]|$)/i },
+];
+
+interface ActivityPattern {
+  usage: UsageType;
+  /** Environment implied by the activity itself, used only when the user named no environment. */
+  context?: ContextType;
+  confidence: number;
+  patterns: RegExp[];
+}
+
+const ACTIVITY_PATTERNS: ActivityPattern[] = [
+  {
+    usage: 'music',
+    confidence: 0.85,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+(?:écouter|l'écoute\s+de|de\s+la\s+)?\s*(?:de\s+la\s+)?musique` + END, 'i'),
+      new RegExp(String.raw`principalement\s+pour\s+(?:la\s+)?musique` + END, 'i'),
+      new RegExp(String.raw`(?:écouter|et)\s+de\s+la\s+musique` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+(?:listening\s+to\s+)?music` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'sport',
+    context: 'gym',
+    confidence: 0.8,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+(?:faire\s+)?d[eu]\s*(?:la\s+)?sport` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+le\s+sport` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+courir` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:la\s+)?course\s+à\s+pied` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:faire\s+)?de\s+l'exercice` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:le\s+)?(?:fitness|cardio|running)` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+sports?` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+running` + END, 'i'),
+      new RegExp(String.raw`while\s+running` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'gaming',
+    context: 'gaming',
+    confidence: 0.85,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+jouer(?:\s+sur\s+(?:pc|console|ps5|xbox|switch|ordinateur))?` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:le\s+)?(?:jeu|gaming)` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+gaming` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+playing\s+games` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'office',
+    context: 'office',
+    confidence: 0.8,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+(?:le\s+)?(?:télé)?travail(?:ler)?` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+travailler` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:le\s+)?bureau` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+work(?:ing)?` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+the\s+office` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'travel',
+    context: 'travel',
+    confidence: 0.75,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+voyager` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:les\s+)?voyages?` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:les\s+)?vacances` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+travell?ing` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+travel` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+trips?` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'transport',
+    context: 'transport',
+    confidence: 0.9,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+(?:les?\s+)?transports?(?:\s+en\s+commun)?` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:les\s+|mes\s+)?trajets?` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:mes\s+)?déplacements?` + END, 'i'),
+      new RegExp(String.raw`(?:pour|et)\s+(?:prendre\s+)?le\s+(?:métro|metro|bus|train|tramway|tram|rer)` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+(?:my\s+)?commut(?:e|ing)` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+public\s+transport` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'home',
+    context: 'home',
+    confidence: 0.7,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+(?:la\s+)?maison` + END, 'i'),
+      new RegExp(String.raw`utilisation\s+domestique` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+home\s+use` + END, 'i'),
+    ],
+  },
+  {
+    usage: 'outdoor',
+    context: 'outdoor',
+    confidence: 0.7,
+    patterns: [
+      new RegExp(String.raw`(?:pour|et)\s+(?:l'extérieur|le\s+plein\s+air|la\s+randonnée)` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+outdoor\s+use` + END, 'i'),
+      new RegExp(String.raw`(?:for|and)\s+hiking` + END, 'i'),
+    ],
+  },
+];
+
+/**
+ * Does this text state HOW the product will be used?
+ *
+ * Exposed so other components can ask the question without re-running a full
+ * interpretation — notably ClarificationEngine, which must not ask "quel
+ * usage ?" to someone who already said it. Uses the very same pattern tables
+ * as extraction, so the two can never disagree.
+ */
+export function hasStatedUsage(text: string): boolean {
+  if (!text) return false;
+  for (const rule of ACTIVITY_PATTERNS) {
+    if (rule.patterns.some(p => p.test(text))) return true;
+  }
+  for (const rule of ENVIRONMENT_PATTERNS) {
+    if (rule.patterns.some(p => p.test(text))) return true;
+  }
+  return false;
+}
+
+interface EnvironmentPattern {
+  context: ContextType;
+  /** Usage assumed when the user named an environment but no activity. */
+  impliedUsage: UsageType;
+  confidence: number;
+  patterns: RegExp[];
+}
+
+const ENVIRONMENT_PATTERNS: EnvironmentPattern[] = [
+  {
+    context: 'transport',
+    impliedUsage: 'transport',
+    confidence: 0.9,
+    patterns: [
+      new RegExp(String.raw`dans\s+(?:les?\s+)?transports?(?:\s+en\s+commun)?` + END, 'i'),
+      new RegExp(String.raw`dans\s+le\s+(?:métro|metro|bus|train|tramway|tram|rer)` + END, 'i'),
+      new RegExp(String.raw`en\s+(?:métro|metro|bus|train|tramway|tram)` + END, 'i'),
+      new RegExp(String.raw`en\s+(?:déplacement|mobilité)` + END, 'i'),
+      new RegExp(String.raw`on\s+the\s+(?:train|bus|metro|subway|tube)` + END, 'i'),
+      new RegExp(String.raw`on\s+public\s+transport` + END, 'i'),
+      new RegExp(String.raw`during\s+my\s+commute` + END, 'i'),
+    ],
+  },
+  {
+    context: 'travel',
+    impliedUsage: 'travel',
+    confidence: 0.75,
+    patterns: [
+      new RegExp(String.raw`en\s+voyage` + END, 'i'),
+      new RegExp(String.raw`en\s+vacances` + END, 'i'),
+      new RegExp(String.raw`en\s+week-?end` + END, 'i'),
+      new RegExp(String.raw`while\s+travell?ing` + END, 'i'),
+      new RegExp(String.raw`on\s+a\s+trip` + END, 'i'),
+    ],
+  },
+  {
+    context: 'office',
+    impliedUsage: 'office',
+    confidence: 0.8,
+    patterns: [
+      new RegExp(String.raw`au\s+bureau` + END, 'i'),
+      new RegExp(String.raw`au\s+travail` + END, 'i'),
+      new RegExp(String.raw`en\s+télétravail` + END, 'i'),
+      new RegExp(String.raw`(?:at|in)\s+the\s+office` + END, 'i'),
+    ],
+  },
+  {
+    context: 'gym',
+    impliedUsage: 'sport',
+    confidence: 0.8,
+    patterns: [
+      new RegExp(String.raw`en\s+salle\s+de\s+sport` + END, 'i'),
+      new RegExp(String.raw`à\s+la\s+salle(?:\s+de\s+sport)?` + END, 'i'),
+      new RegExp(String.raw`at\s+the\s+gym` + END, 'i'),
+    ],
+  },
+  {
+    context: 'studio',
+    impliedUsage: 'music',
+    confidence: 0.8,
+    patterns: [
+      new RegExp(String.raw`en\s+studio` + END, 'i'),
+      new RegExp(String.raw`in\s+the\s+studio` + END, 'i'),
+    ],
+  },
+  {
+    context: 'classroom',
+    impliedUsage: 'office',
+    confidence: 0.7,
+    patterns: [
+      new RegExp(String.raw`en\s+cours` + END, 'i'),
+      new RegExp(String.raw`en\s+classe` + END, 'i'),
+      new RegExp(String.raw`in\s+class` + END, 'i'),
+    ],
+  },
+  {
+    context: 'outdoor',
+    impliedUsage: 'outdoor',
+    confidence: 0.7,
+    patterns: [
+      new RegExp(String.raw`en\s+extérieur` + END, 'i'),
+      new RegExp(String.raw`en\s+plein\s+air` + END, 'i'),
+      new RegExp(String.raw`outdoors` + END, 'i'),
+    ],
+  },
+  {
+    context: 'home',
+    impliedUsage: 'home',
+    confidence: 0.7,
+    patterns: [
+      new RegExp(String.raw`à\s+la\s+maison` + END, 'i'),
+      new RegExp(String.raw`chez\s+(?:soi|moi)` + END, 'i'),
+      new RegExp(String.raw`at\s+home` + END, 'i'),
+    ],
+  },
+];
+
 
 // ============================================================================
 // REQUEST INTERPRETER INTERFACE
@@ -336,7 +609,8 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     track(this.extractRAM(text, interpretation));
     track(this.extractStorage(text, interpretation));
     track(this.extractCondition(text, interpretation));
-    track(this.extractUsageContext(text, interpretation));
+    this.extractColor(text, interpretation);
+    for (const span of this.extractUsageContext(text, interpretation)) track(span);
 
     // Extract must-have/required patterns
     this.extractRequirements(text, interpretation);
@@ -346,6 +620,13 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
 
     // Extract exclusions
     this.extractExclusions(text, interpretation);
+
+    // Typed attributes: brand, model, compatibility, connectivity, material,
+    // quantities-with-units, destination, delivery deadline. Runs AFTER the
+    // legacy extractors above so those keep precedence on the ids they already
+    // own (budget, condition, storage, screen_size, color) — this extends the
+    // attribute surface, it never re-decides what is already decided.
+    this.applyExtractedAttributes(text, interpretation, matchedSpans);
 
     // Extract product terms (brand names + model numbers) from the text with
     // recognized constraint phrases stripped out — see comment above.
@@ -357,124 +638,200 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
   }
 
   /**
-   * Extract usage context from text (e.g., "pour les transports", "pour écouter de la musique")
-   * This returns contextual signals that influence relevance but are NOT hard constraints.
-   * Returns the matched substring (for span-stripping), or null.
+   * Extract an explicitly requested colour — "Sony XM5 noir", "white sneakers".
+   *
+   * A colour the user NAMES is a real constraint (spec §3: "noir → HARD
+   * CONSTRAINT si explicitement demandé"), unlike a usage, which never is.
+   * Two deliberate choices keep that from being brutal:
+   *
+   *  - `unknownPolicy: 'pass'` — an offer that simply doesn't publish a colour
+   *    is NOT rejected. UNKNOWN is not "wrong colour" (spec §4). Only an offer
+   *    that states a DIFFERENT colour is refused.
+   *  - `preferredValues` carries both the French and English spellings, since
+   *    catalogues and merchant pages mix the two ("Noir" vs "Black") and a
+   *    language mismatch is not a colour mismatch.
+   *
+   * Unlike budget/RAM spans, the matched word is deliberately NOT stripped
+   * from the search terms: "sony xm5 noir" is a better Web query than
+   * "sony xm5", whereas "de 1000 euros" is pure noise.
    */
-  private extractUsageContext(text: string, interpretation: InterpretedRequest): string | null {
-    // Don't add duplicate usage context
-    if (interpretation.usageContext) {
-      return null;
+  private extractColor(text: string, interpretation: InterpretedRequest): string | null {
+    if (interpretation.extractedCriteria.some(c => c.id === 'color')) return null;
+
+    for (const { canonical, values, pattern } of COLOR_PATTERNS) {
+      const match = text.match(pattern);
+      if (!match) continue;
+      interpretation.extractedCriteria.push({
+        id: 'color',
+        name: 'Couleur',
+        level: 'required',
+        parameters: { preferredValues: [...values], unknownPolicy: 'pass', canonical },
+      });
+      return match[0];
     }
-
-    // Patterns for usage context
-    const usagePatterns: Array<{ usage: UsageType; context?: ContextType; patterns: RegExp[]; confidence: number }> = [
-      // Transport/commuting usage
-      {
-        usage: 'transport',
-        patterns: [
-          /pour\s+(?:les?\s+)?transports?\b/i,
-          /dans\s+(?:les?\s+)?transports?\b/i,
-          /surtout\s+(?:dans|pour)\s+(?:les?\s+)?transports?\b/i,
-          /pour\s+(?:prendre|aller\s+en)\s+(?:le\s+)?(?:métro|bus|train|tramway?)\b/i,
-          /pour\s+(?:voyager|déplacements?)\b/i,
-          /en\s+(?:déplacement|mobilité)\b/i
-        ],
-        context: 'transport',
-        confidence: 0.9
-      },
-      // Music listening
-      {
-        usage: 'music',
-        patterns: [
-          /pour\s+(?:écouter|écoute)\s+(?:de\s+)?la?\s+musique\b/i,
-          /principalement\s+pour\s+(?:la\s+)?musique\b/i,
-          /écoute\s+(?:de\s+)?musique\b/i
-        ],
-        confidence: 0.85
-      },
-      // Sport/fitness
-      {
-        usage: 'sport',
-        patterns: [
-          /pour\s+(?:faire\s+)?du?\s+sport\b/i,
-          /pour\s+courir\b/i,
-          /pour\s+(?:faire\s+)?de\s+l'exercice\b/i,
-          /pour\s+(?:la\s+)?gym(?:nase)?\b/i,
-          /pour\s+(?:fitness|cardio)\b/i
-        ],
-        context: 'gym',
-        confidence: 0.8
-      },
-      // Office/work
-      {
-        usage: 'office',
-        patterns: [
-          /pour\s+(?:travailler|le\s+travail)\b/i,
-          /au\s+bureau\b/i,
-          /pour\s+(?:le\s+)?bureau\b/i,
-          /pour\s+(?:télé)?travail\b/i,
-          /au\s+travail\b/i
-        ],
-        context: 'office',
-        confidence: 0.8
-      },
-      // Gaming
-      {
-        usage: 'gaming',
-        patterns: [
-          /pour\s+(?:jouer|le\s+jeu)\b/i,
-          /pour\s+gaming\b/i,
-          /pour\s+(?:pc\s+)?gaming\b/i,
-          /jouer\s+sur\s+(?:pc|ordinateur)\b/i
-        ],
-        context: 'gaming',
-        confidence: 0.85
-      },
-      // Travel
-      {
-        usage: 'travel',
-        patterns: [
-          /pour\s+voyager\b/i,
-          /en\s+voyage\b/i,
-          /pour\s+(?:les\s+)?vacances?\b/i,
-          /en\s+weekend\b/i
-        ],
-        context: 'travel',
-        confidence: 0.75
-      },
-      // Home usage
-      {
-        usage: 'home',
-        patterns: [
-          /chez\s+soi\b/i,
-          /à\s+la\s+maison\b/i,
-          /pour\s+(?:la\s+)?maison\b/i,
-          /utilisation\s+(?:domestique|à\s+la\s+maison)\b/i
-        ],
-        context: 'home',
-        confidence: 0.7
-      }
-    ];
-
-    for (const { usage, context, patterns, confidence } of usagePatterns) {
-      for (const pattern of patterns) {
-        const match = text.match(pattern);
-        if (match) {
-          // Create usage context object
-          interpretation.usageContext = {
-            usage,
-            context: context ?? undefined,
-            source: 'user',
-            confidence,
-            timestamp: new Date()
-          };
-          return match[0];
-        }
-      }
-    }
-
     return null;
+  }
+
+  /**
+   * Run the typed attribute extractors and fold their results into the
+   * interpretation.
+   *
+   * Three rules govern what happens to each attribute:
+   *
+   *  - An id another extractor already produced is LEFT ALONE. `budget`,
+   *    `condition`, `color`, `storage` and `screen_size` have dedicated
+   *    extractors with their own tested semantics; this pass must not
+   *    silently overwrite them.
+   *  - Only attributes that clear their confidence threshold become required
+   *    criteria; the rest land as soft criteria (see attributeToCriterion).
+   *    Nothing here can invent a hard constraint out of a guess.
+   *  - Span stripping is SELECTIVE. A measurement ("moins de 1 kg") is noise
+   *    in a search query and is stripped; a brand or model is the single most
+   *    useful thing to search for and is deliberately kept.
+   */
+  private applyExtractedAttributes(
+    text: string,
+    interpretation: InterpretedRequest,
+    matchedSpans: string[]
+  ): void {
+    const { attributes } = extractAttributes(text);
+    if (attributes.length === 0) return;
+
+    interpretation.attributes = attributes;
+
+    const STRIP_KINDS = new Set(['weight', 'dimension', 'capacity', 'battery_life', 'quantity', 'delivery_deadline']);
+
+    for (const attribute of attributes) {
+      if (STRIP_KINDS.has(attribute.kind) && attribute.provenance.matchedText) {
+        matchedSpans.push(attribute.provenance.matchedText);
+      }
+
+      if (interpretation.extractedCriteria.some(c => c.id === attribute.criterionId)) continue;
+
+      const criterion = attributeToCriterion(attribute);
+      if (criterion) interpretation.extractedCriteria.push(criterion);
+    }
+  }
+
+  /**
+   * Extract usage context from text — "pour écouter de la musique, surtout
+   * dans les transports", "for commuting", "pour le sport et les voyages".
+   *
+   * WHY TWO PATTERN FAMILIES, NOT ONE
+   * ─────────────────────────────────
+   * The previous version had a single ordered table and stopped at the first
+   * hit. Because 'transport' came before 'music' in that table, the sentence
+   * "pour écouter de la musique, surtout dans les transports" was read as
+   * usage=transport and the music half was silently thrown away — the exact
+   * query this feature exists for. Activity ("what am I doing": music, sport,
+   * gaming, work) and environment ("where": transport, office, gym, studio)
+   * are different questions, so they are matched separately and combined:
+   *   activity + environment → usage=activity, context=environment
+   *   environment alone      → usage falls back to that environment's own
+   *                            implied usage (so "pour les transports" alone
+   *                            still yields usage=transport, unchanged)
+   *
+   * MULTI-CONTEXT: every match is kept. "pour le sport et les voyages" keeps
+   * both — the dominant one on the object, the rest in `additional`. Nothing
+   * is collapsed (spec §5).
+   *
+   * Each pattern requires an explicit usage marker ("pour", "dans", "au",
+   * "en", "for", "while", "on the"). A bare product word never counts:
+   * "casque gaming hyperx cloud 3" is a product name, not a stated usage.
+   *
+   * Returns every matched substring so parseText() can strip them all before
+   * product-term extraction — a usage phrase must never leak into search
+   * keywords as if it were part of the product reference.
+   */
+  private extractUsageContext(text: string, interpretation: InterpretedRequest): string[] {
+    if (interpretation.usageContext) return [];
+
+    type Hit = { entry: UsageContextEntry; index: number };
+
+    const activities: Hit[] = [];
+    const environments: Array<Hit & { impliedUsage: UsageType; context: ContextType }> = [];
+
+    for (const rule of ACTIVITY_PATTERNS) {
+      for (const pattern of rule.patterns) {
+        const match = text.match(pattern);
+        if (!match || match.index === undefined) continue;
+        if (activities.some(a => a.entry.usage === rule.usage)) continue;
+        activities.push({
+          index: match.index,
+          entry: {
+            usage: rule.usage,
+            context: rule.context,
+            source: 'user',
+            confidence: rule.confidence,
+            matchedText: match[0].trim(),
+          },
+        });
+        break;
+      }
+    }
+
+    for (const rule of ENVIRONMENT_PATTERNS) {
+      for (const pattern of rule.patterns) {
+        const match = text.match(pattern);
+        if (!match || match.index === undefined) continue;
+        if (environments.some(e => e.context === rule.context)) continue;
+        environments.push({
+          index: match.index,
+          impliedUsage: rule.impliedUsage,
+          context: rule.context,
+          entry: {
+            usage: rule.impliedUsage,
+            context: rule.context,
+            source: 'user',
+            confidence: rule.confidence,
+            matchedText: match[0].trim(),
+          },
+        });
+        break;
+      }
+    }
+
+    if (activities.length === 0 && environments.length === 0) return [];
+
+    // Deterministic order: as the user wrote them, left to right.
+    activities.sort((a, b) => a.index - b.index);
+    environments.sort((a, b) => a.index - b.index);
+
+    const entries: UsageContextEntry[] = [];
+    if (activities.length > 0) {
+      // The first stated environment refines the first stated activity.
+      const [firstActivity, ...otherActivities] = activities;
+      const environment = environments[0];
+      entries.push({
+        ...firstActivity.entry,
+        context: environment ? environment.context : firstActivity.entry.context,
+        matchedText: environment
+          ? `${firstActivity.entry.matchedText} + ${environment.entry.matchedText}`
+          : firstActivity.entry.matchedText,
+        confidence: environment
+          ? Math.min(firstActivity.entry.confidence, environment.entry.confidence)
+          : firstActivity.entry.confidence,
+      });
+      for (const activity of otherActivities) entries.push(activity.entry);
+      // Environments beyond the first are separate stated contexts, kept.
+      for (const environment of environments.slice(1)) entries.push(environment.entry);
+    } else {
+      for (const environment of environments) entries.push(environment.entry);
+    }
+
+    const [primary, ...additional] = entries;
+    interpretation.usageContext = {
+      ...primary,
+      timestamp: new Date(),
+      ...(additional.length > 0 ? { additional } : {}),
+    };
+
+    const spans: string[] = [];
+    for (const hit of [...activities, ...environments]) {
+      const span = hit.entry.matchedText;
+      if (span) spans.push(span);
+    }
+    return spans;
   }
 
   /** Remove each matched constraint substring (first occurrence, case-insensitive) from text. */
@@ -523,6 +880,13 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     // 2. Model numbers: patterns like WH-1000XM5, GTX3080, M2Pro, A2185, S8+, SL-1200MK7
     //    Matches: letter(s) + optional-hyphen + digit(s) + optional-letter(s)
     const modelPattern = /\b([A-Za-z]{1,6}[-\s]?\d{2,6}[A-Za-z0-9]{0,6})\b/g;
+    // Compact model tokens with a SINGLE digit — "XM5", "M50x", "S8", "A7IV".
+    // Kept as a separate, tighter pattern rather than loosening the one above
+    // to \d{1,6}: that would let a space-separated pair like "de 1000" or
+    // "cran 4" through, which is exactly the constraint-leaks-into-terms bug
+    // the span stripping exists to prevent. Here letters and digits must be
+    // glued together, so only a real product token can match.
+    const compactModelPattern = /\b([A-Za-z]{2,4}\d{1,4}[A-Za-z]{0,3})\b/g;
     let m: RegExpExecArray | null;
     while ((m = modelPattern.exec(text)) !== null) {
       const candidate = m[1].replace(/\s+/g, '-');
@@ -530,6 +894,11 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
       if (/[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
         add(candidate);
       }
+    }
+
+    let cm: RegExpExecArray | null;
+    while ((cm = compactModelPattern.exec(text)) !== null) {
+      add(cm[1]);
     }
 
     // 3. Known brand names (maintained list — NOT exhaustive, just common ones)
@@ -619,6 +988,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
       /max(?:i(?:mum)?)?\s+(\d+)(?:\s*€|\s*euros?)?/i,
       /budget\s+(?:de\s+)?(\d+)(?:\s*€|\s*euros?)?/i,
       /jusqu[''`]?à\s*(\d+)(?:\s*€|\s*euros?)?/i,
+      /(\d+)\s*€(?!\s*(?:max|maxi|maximum))/i,
       /(\d+)\s*€\s*(?:max(?:i(?:mum)?)?|maxi)/i,
       /€\s*(\d+)/i,
       /(\d+)\s*euros?\s+(?:max|maxi|maximum)/i,
@@ -632,6 +1002,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
       /roughly\s*€?(\d+)/i,
       /budget\s*€?(\d+)/i,
       /€(\d+)\s+(budget|max|limit)/i,
+      /(\d+)\s*€?\s*maximum/i,
       // ── Conversational refinement phrasing (e.g. "élargis à 1100€" as a
       // follow-up to an existing search) — appended last so they never
       // shadow the patterns above for ordinary single-turn queries; see

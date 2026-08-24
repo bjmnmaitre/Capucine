@@ -15,6 +15,7 @@
  */
 
 import { PreferenceCriterion, PreferenceLevel } from '../domain/types';
+import { hasStatedUsage } from './request-interpreter';
 
 // ============================================================================
 // TYPES
@@ -29,7 +30,8 @@ export type ClarificationTrigger =
   | 'incompatible_constraints'  // two constraints that cannot simultaneously be satisfied
   | 'ambiguous_location'        // "local" without specifying where
   | 'dual_interpretation'       // phrase could mean two different things
-  | 'unknown_threshold';        // comparative without reference (faster, cheaper)
+  | 'unknown_threshold'         // comparative without reference (faster, cheaper)
+  | 'unspecified_usage';        // product category where the intended usage changes what to look for
 
 export type ClarificationUrgency = 'blocking' | 'important' | 'optional';
 
@@ -97,7 +99,68 @@ interface DetectionResult {
   safeDefault?: ClarificationItem['safeDefault'];
 }
 
+/**
+ * Categories where the intended usage genuinely changes WHICH product is
+ * right — the only ones the 'usage-unspecified' rule below will ask about.
+ * A commuting headset, a studio headset and a gaming headset are different
+ * products; a book is a book whatever you plan to do with it.
+ */
+const USAGE_SENSITIVE_CATEGORIES: ReadonlySet<string> = new Set([
+  'casque',
+  'ordinateur_portable',
+  'clavier',
+]);
+
 const AMBIGUITY_RULES: AmbiguityRule[] = [
+  // ── Unspecified usage ─────────────────────────────────────────────────────
+  //
+  // Asks ONE question — "for what usage?" — and only where the answer really
+  // changes the search. Spec §14 is explicit about the trap to avoid: knowing
+  // the user commutes must let Capucine work out that weight matters, NOT
+  // force the user to specify every attribute. So this rule never asks "quel
+  // poids maximum ?", "quelle autonomie ?", or anything derivable from the
+  // usage — those are what the contextual mapping is for.
+  //
+  // Three gates keep it quiet:
+  //   1. the category must be one where usage genuinely changes the answer
+  //      (a commuting headset and a studio headset are different products;
+  //      a book is a book);
+  //   2. the user must not have stated a usage already (hasStatedUsage);
+  //   3. it never blocks the search — Capucine searches now and refines if
+  //      the user answers.
+  {
+    id: 'usage-unspecified',
+    trigger: 'unspecified_usage',
+    urgency: 'important',
+    detect(criteria, queryText) {
+      if (!queryText) return null;
+      if (hasStatedUsage(queryText)) return null;
+
+      const categoryCriterion = criteria.find(c => c.id === 'category');
+      const values = (categoryCriterion?.parameters?.preferredValues as string[] | undefined) ?? [];
+      const category = values.find(v => USAGE_SENSITIVE_CATEGORIES.has(v));
+      if (!category) return null;
+
+      return {
+        ambiguityDescription:
+          "L'usage prévu n'est pas précisé, alors qu'il change les dimensions pertinentes pour ce type de produit.",
+        suggestedQuestion: 'Pour quel usage principal ? (musique, transports, sport, bureau, gaming…)',
+        involvedCriteria: [categoryCriterion!.id],
+        possibleInterpretations: [
+          { interpretation: 'Transports / déplacements', assumedValue: 'transport', impact: 'Valorise autonomie, poids, réduction de bruit' },
+          { interpretation: 'Bureau / télétravail', assumedValue: 'office', impact: 'Valorise micro, confort, réduction de bruit' },
+          { interpretation: 'Sport', assumedValue: 'sport', impact: 'Valorise maintien, résistance, légèreté' },
+          { interpretation: 'Gaming', assumedValue: 'gaming', impact: 'Valorise latence, micro, compatibilité' },
+        ],
+        blocksSearch: false,
+        safeDefault: {
+          value: undefined,
+          description: "Rechercher sans signal d'usage — aucune dimension contextuelle n'est valorisée, aucune n'est pénalisée",
+        },
+      };
+    },
+  },
+
   // ── Budget ambiguity ──────────────────────────────────────────────────────
   {
     id: 'budget-no-amount',

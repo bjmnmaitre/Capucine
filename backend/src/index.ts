@@ -21,6 +21,21 @@ export * from './domain/types';
 // Priority Engine and decision logic
 export { rankOffers, mergeProfileAndRequirements, filterEligible } from './decision/priority-engine';
 
+// Contextual relevance (usage context → ranking bonus, after admissibility)
+export * from './decision/contextual-relevance';
+
+// Usage context mapping table (usage → relevant attributes)
+export * from './domain/usage-context-mapping';
+
+// Typed attribute model (brand, model, compatibility, quantities, …)
+export * from './domain/attributes';
+
+// Data quality / confidence (informational — never an admissibility input)
+export * from './domain/data-quality';
+
+// Purchase readiness (stock, delivery, buyability — separate dimensions)
+export * from './domain/purchase-readiness';
+
 // Application Layer (Request, Provenance, Normalization, Results, i18n, etc.)
 export * from './application';
 

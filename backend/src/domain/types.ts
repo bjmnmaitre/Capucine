@@ -5,6 +5,30 @@
  * These types implement the 20 architectural invariants of Capucine.
  */
 
+/**
+ * Status of a cart preparation operation.
+ */
+export type CartPreparedStatus =
+  | 'pending'           // Not started
+  | 'preparing'         // In progress
+  | 'prepared'          // Ready for merchant
+  | 'partially_prepared' // Some fields filled, manual completion needed
+  | 'failed'            // Preparation failed
+  | 'user_action_required'; // Waiting for user (e.g., login)
+
+/**
+ * Status of a checkout attempt.
+ */
+export type CheckoutStatus =
+  | 'initiated'          // Checkout process started
+  | 'preparing_cart'     // Cart preparation in progress
+  | 'cart_prepared'      // Cart successfully prepared
+  | 'redirecting'        // User being redirected to merchant
+  | 'awaiting_user_action' // Waiting for user to complete payment
+  | 'completed'          // Purchase completed successfully
+  | 'failed'             // Checkout failed
+  | 'cancelled';         // User canceled the checkout
+
 // ============================================================================
 // PREFERENCE HIERARCHY
 // ============================================================================
@@ -39,17 +63,46 @@ export type PreferenceLevel =
  * This is contextual information that influences attribute relevance
  * but does NOT become a hard constraint.
  */
-export interface UsageContext {
+export interface UsageContextEntry {
   /** Primary use case (music, transport, sport, etc.) */
   usage: UsageType;
   /** Specific context or environment (transport, office, home, etc.) */
   context?: ContextType;
-  /** Source of this information */
+  /**
+   * Where this came from. PROVENANCE_PRESERVATION: an explanation must never
+   * present an inference as something the user asked for.
+   * - 'user'     — the user actually said it ("pour les transports")
+   * - 'inferred' — Capucine deduced it from something else
+   * - 'profile'  — carried over from the permanent profile
+   */
   source: 'user' | 'inferred' | 'profile';
   /** Confidence in this interpretation (0-1) */
   confidence: number;
+  /**
+   * The exact substring of the user's own text this entry was read from —
+   * the provenance evidence. Absent when the entry didn't come from text.
+   */
+  matchedText?: string;
+}
+
+/**
+ * Usage context represents how the user intends to use a product.
+ * This is contextual information that influences attribute relevance
+ * but does NOT become a hard constraint.
+ *
+ * MULTI-CONTEXT: a query legitimately carries several usages ("pour le sport
+ * et les voyages"). The dominant one stays on the object itself so every
+ * existing reader (`ctx.usage` / `ctx.context`) keeps working unchanged; the
+ * others live in `additional` and are never silently collapsed into it.
+ */
+export interface UsageContext extends UsageContextEntry {
   /** When this was determined */
   timestamp: Date;
+  /**
+   * Secondary usages stated in the same request, in the order they appeared.
+   * Each keeps its own source/confidence/matchedText — never merged away.
+   */
+  additional?: UsageContextEntry[];
 }
 
 /** Types of usage contexts supported */
@@ -81,6 +134,12 @@ export type ContextType =
  * Contextual signals indicate which product attributes are relevant
  * for a given usage context. These are NOT hard constraints - they
  * merely indicate relevance for ranking and search strategy.
+ *
+ * A key set to 'relevant' means: "for this usage, evidence about this
+ * attribute is worth taking into account". It never means "the offer must
+ * have it" — that would be a constraint, and constraints only ever come
+ * from what the user explicitly asked for (see AdmissibilityEngine, which
+ * never sees this type).
  */
 export interface ContextualSignals {
   /** Whether portability is relevant (e.g., for transport usage) */
@@ -93,22 +152,26 @@ export interface ContextualSignals {
   noiseCancellation?: RelevanceLevel;
   /** Whether comfort is relevant */
   comfort?: RelevanceLevel;
-  /** Whether audio quality is relevant */
+  /** Whether audio/sound quality is relevant */
   audioQuality?: RelevanceLevel;
   /** Whether microphone quality is relevant */
   microphone?: RelevanceLevel;
   /** Whether latency is relevant */
   latency?: RelevanceLevel;
-  /** Whether stability is relevant */
+  /** Whether stability (staying in place) is relevant */
   stability?: RelevanceLevel;
   /** Whether sweat resistance is relevant */
   sweatResistance?: RelevanceLevel;
-  /** Whether spatial audio is relevant */
+  /** Whether spatial audio / soundstage is relevant */
   spatialAudio?: RelevanceLevel;
   /** Whether foldability is relevant */
   foldability?: RelevanceLevel;
-  /** Whether compatibility is relevant */
+  /** Whether compatibility (with a device/platform) is relevant */
   compatibility?: RelevanceLevel;
+  /** Whether codec support (aptX, LDAC, AAC...) is relevant */
+  codecSupport?: RelevanceLevel;
+  /** Whether frequency response is relevant */
+  frequencyResponse?: RelevanceLevel;
 }
 
 /** Levels of relevance for contextual signals */
@@ -268,6 +331,122 @@ export interface CurrentSearchRequirements {
   // Metadata
   createdAt: Date;
   queryText?: string; // Original user query for reference
+}
+
+// ============================================================================
+// PURCHASE FLOW TYPES
+// ============================================================================
+
+/**
+ * Represents an item in a shopping cart.
+ * Contains the offer reference and user-selected options.
+ */
+export interface CartItem {
+  /** Reference to the offer being purchased */
+  offerId: string;
+  /** Quantity of this item */
+  quantity: number;
+  /** User-selected variants (e.g., size, color) */
+  selectedVariants?: Record<string, string>;
+}
+
+/**
+ * User information for pre-filling checkout forms.
+ * NOTE: This is ONLY for pre-fill, never stored by Capucine.
+ */
+export interface UserInfo {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  shippingAddress?: {
+    street?: string;
+    city?: string;
+    postalCode?: string;
+    country?: string;
+  };
+}
+
+/**
+ * Represents a shopping cart containing items to be purchased.
+ * Does NOT contain payment info (stays with merchant).
+ */
+export interface Cart {
+  /** Unique cart identifier */
+  id: string;
+  /** Items in the cart */
+  items: CartItem[];
+  /** Promotions applied to the cart */
+  appliedPromotions: PromotionApplication[];
+  /** User info for pre-fill only */
+  userInfo?: UserInfo;
+  /** When the cart was created */
+  createdAt: Date;
+  /** When the cart was last updated */
+  updatedAt: Date;
+}
+
+/**
+ * Merchant-specific cart representation.
+ * Used when the merchant system needs additional data beyond the standard cart.
+ */
+export interface MerchantCart {
+  /** Merchant identifier */
+  merchantId: string;
+  /** Reference to the Capucine cart */
+  cartId: string;
+  /** Merchant-specific data needed for cart creation */
+  merchantSpecificData: Record<string, unknown>;
+}
+
+/**
+ * Audit trail entry for tracking cart preparation and checkout attempts.
+ */
+export interface AuditEntry {
+  /** When the action occurred */
+  timestamp: Date;
+  /** What action was performed */
+  action: string;
+  /** Result of the action */
+  result: 'success' | 'failure';
+  /** Additional details about the action */
+  details?: string;
+  /** Error message if action failed */
+  error?: string;
+}
+
+/**
+ * Tracks the state of a checkout attempt from cart preparation to completion.
+ * Maintains audit trail and retry state.
+ */
+export interface CheckoutSession {
+  /** Unique session identifier */
+  id: string;
+  /** The cart being purchased */
+  cart: Cart;
+  /** Merchant-specific cart representation (if applicable) */
+  merchantCart?: MerchantCart;
+  /** Current status of the checkout process */
+  status: CheckoutStatus;
+  /** Which execution capability is being used */
+  executionCapability: ExecutionCapabilityType;
+  /** URL to complete the purchase (when available) */
+  checkoutUrl?: string;
+  /** What the user should do next */
+  nextAction?: string;
+  /** Error message if checkout failed */
+  error?: string;
+  /** Audit trail of all actions taken */
+  auditTrail: AuditEntry[];
+  /** Number of retry attempts made */
+  retryCount: number;
+  /** Maximum number of retry attempts allowed */
+  maxRetries: number;
+  /** When the session was created */
+  createdAt: Date;
+  /** When the session was last updated */
+  updatedAt: Date;
+  /** When the checkout was completed */
+  completedAt?: Date;
 }
 
 // ============================================================================
@@ -438,6 +617,56 @@ export interface CriterionScore {
  * Result of ranking a single Offer.
  * Contains the overall score and per-criterion breakdown.
  */
+
+/**
+ * How ONE contextual signal scored against ONE offer.
+ *
+ * A contextual signal is never a constraint: the only thing it can do is add
+ * evidence-based points on top of a score the offer already earned from the
+ * user's real criteria. Three outcomes are possible and all three are
+ * reported explicitly rather than collapsed into a number:
+ *   - 'applied'    — the offer has KNOWN data for this attribute, so it was scored.
+ *   - 'unknown'    — no data. Contributes 0 and costs nothing (UNKNOWN != FALSE).
+ *   - 'superseded' — the user set an explicit criterion on this same attribute,
+ *                    so the explicit criterion decides and the signal stands down
+ *                    (no double counting, explicit always dominates inferred).
+ */
+export interface ContextualSignalScore {
+  /** Key from ContextualSignals, e.g. 'weight', 'batteryLife'. */
+  signal: keyof ContextualSignals;
+  /** The offer characteristic actually read, when one was found. */
+  attribute?: string;
+  outcome: 'applied' | 'unknown' | 'superseded';
+  /** Raw value read from the offer, when known. */
+  foundValue?: unknown;
+  /** Status of that value (never 'unknown' when outcome === 'applied'). */
+  foundStatus?: DataStatus;
+  /** Points actually contributed. Always >= 0 — a signal can never subtract. */
+  contribution: number;
+  /** Points this signal could have contributed had the data been ideal. */
+  maxContribution: number;
+  /** Deterministic, human-readable justification. */
+  reasoning: string;
+}
+
+/**
+ * The complete contextual-relevance verdict for one offer.
+ *
+ * INVARIANT: `bonus >= 0`. The score an offer gets WITH a usage context is
+ * always >= the score it would get WITHOUT one. Usage context can reward
+ * evidence; it can never punish its absence.
+ */
+export interface ContextualRelevance {
+  /** The usage context these signals were derived from (provenance). */
+  usageContext: UsageContext;
+  /** Points added to the offer's base score. >= 0, capped. */
+  bonus: number;
+  /** Maximum the offer could have obtained from the applicable signals. */
+  maxBonus: number;
+  /** Per-signal breakdown, including the ones that contributed nothing. */
+  signals: ContextualSignalScore[];
+}
+
 export interface RankedOffer {
   offer: Offer;
 
@@ -459,6 +688,35 @@ export interface RankedOffer {
     criterionName: string;
     reason: string;
   }[];
+
+  /**
+   * Can this offer actually be bought? Stock, delivery, a usable purchase
+   * link, and whether its data is solid enough to act on — each reported
+   * separately, each with its own unknown state.
+   *
+   * Purely INFORMATIONAL for eligibility: readiness never decided whether this
+   * offer is here (AdmissibilityEngine did). It can only add the bounded,
+   * non-negative `readinessBonus` below.
+   * Typed as `unknown` here so domain/types.ts stays free of a dependency on
+   * domain/purchase-readiness.ts; consumers narrow it to OfferReadiness.
+   */
+  readiness?: unknown;
+
+  /**
+   * Points added to `overallScore` for CONFIRMED availability facts. Always
+   * >= 0: an offer whose merchant publishes no stock information scores
+   * exactly what it would have scored without readiness (INVARIANT 2).
+   */
+  readinessBonus?: number;
+
+  /**
+   * Contextual relevance for the request's usage context, when one was
+   * present. Absent when the request carried no usage context — in which
+   * case ranking behaves exactly as it did before usage context existed.
+   * `overallScore` ALREADY includes `contextualRelevance.bonus`; this field
+   * is what makes that addition auditable and explainable.
+   */
+  contextualRelevance?: ContextualRelevance;
 }
 
 // ============================================================================
@@ -475,6 +733,15 @@ export interface RankingRequest {
 
   // Offers to rank
   offers: Offer[];
+
+  /**
+   * Usage context for this search, when the user expressed one.
+   * CONTEXTUAL ONLY: it is applied AFTER admissibility, adds a bounded,
+   * non-negative bonus, and can never make an inadmissible offer rankable —
+   * eligibility is decided in exactly one place (AdmissibilityEngine).
+   * Absent → ranking is byte-for-byte the pre-usage-context behavior.
+   */
+  usageContext?: UsageContext;
 
   // Metadata
   requestId: string;
@@ -547,7 +814,7 @@ export interface MergedContext {
  * CRITICAL INVARIANT:
  * - The AI structures and interprets the query
  * - The AI does NOT decide what's best
- * - Ambiguous interpretations are flagged for clarification
+* - Ambiguous interpretations are flagged for clarification
  * - The output goes to the Priority Engine, not directly to the user
  */
 export interface AIInterpretationResult {
@@ -582,4 +849,177 @@ export interface AIInterpretationResult {
   // Metadata
   queryText: string;
   generatedAt: Date;
+}
+
+// ============================================================================
+// PURCHASE FLOW TYPES
+// ============================================================================
+
+export type PromotionType =
+  | 'percentage_discount'
+  | 'fixed_discount'
+  | 'free_shipping'
+  | 'combined'
+  | 'loyalty_points'
+  | 'cashback'
+  | 'bundle';
+
+export type PromotionVerificationStatus = 'verified' | 'unverified' | 'expired' | 'invalid';
+
+export interface PromotionCondition {
+  type: 'minimum_amount' | 'category' | 'quantity' | 'customer_type' | 'validity_date';
+  operator: '>' | '>=' | '=' | '<' | '<=';
+  value: unknown;
+  description?: string;
+}
+
+/**
+ * A promotional offer (code, voucher, or automatic discount).
+ */
+export interface Promotion {
+  id: string;
+  code: string; // E.g., "CAPUCINE10", "SUMMER50"
+
+  // Type and value
+  type: PromotionType;
+  discountValue?: number; // For percentage or fixed discount
+  discountUnit?: 'percent' | 'euro' | 'shipping';
+
+  // Conditions for applicability
+  conditions: PromotionCondition[];
+
+  // Validity
+  validFrom: Date;
+  validUntil: Date;
+  isActive: boolean;
+
+  // Source and verification
+  source: string; // E.g., 'merchant_api', 'web_search', 'affiliate_network'
+  verificationStatus: PromotionVerificationStatus;
+  lastVerified?: Date;
+
+  // Merchant-specific
+  merchantId?: string;
+  applicableToCategories?: string[];
+  applicableToProducts?: string[];
+
+  // Metadata
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Result of applying a promotion to an offer.
+ */
+export interface PromotionApplication {
+  promotion: Promotion;
+  applicabilityStatus: 'applicable' | 'not_applicable' | 'expired' | 'invalid_conditions';
+  originalPrice: number;
+  discountedPrice: number;
+  savingsAmount: number;
+  savingsPercent: number;
+  reasoning: string;
+}
+
+/**
+ * Promo savings summary for an offer.
+ */
+export interface PromoSavings {
+  bestPromoAvailable?: PromotionApplication;
+  applicablePromos: PromotionApplication[];
+  totalSavingsPossible: number;
+  summary: string;
+}
+
+/**
+ * Represents an item in a shopping cart.
+ * Contains the offer reference and user-selected options.
+ */
+export interface CartItem {
+  /** Reference to the offer being purchased */
+  offerId: string;
+  /** Quantity of this item */
+  quantity: number;
+  /** User-selected variants (e.g., size, color) */
+  selectedVariants?: Record<string, string>;
+}
+
+/**
+ * User information for pre-filling checkout forms.
+ * NOTE: This is ONLY for pre-fill, never stored by Capucine.
+ */
+export interface UserInfo {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  shippingAddress?: {
+    street?: string;
+    city?: string;
+    postalCode?: string;
+    country?: string;
+  };
+}
+
+/**
+ * Merchant-specific cart representation.
+ * Used when the merchant system needs additional data beyond the standard cart.
+ */
+export interface MerchantCart {
+  /** Merchant identifier */
+  merchantId: string;
+  /** Reference to the Capucine cart */
+  cartId: string;
+  /** Merchant-specific data needed for cart creation */
+  merchantSpecificData: Record<string, unknown>;
+}
+
+/**
+ * Audit trail entry for tracking cart preparation and checkout attempts.
+ */
+export interface AuditEntry {
+  /** When the action occurred */
+  timestamp: Date;
+  /** What action was performed */
+  action: string;
+  /** Result of the action */
+  result: 'success' | 'failure';
+  /** Additional details about the action */
+  details?: string;
+  /** Error message if action failed */
+  error?: string;
+}
+
+/**
+ * Tracks the state of a checkout attempt from cart preparation to completion.
+ * Maintains audit trail and retry state.
+ */
+export interface CheckoutSession {
+  /** Unique session identifier */
+  id: string;
+  /** The cart being purchased */
+  cart: Cart;
+  /** Merchant-specific cart representation (if applicable) */
+  merchantCart?: MerchantCart;
+  /** Current status of the checkout process */
+  status: CheckoutStatus;
+  /** Which execution capability is being used */
+  executionCapability: ExecutionCapabilityType;
+  /** URL to complete the purchase (when available) */
+  checkoutUrl?: string;
+  /** What the user should do next */
+  nextAction?: string;
+  /** Error message if checkout failed */
+  error?: string;
+  /** Audit trail of all actions taken */
+  auditTrail: AuditEntry[];
+  /** Number of retry attempts made */
+  retryCount: number;
+  /** Maximum number of retry attempts allowed */
+  maxRetries: number;
+  /** When the session was created */
+  createdAt: Date;
+  /** When the session was last updated */
+  updatedAt: Date;
+  /** When the checkout was completed */
+  completedAt?: Date;
 }

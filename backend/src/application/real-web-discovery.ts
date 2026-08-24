@@ -585,6 +585,17 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
           candidate.offer.characteristics['sku'] = extracted.sku;
           changed = true;
         }
+        // 'availability' — schema.org Offer.availability (InStock /
+        // OutOfStock / PreOrder). ProductPageExtractor has always parsed it,
+        // but nothing ever wrote it onto the offer, so the value was computed
+        // and thrown away on every single enrichment. It is what
+        // assessPurchaseReadiness() reads to tell "en stock" from "stock
+        // inconnu" (domain/purchase-readiness.ts) — two states that must
+        // never be conflated.
+        if (extracted.availability.status === 'known' && extracted.availability.value) {
+          candidate.offer.characteristics['availability'] = extracted.availability;
+          changed = true;
+        }
         if (extracted.brand.status === 'known' && extracted.brand.value) {
           candidate.offer.characteristics['brand'] = extracted.brand;
           changed = true;

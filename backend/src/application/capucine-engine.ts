@@ -34,6 +34,9 @@ import { UserProfile, PreferenceCriterion, RankingResult, Offer, UsageContext } 
 import { AdmissibilityEngine, AdmissibilityBatch, RejectedOffer } from '../domain/admissibility';
 import { ProfileEngine, ProfileOverride } from '../domain/profile';
 import { rankOffers } from '../decision/priority-engine';
+import { assessPurchaseReadiness, OfferReadiness } from '../domain/purchase-readiness';
+import { CostEngine, CostBreakdown, defaultCostEngine } from './cost-engine';
+import { assessOfferQuality, OfferDataQuality } from '../domain/data-quality';
 import { DeduplicationEngine, DeduplicationResult } from './deduplication';
 import { DiscoveryOrchestrator, DiscoveryCriteria, DiscoveryResult } from './discovery';
 import { NormalizationEngine } from './normalization-engine';
@@ -87,6 +90,33 @@ export interface SearchRequest {
 
   /** Skip AI interpretation (use only pre-interpreted criteria) */
   skipAIInterpretation?: boolean;
+
+  /**
+   * ISO country the user wants the product DELIVERED to. Distinct from the
+   * countries Capucine searches in (`additionalSearchLanguages`) — conflating
+   * the two is a mistake the conversation layer already guards against.
+   * Drives purchase-readiness' delivery dimension and the customs-border rule
+   * in CostEngine. Absent → delivery is reported as unknown, never as
+   * unavailable.
+   */
+  destinationCountry?: string;
+
+  /**
+   * Usage context supplied by the caller — how the user intends to USE the
+   * product ("pour écouter de la musique, surtout dans les transports").
+   *
+   * Two ways it reaches the engine, in priority order:
+   *   1. this field — a conversation turn replaying what the user said on an
+   *      EARLIER turn (see ConversationSession.usageContext). Turns 2+ pass
+   *      preInterpretedCriteria and skip interpretation entirely, so without
+   *      this field a usage stated on turn 2 would be lost from turn 3 on.
+   *   2. otherwise, whatever BasicPatternInterpreter extracted from queryText.
+   *
+   * CONTEXTUAL, NEVER A CONSTRAINT: it steers search phrasing, ranking bonus
+   * and explanation wording. It never reaches AdmissibilityEngine, and it is
+   * never written back to the user's permanent profile.
+   */
+  usageContext?: UsageContext;
 
   /**
    * Explicit language for THIS request (e.g. 'fr', 'en') — highest priority
@@ -184,6 +214,35 @@ export interface SearchEngineResult {
 
   /** Pipeline stages timing for debugging */
   timing: PipelineTiming;
+
+  /**
+   * Purchase readiness per ranked offer id — can it actually be bought, and
+   * what is still unknown. Informational: it never affected eligibility.
+   */
+  readiness: Map<string, OfferReadiness>;
+
+  /**
+   * Real cost per ranked offer id (product + shipping + taxes + duties + fees
+   * − discounts), with each component's state. Computed ONCE here, with the
+   * delivery destination in hand, rather than re-derived at presentation time
+   * without it.
+   */
+  costs: Map<string, CostBreakdown>;
+
+  /**
+   * Data-quality assessment per ranked offer id — how solid the price and the
+   * constraint-bearing fields are. Never used to accept or reject an offer.
+   */
+  dataQuality: Map<string, OfferDataQuality>;
+
+  /**
+   * The usage context this search actually ran with, after merging what the
+   * caller supplied with what interpretation found — i.e. exactly what drove
+   * search phrasing, the ranking bonus and the explanations. Absent when the
+   * user expressed no usage, in which case the whole pipeline behaves as it
+   * did before usage context existed.
+   */
+  usageContext?: UsageContext;
 }
 
 export interface PipelineTiming {
@@ -255,6 +314,20 @@ export interface CapucineEngineOptions {
  * DETERMINISTIC: Given the same inputs, always produces the same output.
  * (Assuming deterministic AI, which in tests is always the case via mocks.)
  */
+/**
+ * The maximum budget the user actually stated, if any — read from whichever
+ * criterion carries it, without assuming a particular id. Used only to warn
+ * when known extra costs push the real total past that budget; it never
+ * changes what is admissible.
+ */
+function maxBudgetOf(criteria: PreferenceCriterion[]): number | undefined {
+  for (const criterion of criteria) {
+    const maxBudget = criterion.parameters?.maxBudget as number | undefined;
+    if (typeof maxBudget === 'number') return maxBudget;
+  }
+  return undefined;
+}
+
 export class CapucineEngine {
   private readonly admissibilityEngine: AdmissibilityEngine;
   private readonly profileEngine: ProfileEngine;
@@ -263,6 +336,7 @@ export class CapucineEngine {
   private readonly clarificationEngine: ClarificationEngine;
   private readonly explanationEngine: ExplanationEngine;
   private readonly noResultsAnalyzer: NoResultsAnalyzer;
+  private readonly costEngine: CostEngine = defaultCostEngine;
   private readonly discoveryOrchestrator: DiscoveryOrchestrator;
   private readonly interpreter: BasicPatternInterpreter;
   private readonly planBuilder: SearchPlanBuilder;
@@ -347,6 +421,14 @@ export class CapucineEngine {
    */
   interpretFollowUp(text: string, userId = 'anonymous', destinationCountry = 'FR'): {
     criteria: PreferenceCriterion[];
+    /**
+     * Usage context stated on THIS turn ("finalement c'est surtout pour le
+     * sport"), if any. Previously dropped on the floor: a usage stated on any
+     * turn but the first never reached the pipeline, because follow-up turns
+     * pass preInterpretedCriteria and skip interpretation from then on.
+     * ConversationManager.applyFollowUp() merges it into the session.
+     */
+    usageContext: UsageContext | null;
     rankingPreference: RankingPreference | null;
     internationalIntent: InternationalIntent | null;
     resultLimit: number | null;
@@ -370,6 +452,7 @@ export class CapucineEngine {
 
     return {
       criteria,
+      usageContext: interpreted.usageContext ?? null,
       rankingPreference: extractRankingPreference(text),
       internationalIntent: extractInternationalIntent(text),
       retryIntent: extractRetryIntent(text),
@@ -446,6 +529,12 @@ export class CapucineEngine {
     timing.clarificationMs = Date.now() - clarificationStart;
 
     // ── Stage 2: Profile merge ────────────────────────────────────────────────
+    // The usage context travels WITH the request requirements, not with the
+    // profile: it describes what the user wants right now, and resolve() is
+    // the one place that already knows how to keep "right now" separate from
+    // "permanently". An explicit request.usageContext (a later conversation
+    // turn replaying an earlier statement) wins over re-interpretation.
+    const requestUsageContext = request.usageContext ?? interpretedRequest?.usageContext;
     const profileMergeStart = Date.now();
     const effectiveCriteriaSet = this.profileEngine.resolve(
       request.profile,
@@ -453,7 +542,7 @@ export class CapucineEngine {
         criteria: preProfileCriteria,
         createdAt: new Date(),
         queryText: request.queryText,
-        usageContext: interpretedRequest?.usageContext,
+        usageContext: requestUsageContext,
       },
       request.overrides ?? [],
       request.requestId
@@ -569,22 +658,54 @@ export class CapucineEngine {
     // ranking.rejectedOffers is set to the full-pipeline rejection list (offers
     // that never reached ranking at all, rejected back at Stage 7) so
     // ExplanationEngine/server.ts still see every rejection, not just none.
+    // ── Stage 7bis: Purchase readiness + real cost + data quality ────────────
+    // Computed on the ELIGIBLE offers only, and strictly AFTER admissibility:
+    // none of these three can make an offer eligible, and none of them is
+    // consulted to decide eligibility (INVARIANT 4). They answer the questions
+    // admissibility does not: can it actually be bought, what will it really
+    // cost, and how solid is the evidence.
+    const constraintFields = effectiveCriteria
+      .filter(c => c.level === 'required' || c.level === 'forbidden')
+      .map(c => c.id);
+    const readiness = new Map<string, OfferReadiness>();
+    const costs = new Map<string, CostBreakdown>();
+    const dataQuality = new Map<string, OfferDataQuality>();
+    for (const offer of eligibleOffers) {
+      readiness.set(offer.id, assessPurchaseReadiness(offer, {
+        ...(request.destinationCountry ? { destinationCountry: request.destinationCountry } : {}),
+      }));
+      costs.set(offer.id, this.costEngine.computeCost(offer, {
+        ...(request.destinationCountry ? { destinationCountry: request.destinationCountry } : {}),
+        ...(offer.merchant.country ? { merchantCountry: offer.merchant.country } : {}),
+      }));
+      dataQuality.set(offer.id, assessOfferQuality(offer, constraintFields));
+    }
+
     const rankingStart = Date.now();
     const ranking = rankOffers(
       {
         offers: eligibleOffers,
         effectiveCriteria,
+        // Applied AFTER admissibility (stage 7 above already ran): a
+        // contextual signal can add points to an ELIGIBLE offer, it can
+        // never make an ineligible one rankable — see priority-engine.ts.
+        usageContext: effectiveCriteriaSet.usageContext,
         requestId: request.requestId,
         timestamp: new Date(),
       },
-      admissibility.resultsByOfferId
+      admissibility.resultsByOfferId,
+      readiness
     );
     ranking.rejectedOffers = rejectedForRanking;
     timing.rankingMs = Date.now() - rankingStart;
 
     // ── Stage 9: Explanation ──────────────────────────────────────────────────
     const explanationStart = Date.now();
-    const explanation = this.explanationEngine.explain(ranking);
+    const explanation = this.explanationEngine.explain(ranking, {
+      costs,
+      dataQuality,
+      ...(maxBudgetOf(effectiveCriteria) !== undefined ? { maxBudget: maxBudgetOf(effectiveCriteria)! } : {}),
+    });
     timing.explanationMs = Date.now() - explanationStart;
 
     // ── Stage 10: NoResults analysis ──────────────────────────────────────────
@@ -615,6 +736,10 @@ export class CapucineEngine {
       noResultsDiagnosis,
       provenanceSummary: this.buildProvenanceSummary(ranking),
       interpretedRequest,
+      readiness,
+      costs,
+      dataQuality,
+      ...(effectiveCriteriaSet.usageContext ? { usageContext: effectiveCriteriaSet.usageContext } : {}),
       language: effectiveLanguage,
       timing,
     };
@@ -679,9 +804,15 @@ export class CapucineEngine {
     );
 
     // ── Stage 2: Profile merge ────────────────────────────────────────────────
+    const syncUsageContext = request.usageContext ?? interpretedRequest?.usageContext;
     const effectiveCriteriaSet = this.profileEngine.resolve(
       request.profile,
-      { criteria: preProfileCriteria, createdAt: new Date(), queryText: request.queryText },
+      {
+        criteria: preProfileCriteria,
+        createdAt: new Date(),
+        queryText: request.queryText,
+        usageContext: syncUsageContext,
+      },
       request.overrides ?? [],
       request.requestId
     );
@@ -693,7 +824,8 @@ export class CapucineEngine {
       effectiveCriteria,
       request.queryText,
       request.requestId,
-      interpretedRequest
+      interpretedRequest,
+      effectiveCriteriaSet.usageContext
     );
     // Sync path has no AI enrichment — build phase terms from plan alone
     const syncPhaseTerms = this.phaseQueryBuilder.buildPhaseTerms(searchPlan.query);
@@ -733,18 +865,47 @@ export class CapucineEngine {
       reason: r.primaryViolation,
     }));
 
+    // ── Stage 7bis: Purchase readiness + real cost + data quality ────────────
+    // Computed on the ELIGIBLE offers only, and strictly AFTER admissibility:
+    // none of these three can make an offer eligible, and none of them is
+    // consulted to decide eligibility (INVARIANT 4). They answer the questions
+    // admissibility does not: can it actually be bought, what will it really
+    // cost, and how solid is the evidence.
+    const constraintFields = effectiveCriteria
+      .filter(c => c.level === 'required' || c.level === 'forbidden')
+      .map(c => c.id);
+    const readiness = new Map<string, OfferReadiness>();
+    const costs = new Map<string, CostBreakdown>();
+    const dataQuality = new Map<string, OfferDataQuality>();
+    for (const offer of eligibleOffers) {
+      readiness.set(offer.id, assessPurchaseReadiness(offer, {
+        ...(request.destinationCountry ? { destinationCountry: request.destinationCountry } : {}),
+      }));
+      costs.set(offer.id, this.costEngine.computeCost(offer, {
+        ...(request.destinationCountry ? { destinationCountry: request.destinationCountry } : {}),
+        ...(offer.merchant.country ? { merchantCountry: offer.merchant.country } : {}),
+      }));
+      dataQuality.set(offer.id, assessOfferQuality(offer, constraintFields));
+    }
+
     const ranking = rankOffers(
       {
         offers: eligibleOffers,
         effectiveCriteria,
+        usageContext: effectiveCriteriaSet.usageContext,
         requestId: request.requestId,
         timestamp: new Date(),
       },
-      admissibility.resultsByOfferId
+      admissibility.resultsByOfferId,
+      readiness
     );
     ranking.rejectedOffers = rejectedForRanking;
 
-    const explanation = this.explanationEngine.explain(ranking);
+    const explanation = this.explanationEngine.explain(ranking, {
+      costs,
+      dataQuality,
+      ...(maxBudgetOf(effectiveCriteria) !== undefined ? { maxBudget: maxBudgetOf(effectiveCriteria)! } : {}),
+    });
 
     let noResultsDiagnosis: NoResultsDiagnosis | undefined;
     if (ranking.rankedOffers.length === 0) {
@@ -773,6 +934,10 @@ export class CapucineEngine {
       noResultsDiagnosis,
       provenanceSummary: this.buildProvenanceSummary(ranking),
       interpretedRequest,
+      readiness,
+      costs,
+      dataQuality,
+      ...(effectiveCriteriaSet.usageContext ? { usageContext: effectiveCriteriaSet.usageContext } : {}),
       language: syncEffectiveLanguage,
       timing,
     };
@@ -877,6 +1042,11 @@ export class CapucineEngine {
       rarityLevel,
       maxPrice,
       currency: 'EUR',
+      // Carried onto the plan (and from there into DiscoveryCriteria) so
+      // SearchStrategyPlanner can phrase usage/contextual-spec queries.
+      // NOT a hard constraint and NOT part of hardConstraints — escalation
+      // copies the plan wholesale, so it survives every level unchanged.
+      usageContext,
     });
   }
 

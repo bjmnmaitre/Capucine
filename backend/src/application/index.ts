@@ -53,10 +53,12 @@ export * from './no-results-analyzer';
 export * from './search-provider-orchestrator';
 
 // Promotion Engine (codes promos, discounts)
-export * from './promotion-engine';
+// Note: PromotionApplication is now exported from domain/types.ts
+export { PromotionEngine, createDefaultPromotionEngine, createUnverifiedPromo } from './promotion-engine';
 
 // Cart Preparation Engine (checkout coordination)
-export * from './cart-preparation-engine';
+// Note: CartPreparedStatus and PreparedCart are now exported from domain/types.ts
+export { CartPreparationEngine, CartPreparationRequest, CartPreparationResult, createDefaultCartPreparationEngine, type MerchantExecutionHandler, type WebRedirectHandler, type OAuthRedirectHandler, type MerchantAPIHandler } from './cart-preparation-engine';
 
 // AI Usage Tracking (budget, tokens, costs)
 export * from './ai-usage-tracking';
@@ -78,3 +80,6 @@ export * from './web-search-adapters';
 
 // Real Web Discovery Strategy
 export * from './real-web-discovery';
+
+// Attribute extraction (brand/model/compatibility/quantity/destination/…)
+export * from './attribute-extraction';

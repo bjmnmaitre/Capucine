@@ -19,6 +19,7 @@
 
 import { DiscoveryCriteria } from './discovery';
 import { PreferenceCriterion, UsageContext } from '../domain/types';
+import { usageSearchTerms, signalSearchTerms } from '../domain/usage-context-mapping';
 import { SupportedLanguage, DEFAULT_LANGUAGE } from './i18n';
 
 // ============================================================================
@@ -29,6 +30,11 @@ export type SearchChannel =
   | 'general'          // keywords + category, the broadest single query
   | 'category'         // category-focused ("acheter <category> comparatif")
   | 'technical_specs'  // derived from numeric hardConstraints (ram/screen_size/storage/...)
+  | 'brand_model'      // the exact product reference ("sony wh-1000xm5 acheter")
+  | 'compatibility'    // "casque compatible ps5"
+  | 'availability'     // "sony wh-1000xm5 stock disponible"
+  | 'usage_context'    // the USAGE itself ("sony xm5 transport") — see buildStrategies()
+  | 'contextual_specs' // technical dimensions the usage makes relevant ("sony xm5 autonomie poids")
   | 'budget'           // price-anchored query
   | 'synonym'          // complementary "buy/compare/reviews" framing, wider recall
   | 'international';   // same need, phrased in another language — see buildInternationalStrategies()
@@ -95,14 +101,33 @@ export class SearchStrategyPlanner {
     if (base) {
       strategies.push({ channel: 'general', query: base, phase: 1, language: queryLanguage });
     }
+
+    // The exact product reference, when the user named one. This belongs in
+    // phase 1: for a targeted request ("Sony WH-1000XM5") it is by far the
+    // query most likely to land on real product pages, and it costs nothing to
+    // ask first. Derived from the brand/model CRITERIA — the request's own
+    // explicit attributes — never from a guessed token.
+    const productReference = this.buildProductReference(hardConstraints);
+    if (productReference) {
+      strategies.push({
+        channel: 'brand_model',
+        query: `${productReference} prix acheter`,
+        phase: 1,
+        language: queryLanguage,
+      });
+    }
+
     if (category) {
       strategies.push({ channel: 'category', query: `${category} acheter comparatif`, phase: 1, language: queryLanguage });
     }
 
     // ── Phase 2: only spent if phase 1 doesn't reach coverage ────────────────
-    const baseSpecTerms = this.buildSpecTerms(hardConstraints);
-    const usageTerms = this.buildUsageTerms(criteria.usageContext, queryLanguage);
-    const specTerms = [...baseSpecTerms, ...usageTerms];
+    // technical_specs stays what it has always been: derived from the user's
+    // NUMERIC HARD CONSTRAINTS. Usage-derived vocabulary used to be folded in
+    // here, which mixed two different things — a constraint the user stated
+    // and a dimension Capucine inferred — into one over-long query. They are
+    // now two separate, individually skippable channels below.
+    const specTerms = this.buildSpecTerms(hardConstraints);
     if (specTerms.length > 0) {
       strategies.push({
         channel: 'technical_specs',
@@ -110,6 +135,35 @@ export class SearchStrategyPlanner {
         phase: 2,
         language: queryLanguage,
       });
+    }
+
+    // ── Usage-derived channels ───────────────────────────────────────────────
+    // Present ONLY when the user actually expressed a usage. At most TWO extra
+    // queries, both in phase 2 — so they are governed by exactly the same
+    // SearchCoverage gate, maxPhases and maxTotalTimeMs budget as every other
+    // phase-2 query (search-coverage.ts / RealWebDiscoveryStrategy). No second
+    // budget system, and no unbounded family explosion: the contextual-spec
+    // query takes the top few dimensions of the mapping, not all of them.
+    if (criteria.usageContext && keywords.length > 0) {
+      const usageTerms = usageSearchTerms(criteria.usageContext, queryLanguage);
+      if (usageTerms.length > 0) {
+        strategies.push({
+          channel: 'usage_context',
+          query: [...keywords, ...usageTerms].join(' ').trim(),
+          phase: 2,
+          language: queryLanguage,
+        });
+      }
+
+      const contextualDimensions = signalSearchTerms(criteria.usageContext, queryLanguage, 4);
+      if (contextualDimensions.length > 0) {
+        strategies.push({
+          channel: 'contextual_specs',
+          query: [...keywords, ...contextualDimensions].join(' ').trim(),
+          phase: 2,
+          language: queryLanguage,
+        });
+      }
     }
     if (criteria.maxPrice !== undefined) {
       strategies.push({
@@ -123,6 +177,34 @@ export class SearchStrategyPlanner {
       strategies.push({
         channel: 'synonym',
         query: `acheter ${keywords.join(' ')} comparatif prix avis`,
+        phase: 2,
+        language: queryLanguage,
+      });
+    }
+
+    // Compatibility — only when the user actually demanded one. A single
+    // query covering every demanded target, not one per target: the point is
+    // to reach pages that discuss compatibility, not to multiply requests.
+    const compatibilityTargets = this.buildCompatibilityTerms(hardConstraints);
+    if (compatibilityTargets.length > 0 && keywords.length > 0) {
+      strategies.push({
+        channel: 'compatibility',
+        query: [...keywords, 'compatible', ...compatibilityTargets].join(' ').trim(),
+        phase: 2,
+        language: queryLanguage,
+      });
+    }
+
+    // Availability / delivery — the words that actually appear on pages
+    // carrying stock and shipping information, which is what
+    // purchase-readiness needs and what a bare product query rarely surfaces.
+    // Phase 2, so the existing SearchCoverage gate decides whether it is worth
+    // spending at all.
+    if (productReference || keywords.length > 0) {
+      const subject = productReference || keywords.join(' ');
+      strategies.push({
+        channel: 'availability',
+        query: `${subject} ${queryLanguage === 'en' ? 'in stock delivery' : 'stock disponible livraison'}`.trim(),
         phase: 2,
         language: queryLanguage,
       });
@@ -177,6 +259,35 @@ export class SearchStrategyPlanner {
     return strategies;
   }
 
+  /**
+   * "sony wh-1000xm5" from the brand/model criteria the interpreter produced.
+   *
+   * Reads `preferredValues[0]` — the value the user actually wrote — so the
+   * query stays grounded in their words. Returns null when neither a brand nor
+   * a model was identified with enough confidence to become a criterion, which
+   * is exactly when a product-reference query would be guesswork.
+   */
+  private buildProductReference(hardConstraints: PreferenceCriterion[]): string | null {
+    const valueOf = (id: string): string | null => {
+      const criterion = hardConstraints.find(c => c.id === id);
+      const values = criterion?.parameters?.preferredValues as string[] | undefined;
+      return values?.[0] ?? null;
+    };
+    const parts = [valueOf('brand'), valueOf('model')].filter((p): p is string => !!p);
+    return parts.length > 0 ? parts.join(' ') : null;
+  }
+
+  /** Compatibility targets the user explicitly demanded, e.g. ['ps5']. */
+  private buildCompatibilityTerms(hardConstraints: PreferenceCriterion[]): string[] {
+    const terms: string[] = [];
+    for (const criterion of hardConstraints) {
+      if (!criterion.id.startsWith('compatible_')) continue;
+      const values = criterion.parameters?.preferredValues as string[] | undefined;
+      if (values?.[0]) terms.push(values[0]);
+    }
+    return [...new Set(terms)];
+  }
+
   /** Derive "16GB" / "14pouces" style terms from any numeric hard constraint present. */
   private buildSpecTerms(hardConstraints: PreferenceCriterion[]): string[] {
     const terms: string[] = [];
@@ -189,78 +300,4 @@ export class SearchStrategyPlanner {
     return terms;
   }
 
-  /** Build usage-based terms from usage context, translated to the query language. */
-  private buildUsageTerms(usageContext?: UsageContext, queryLanguage: SupportedLanguage = DEFAULT_LANGUAGE): string[] {
-    if (!usageContext) return [];
-
-    const { usage } = usageContext;
-    let terms: string[] = [];
-    switch (usage) {
-      case 'transport':
-        terms = ['transport', 'commuting', 'portable', 'lightweight', 'battery', 'noise cancellation'];
-        break;
-      case 'music':
-        terms = ['music', 'audio', 'sound quality', 'noise cancellation', 'comfort'];
-        break;
-      case 'sport':
-        terms = ['sport', 'sweat resistant', 'stable', 'lightweight'];
-        break;
-      case 'office':
-        terms = ['office', 'microphone', 'comfort', 'noise cancellation', 'battery'];
-        break;
-      case 'gaming':
-        terms = ['gaming', 'low latency', 'microphone', 'soundstage', 'compatibility'];
-        break;
-      case 'travel':
-        terms = ['travel', 'portable', 'battery', 'noise cancellation', 'comfort'];
-        break;
-      case 'home':
-        terms = ['home', 'comfort', 'sound quality'];
-        break;
-      case 'outdoor':
-        terms = ['outdoor', 'durable', 'weather resistant', 'battery'];
-        break;
-      default:
-        return [];
-    }
-
-    // If queryLanguage is English, return as is
-    if (queryLanguage === 'en') {
-      return terms;
-    }
-
-    // French translation map
-    const frMap: Record<string, string> = {
-      transport: 'transport',
-      commuting: 'navettage',
-      portable: 'portable',
-      lightweight: 'léger',
-      battery: 'batterie',
-      'noise cancellation': 'réduction de bruit',
-      music: 'musique',
-      audio: 'audio',
-      'sound quality': 'qualité sonore',
-      comfort: 'confort',
-      sport: 'sport',
-      'sweat resistant': 'résistant à la sueur',
-      stable: 'stable',
-      office: 'bureau',
-      microphone: 'microphone',
-      'low latency': 'faible latence',
-      soundstage: 'scène sonore',
-      compatibility: 'compatibilité',
-      travel: 'voyage',
-      home: 'maison',
-      outdoor: 'extérieur',
-      durable: 'durable',
-      'weather resistant': 'résistant aux intempéries'
-    };
-
-    if (queryLanguage === 'fr') {
-      return terms.map(term => frMap[term] ?? term);
-    }
-
-    // For other languages, fallback to English
-    return terms;
-  }
 }

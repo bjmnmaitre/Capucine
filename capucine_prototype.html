@@ -61,6 +61,25 @@
   .link-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(29,158,117,0.4); }
 
   .error-note { font-size: 12px; color: #E24B4A; background: #fff0f0; border: 1px solid #fcd5d5; border-radius: 10px; padding: 10px 14px; margin-top: 8px; }
+
+  /* Clarification question styling */
+  .clarification-questions { margin: 8px 0; }
+  .clarification-question { background: #F8F9FA; border: 1px solid #E9ECEF; border-radius: 12px; padding: 12px 16px; margin-bottom: 8px; font-size: 14px; color: #495057; }
+  .clarification-question button { background: #1D9E75; color: white; border: none; border-radius: 20px; padding: 4px 12px; font-size: 12px; margin-left: 8px; cursor: pointer; }
+  .clarification-question button:hover { background: #17896A; }
+
+  /* Product card styling */
+  .product-card { background: white; border-radius: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden; margin-bottom: 16px; border: 1px solid #E8E7E2; }
+  .product-card-header { background: #F8F9FA; padding: 12px 16px; border-bottom: 1px solid #E8E7E2; }
+  .product-card-header h3 { margin: 0 0 4px 0; font-size: 16px; color: #1A1A18; }
+  .product-card-header .price { font-size: 18px; font-weight: 600; color: #1D9E75; }
+  .product-card-body { padding: 16px; }
+  .product-card-body p { margin: 8px 0; font-size: 14px; color: #495057; }
+  .product-card-body .badge { display: inline-block; background: #E1F5EE; color: #1D9E75; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 12px; margin-right: 8px; margin-bottom: 4px; }
+  .product-card-body .badge.unknown { background: #F8F9FA; color: #6C757D; }
+  .product-card-footer { padding: 12px 16px; border-top: 1px solid #E8E7E2; text-align: right; }
+  .product-card-footer button { background: #1D9E75; color: white; border: none; border-radius: 20px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  .product-card-footer button:hover { background: #17896A; }
 </style>
 </head>
 <body>
@@ -93,7 +112,7 @@
     <button class="chip" onclick="useSuggestion('AirPods Pro moins chers')">🎧 AirPods Pro moins chers</button>
     <button class="chip" onclick="useSuggestion('Nike Air Max taille 42 blanc')">👟 Nike Air Max taille 42</button>
     <button class="chip" onclick="useSuggestion('iPhone 15 reconditionné')">📱 iPhone reconditionné</button>
-    <button class="chip" onclick="useSuggestion('Machine à café budget 150 euros')">☕ Machine à café &lt; 150€</button>
+    <button class="chip" onclick="useSuggestion('Machine à café budget 150 euros')">☕ Machine à café < 150€</button>
   </div>
 </div>
 
@@ -107,139 +126,313 @@
 </div>
 
 <script>
-const SYSTEM_PROMPT = `Tu es Capucine, une assistante IA d'achat personnelle. Tu es efficace, directe, chaleureuse — jamais robotique. Tu réponds en français sauf si l'utilisateur écrit dans une autre langue.
+  const API_BASE = 'http://localhost:3001'; // Update if your backend runs on a different port
+  let history = [];
+  let busy = false;
+  let currentSessionId = null; // ID of the current conversation session
+  let lastResult = null; // Last search result to display
 
-Tu suis un flux en 5 étapes séquentielles :
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+  }
 
-ÉTAPE 1 — QUALIFICATION : Quand l'utilisateur exprime un besoin, pose TOUTES les questions nécessaires EN UN SEUL message groupé (jamais une par une). Demande : produit exact, budget max, neuf/reconditionné/occasion, délai livraison, pays livraison (suppose France si non précisé), critère prioritaire (prix le plus bas / qualité-prix / autre). Affiche ensuite une fiche récapitulative formatée et demande confirmation.
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
 
-ÉTAPE 2 — RÉSULTATS : Après confirmation, dis "Je cherche..." puis présente 2 à 3 options avec ce format pour chacune :
-🥇 Option 1 — [Nom produit exact]
-🏪 Marchand : [nom] — Note : X/5
-💰 Prix produit : X€
-🚚 Livraison : [gratuite / X€] — Délai : X jours ouvrés
-💳 TOTAL : X€ TTC
-🎁 Code promo : [CODE → économie X€] ou [Aucun trouvé]
-⭐ Pourquoi : [1 phrase précise]
+  function useSuggestion(text) {
+    document.getElementById('suggestionsArea').style.display = 'none';
+    document.getElementById('userInput').value = text;
+    sendMessage();
+  }
 
-Termine par "💡 Je recommande l'Option N parce que [raison]" et "→ Quelle option tu choisis ?"
+  function fmt(text) {
+    return text
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>');
+  }
 
-Invente des prix réalistes et plausibles pour la démo (ex: AirPods Pro ~219€ Amazon, ~229€ Fnac, etc.)
+  function addMsg(role, content) {
+    const area = document.getElementById('chatArea');
+    const wrap = document.createElement('div');
+    wrap.className = 'message ' + (role === 'user' ? 'user' : 'capucine');
+    const av = document.createElement('div');
+    av.className = 'avatar ' + (role === 'user' ? 'usr' : 'cap');
+    av.textContent = role === 'user' ? 'Toi' : '🛍️';
+    const bub = document.createElement('div');
+    bub.className = 'bubble ' + (role === 'user' ? 'user' : 'capucine');
+    bub.innerHTML = fmt(content);
+    wrap.appendChild(av);
+    wrap.appendChild(bub);
+    area.appendChild(wrap);
+    area.scrollTop = area.scrollHeight;
+  }
 
-ÉTAPE 3 — INFOS UTILISATEUR : Après sélection, propose la création de compte puis demande prénom, nom, email, adresse de livraison.
+  function showTyping() {
+    const area = document.getElementById('chatArea');
+    const wrap = document.createElement('div');
+    wrap.className = 'message capucine'; wrap.id = 'typing';
+    const av = document.createElement('div'); av.className = 'avatar cap'; av.textContent = '🛍️';
+    const bub = document.createElement('div'); bub.className = 'bubble capucine';
+    bub.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+    wrap.appendChild(av); wrap.appendChild(bub);
+    area.appendChild(wrap); area.scrollTop = area.scrollHeight;
+  }
 
-ÉTAPE 4 — PANIER : Affiche le récapitulatif final avec code promo appliqué, total et économies.
+  function removeTyping() {
+    const el = document.getElementById('typing'); if (el) el.remove();
+  }
 
-ÉTAPE 5 — LIEN : Annonce que le lien de panier est prêt. Dis que l'utilisateur doit valider le paiement lui-même sur le site du marchand. Capucine ne finalise jamais un achat.
+  function addLinkButton() {
+    const area = document.getElementById('chatArea');
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'align-self:flex-start;max-width:80%;margin-left:42px;width:calc(80% - 42px);animation:fadeUp 0.3s ease';
+    wrap.innerHTML = '<button class="link-btn" onclick="simulateLink()">🔗 Accéder à mon panier — Lien sécurisé Capucine</button>';
+    area.appendChild(wrap); area.scrollTop = area.scrollHeight;
+  }
 
-RÈGLES : Ne finalise jamais un achat. N'invente pas de vrais codes (utilise des codes fictifs réalistes comme CAPUCINE10). Affiche toujours prix + livraison = total TTC. Sois concise.`;
+  function simulateLink() {
+    addMsg('capucine', '✅ **Lien de panier ouvert !**\n\nDans la version finale, ce bouton t\'emmènerait directement sur la page panier du marchand avec :\n✓ Le produit déjà ajouté\n✓ Le code promo appliqué automatiquement\n✓ L\'adresse de livraison pré-remplie\n\nTu n\'aurais plus qu\'à confirmer ton paiement. 🎉\n\nCapucine ne touche jamais à ton paiement — tu gardes le contrôle total.');
+  }
 
-let history = [];
-let busy = false;
+  function displayResult(result) {
+    // Clear previous result display if any
+    const existingResult = document.getElementById('result-display');
+    if (existingResult) {
+      existingResult.remove();
+    }
 
-function autoResize(el) {
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 100) + 'px';
-}
+    // Create a container for the result
+    const resultContainer = document.createElement('div');
+    resultContainer.id = 'result-display';
+    resultContainer.style.cssText = 'align-self:flex-start;max-width:80%;margin-left:42px;width:calc(80% - 42px);animation:fadeUp 0.3s ease';
 
-function handleKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-}
+    // Add a message from Capucine with the results
+    const msgWrap = document.createElement('div');
+    msgWrap.className = 'message capucine';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar cap';
+    avatar.textContent = '🛍️';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble capucine';
 
-function useSuggestion(text) {
-  document.getElementById('suggestionsArea').style.display = 'none';
-  document.getElementById('userInput').value = text;
-  sendMessage();
-}
+    // Build the result content
+    let content = `<strong>J'ai trouvé ${result.summary.totalFound} offres compatibles avec vos critères.</strong><br><br>`;
+    if (result.summary.totalFound === 0) {
+      content += `Aucune offre trouvée. ${result.noResultsDiagnosis ? result.noResultsDiagnosis.message : ''}`;
+    } else {
+      // Show top 3 offers
+      const topOffers = result.results.slice(0, 3);
+      topOffers.forEach((offer, index) => {
+        content += `<div class="product-card">`;
+        content += `<div class="product-card-header">`;
+        content += `<h3>${offer.offerId || 'Produit #' + (index+1)}</h3>`;
+        content += `<div class="price">${offer.currency !== null ? offer.currency + ' ' : ''}${offer.price?.amount !== null ? offer.price.amount : 'Prix non disponible'} ${offer.currency !== null ? '€' : ''}</div>`;
+        content += `</div>`;
+        content += `<div class="product-card-body">`;
+        content += `<p><strong>Marchand :</strong> ${offer.merchant.name}</p>`;
+        content += `<p><strong>Livraison :</strong> ${offer.cost && offer.cost.unknownComponents.includes('shipping') ? 'Frais de livraison inconnus' : offer.cost && offer.cost.componentStates?.shipping === 'known' ? 'Livraison incluse' : 'Livraison : ' + (offer.cost && offer.cost.componentStates?.shipping?.amount ? offer.cost.componentStates.shipping.amount + ' €' : 'à vérifier')}</p>`;
+        content += `<p><strong>Total :</strong> ${offer.cost && offer.cost.totalKnown !== null ? offer.cost.totalKnown + ' €' : 'Coût total inconnu'}</p>`;
+        content += `<p><strong>Pourquoi cette offre ?</strong> ${offer.explanation}</p>`;
+        content += `<div>`;
+        offer.criteria.forEach(crit => {
+          const statusClass = crit.status === 'satisfied' ? 'badge' : crit.status === 'violated' ? 'badge' : 'badge unknown';
+          content += `<span class="${statusClass}">${crit.name}: ${crit.status}</span> `;
+        });
+        content += `</div>`;
+        content += `</div>`;
+        content += `<div class="product-card-footer">`;
+        content += `<button onclick="selectOffer('${offer.offerId}')">Choisir cette offre</button>`;
+        content += `</div>`;
+        content += `</div>`;
+      });
 
-function fmt(text) {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/\n/g, '<br>');
-}
+      if (result.results.length > 3) {
+        content += `<p><em>Et ${result.results.length - 3} autres offres...</em></p>`;
+      }
+    }
 
-function addMsg(role, content) {
-  const area = document.getElementById('chatArea');
-  const wrap = document.createElement('div');
-  wrap.className = 'message ' + (role === 'user' ? 'user' : 'capucine');
-  const av = document.createElement('div');
-  av.className = 'avatar ' + (role === 'user' ? 'usr' : 'cap');
-  av.textContent = role === 'user' ? 'Toi' : '🛍️';
-  const bub = document.createElement('div');
-  bub.className = 'bubble ' + (role === 'user' ? 'user' : 'capucine');
-  bub.innerHTML = fmt(content);
-  wrap.appendChild(av);
-  wrap.appendChild(bub);
-  area.appendChild(wrap);
-  area.scrollTop = area.scrollHeight;
-}
+    bubble.innerHTML = content;
+    msgWrap.appendChild(avatar);
+    msgWrap.appendChild(bubble);
+    resultContainer.appendChild(msgWrap);
 
-function showTyping() {
-  const area = document.getElementById('chatArea');
-  const wrap = document.createElement('div');
-  wrap.className = 'message capucine'; wrap.id = 'typing';
-  const av = document.createElement('div'); av.className = 'avatar cap'; av.textContent = '🛍️';
-  const bub = document.createElement('div'); bub.className = 'bubble capucine';
-  bub.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
-  wrap.appendChild(av); wrap.appendChild(bub);
-  area.appendChild(wrap); area.scrollTop = area.scrollHeight;
-}
+    // Add the result container to the chat area
+    const chatArea = document.getElementById('chatArea');
+    chatArea.appendChild(resultContainer);
+    chatArea.scrollTop = chatArea.scrollHeight;
 
-function removeTyping() {
-  const el = document.getElementById('typing'); if (el) el.remove();
-}
+    // Store the last result for potential use
+    lastResult = result;
+  }
 
-function addLinkButton() {
-  const area = document.getElementById('chatArea');
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'align-self:flex-start;max-width:80%;margin-left:42px;width:calc(80% - 42px);animation:fadeUp 0.3s ease';
-  wrap.innerHTML = '<button class="link-btn" onclick="simulateLink()">🔗 Accéder à mon panier — Lien sécurisé Capucine</button>';
-  area.appendChild(wrap); area.scrollTop = area.scrollHeight;
-}
+  function selectOffer(offerId) {
+    // In a real app, this would prepare the cart or show more details
+    addMsg('capucine', `Tu as sélectionné l'offre ${offerId}. Je prépare le lien d'achat...`);
+    // Simulate preparing cart
+    setTimeout(() => {
+      addLinkButton();
+    }, 1000);
+  }
 
-function simulateLink() {
-  addMsg('capucine', '✅ **Lien de panier ouvert !**\n\nDans la version finale, ce bouton t\'emmènerait directement sur la page panier du marchand avec :\n✓ Le produit déjà ajouté\n✓ Le code promo appliqué automatiquement\n✓ L\'adresse de livraison pré-remplie\n\nTu n\'aurais plus qu\'à confirmer ton paiement. 🎉\n\nCapucine ne touche jamais à ton paiement — tu gardes le contrôle total.');
-}
+  async function sendMessage() {
+    const input = document.getElementById('userInput');
+    const text = input.value.trim();
+    if (!text || busy) return;
+    document.getElementById('suggestionsArea').style.display = 'none';
+    input.value = '';
+    input.style.height = 'auto';
+    addMsg('user', text);
+    history.push({ role: 'user', content: text });
+    busy = true;
+    document.getElementById('sendBtn').disabled = true;
+    showTyping();
 
-async function sendMessage() {
-  const input = document.getElementById('userInput');
-  const text = input.value.trim();
-  if (!text || busy) return;
-  document.getElementById('suggestionsArea').style.display = 'none';
-  input.value = ''; input.style.height = 'auto';
-  addMsg('user', text);
-  history.push({ role: 'user', content: text });
-  busy = true;
-  document.getElementById('sendBtn').disabled = true;
-  showTyping();
+    try {
+      let response;
+      if (currentSessionId) {
+        // We are in an existing session, send to /clarify
+        // Determine if this is an answer to a specific question or a free-form follow-up
+        // For simplicity, we'll check if there are pending clarification questions from the last result
+        // If yes, we treat the input as an answer to the first question (for demo)
+        // Otherwise, we treat it as a free-form follow-up
+        let questionId = null;
+        if (lastResult && lastResult.clarifications && lastResult.clarifications.count > 0) {
+          // Answer the first pending question
+          questionId = lastResult.clarifications.questions[0].id;
+        } else {
+          // Free-form follow-up
+          questionId = '__followup__'; // FOLLOWUP_QUESTION_ID from conversation-manager.ts
+        }
 
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+        const clarifyData = {
+          sessionId: currentSessionId,
+          questionId: questionId,
+          answer: text
+        };
+        response = await fetch(`${API_BASE}/clarify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(clarifyData)
+        });
+      } else {
+        // Initial search
+        const searchData = {
+          queryText: text,
+          // We don't have a profile yet, so we'll use anonymous
+          // In a real app, we might load a profile from localStorage or ask for it
+        };
+        response = await fetch(`${API_BASE}/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(searchData)
+        });
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      removeTyping();
+
+      // Update session ID if present
+      if (result.session) {
+        currentSessionId = result.session.sessionId;
+      }
+
+      // Display the result
+      displayResult(result);
+
+      // If there are clarification questions, show them as buttons
+      if (result.clarifications && result.clarifications.count > 0) {
+        showClarificationQuestions(result.clarifications.questions);
+      }
+
+    } catch (e) {
+      removeTyping();
+      console.error('Error:', e);
+      addMsg('capucine', '⚠️ Problème de connexion au backend.\n\nAssure-toi que le serveur Capucine est en cours d\'exécution sur http://localhost:3001\n\nPour démarrer le backend :\n1. Allez dans le dossier backend/\n2. Exécutez : npm install (si ce n\'est pas déjà fait)\n3. Exécutez : npm run dev\n\nLe flux complet est prêt — il ne manque que le backend en cours d\'exécution.');
+    }
+    busy = false;
+    document.getElementById('sendBtn').disabled = false;
+  }
+
+  function showClarificationQuestions(questions) {
+    // Remove any existing clarification questions
+    const existing = document.getElementById('clarification-questions-container');
+    if (existing) {
+      existing.remove();
+    }
+
+    const container = document.createElement('div');
+    container.id = 'clarification-questions-container';
+    container.className = 'clarification-questions';
+
+    questions.forEach(q => {
+      const questionDiv = document.createElement('div');
+      questionDiv.className = 'clarification-question';
+      questionDiv.innerHTML = `
+        <p>${q.question}</p>
+        <button onclick="answerClarification('${q.id}')">Répondre</button>
+      `;
+      container.appendChild(questionDiv);
+    });
+
+    // Insert the container before the input area
+    const inputArea = document.querySelector('.input-area');
+    inputArea.parentNode.insertBefore(container, inputArea);
+  }
+
+  function answerClarification(questionId) {
+    // In a real app, we would show an input for the user to type their answer
+    // For simplicity, we'll use a prompt
+    const answer = prompt('Votre réponse :');
+    if (answer === null) return; // User cancelled
+
+    // Send the answer via /clarify
+    const clarifyData = {
+      sessionId: currentSessionId,
+      questionId: questionId,
+      answer: answer
+    };
+
+    // We'll reuse the sendMessage logic but directly call the API to avoid double typing
+    // For now, we'll just call fetch and then handle the response
+    showTyping();
+    fetch(`${API_BASE}/clarify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system: SYSTEM_PROMPT,
-        messages: history
-      })
+      body: JSON.stringify(clarifyData)
+    })
+    .then(response => response.json())
+    .then(result => {
+      removeTyping();
+      if (result.session) {
+        currentSessionId = result.session.sessionId;
+      }
+      displayResult(result);
+      if (result.clarifications && result.clarifications.count > 0) {
+        showClarificationQuestions(result.clarifications.questions);
+      }
+    })
+    .catch(e => {
+      removeTyping();
+      console.error('Error:', e);
+      addMsg('capucine', 'Erreur lors de l\'envoi de la réponse.');
     });
-    const data = await res.json();
-    removeTyping();
-    const reply = data.content?.[0]?.text || 'Je rencontre une difficulté technique. Réessaie dans un instant.';
-    history.push({ role: 'assistant', content: reply });
-    addMsg('capucine', reply);
-    if (reply.toLowerCase().includes('lien') && (reply.toLowerCase().includes('prêt') || reply.toLowerCase().includes('pret'))) {
-      addLinkButton();
-    }
-  } catch(e) {
-    removeTyping();
-    addMsg('capucine', '⚠️ Problème de connexion à l\'API.\n\nPour faire fonctionner Capucine, ouvre ce fichier HTML dans ton navigateur et assure-toi que la clé API Anthropic est configurée dans le code (variable ANTHROPIC_API_KEY).\n\nLe flux complet en 5 étapes est prêt — il ne manque que la connexion API.');
   }
-  busy = false;
-  document.getElementById('sendBtn').disabled = false;
-}
+
+  // Initialize: check if backend is available (optional)
+  fetch(`${API_BASE}/health`)
+    .then(() => {
+      // Backend is available
+    })
+    .catch(() => {
+      // Backend not available, we'll show an error when the user tries to send a message
+    });
 </script>
 </body>
 </html>

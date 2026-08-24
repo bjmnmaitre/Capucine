@@ -80,6 +80,10 @@ describe('POST /prepare-cart — préparation', () => {
     expect(res.body.offerId).toBe(offerId);
     expect(res.body.quantity).toBe(1);
     expect(['success', 'partial', 'unavailable', 'failed']).toContain(res.body.status);
+    // New fields should be present (may be null)
+    expect(res.body).toHaveProperty('merchantCartId');
+    expect(res.body).toHaveProperty('webhookUrl');
+    expect(res.body).toHaveProperty('purchaseInitiatedAt');
   });
 
   it("n'achète JAMAIS : la réponse dit explicitement qu'aucun achat n'a eu lieu", async () => {

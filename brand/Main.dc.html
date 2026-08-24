@@ -1,0 +1,210 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Marcellus&family=Space+Grotesk:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif; }
+    a { color: #C8A24A; } a:hover { color: #E6C97F; }
+    .panel { background: #0E2340; border: 1px solid #16304F; border-radius: 4px; padding: 22px; display: flex; flex-direction: column; gap: 16px; }
+    .panel-label { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C819C; }
+    .panel-stage { flex-grow: 1; display: flex; align-items: center; justify-content: center; min-height: 132px; }
+  </style>
+</helmet>
+<div style="width: 1400px; height: 1020px; box-sizing: border-box; background: #071528; padding: 56px; display: flex; flex-direction: column; gap: 30px;">
+
+  <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 40px;">
+    <div style="display: flex; align-items: center; gap: 26px;">
+      <svg width="86" height="86" viewBox="0 0 100 100" fill="none" aria-label="Capucine">
+        <path d="M50 6 L6 50 L50 94" stroke="{{accent}}" stroke-width="2.4" stroke-opacity="0.34"/>
+        <path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="2.6" stroke-opacity="0.62"/>
+        <path d="M50 34 L34 50 L50 66" stroke="{{accent}}" stroke-width="2.8" stroke-opacity="0.9"/>
+        <path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/>
+        <path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/>
+      </svg>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="font-family: 'Marcellus', Georgia, serif; font-size: 52px; line-height: 1; color: #F4F1EA; letter-spacing: 0.17em;">CAPUCINE</div>
+        <div style="font-size: 14px; letter-spacing: 0.16em; color: {{accent}}; text-transform: uppercase;">Je cherche. Je trouve. Tu décides.</div>
+      </div>
+    </div>
+    <div style="text-align: right; display: flex; flex-direction: column; gap: 6px;">
+      <div style="font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: #6C819C;">Direction retenue</div>
+      <div style="font-family: 'Marcellus', Georgia, serif; font-size: 22px; color: #F4F1EA;">Le Prisme</div>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #16304F;"></div>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px;">
+
+    <div class="panel">
+      <span class="panel-label">Lockup empilé</span>
+      <div class="panel-stage">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+          <svg width="62" height="62" viewBox="0 0 100 100" fill="none">
+            <path d="M50 6 L6 50 L50 94" stroke="{{accent}}" stroke-width="2.4" stroke-opacity="0.34"/>
+            <path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="2.6" stroke-opacity="0.62"/>
+            <path d="M50 34 L34 50 L50 66" stroke="{{accent}}" stroke-width="2.8" stroke-opacity="0.9"/>
+            <path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/>
+            <path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/>
+          </svg>
+          <div style="font-family: 'Marcellus', Georgia, serif; font-size: 26px; color: #F4F1EA; letter-spacing: 0.19em;">CAPUCINE</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <span class="panel-label">Icône d&#39;application</span>
+      <div class="panel-stage">
+        <div style="display: flex; align-items: center; gap: 22px;">
+          <div style="width: 108px; height: 108px; border-radius: 24px; background: linear-gradient(160deg, #0E2340 0%, #071528 100%); border: 1px solid #16304F; display: flex; align-items: center; justify-content: center;">
+            <svg width="62" height="62" viewBox="0 0 100 100" fill="none">
+              <path d="M50 6 L6 50 L50 94" stroke="{{accent}}" stroke-width="3" stroke-opacity="0.34"/>
+              <path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="3.2" stroke-opacity="0.62"/>
+              <path d="M50 34 L34 50 L50 66" stroke="{{accent}}" stroke-width="3.4" stroke-opacity="0.9"/>
+              <path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/>
+              <path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/>
+            </svg>
+          </div>
+          <div style="width: 56px; height: 56px; border-radius: 13px; background: #071528; border: 1px solid #16304F; display: flex; align-items: center; justify-content: center;">
+            <svg width="32" height="32" viewBox="0 0 100 100" fill="none">
+              <path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="5" stroke-opacity="0.62"/>
+              <path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/>
+              <path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="background: {{accent}}; border-color: {{accentLight}};">
+      <span class="panel-label" style="color: #4A3A12;">Inverse — or plein</span>
+      <div class="panel-stage">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+          <svg width="62" height="62" viewBox="0 0 100 100" fill="none">
+            <path d="M50 6 L6 50 L50 94" stroke="#071528" stroke-width="2.4" stroke-opacity="0.3"/>
+            <path d="M50 20 L20 50 L50 80" stroke="#071528" stroke-width="2.6" stroke-opacity="0.6"/>
+            <path d="M50 34 L34 50 L50 66" stroke="#071528" stroke-width="2.8" stroke-opacity="0.9"/>
+            <path d="M50 6 L94 50 L50 50 Z" fill="#16304F"/>
+            <path d="M50 50 L94 50 L50 94 Z" fill="#071528"/>
+          </svg>
+          <div style="font-family: 'Marcellus', Georgia, serif; font-size: 26px; color: #071528; letter-spacing: 0.19em;">CAPUCINE</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="background: #F4F1EA; border-color: #E0DACB;">
+      <span class="panel-label" style="color: #8A8474;">Monochrome clair</span>
+      <div class="panel-stage">
+        <div style="display: flex; align-items: center; gap: 18px;">
+          <svg width="54" height="54" viewBox="0 0 100 100" fill="none">
+            <path d="M50 6 L6 50 L50 94" stroke="#071528" stroke-width="2.4" stroke-opacity="0.3"/>
+            <path d="M50 20 L20 50 L50 80" stroke="#071528" stroke-width="2.6" stroke-opacity="0.6"/>
+            <path d="M50 34 L34 50 L50 66" stroke="#071528" stroke-width="2.8" stroke-opacity="0.9"/>
+            <path d="M50 6 L94 50 L50 50 Z" fill="#16304F"/>
+            <path d="M50 50 L94 50 L50 94 Z" fill="#071528"/>
+          </svg>
+          <div style="font-family: 'Marcellus', Georgia, serif; font-size: 24px; color: #071528; letter-spacing: 0.19em;">CAPUCINE</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <span class="panel-label">Zone de respiration</span>
+      <div class="panel-stage">
+        <div style="position: relative; padding: 30px;">
+          <div style="position: absolute; inset: 0; border: 1px dashed #2A456B;"></div>
+          <svg width="60" height="60" viewBox="0 0 100 100" fill="none" style="display: block;">
+            <path d="M50 6 L6 50 L50 94" stroke="{{accent}}" stroke-width="2.4" stroke-opacity="0.34"/>
+            <path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="2.6" stroke-opacity="0.62"/>
+            <path d="M50 34 L34 50 L50 66" stroke="{{accent}}" stroke-width="2.8" stroke-opacity="0.9"/>
+            <path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/>
+            <path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/>
+          </svg>
+        </div>
+      </div>
+      <p style="margin: 0; font-size: 11.5px; line-height: 1.5; color: #8FA3BC;">Marge libre égale à la demi-hauteur du losange sur les quatre côtés.</p>
+    </div>
+
+    <div class="panel">
+      <span class="panel-label">Tailles minimales</span>
+      <div class="panel-stage">
+        <div style="display: flex; align-items: flex-end; gap: 26px;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+            <svg width="48" height="48" viewBox="0 0 100 100" fill="none"><path d="M50 6 L6 50 L50 94" stroke="{{accent}}" stroke-width="3" stroke-opacity="0.34"/><path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="3.2" stroke-opacity="0.62"/><path d="M50 34 L34 50 L50 66" stroke="{{accent}}" stroke-width="3.4" stroke-opacity="0.9"/><path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/><path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/></svg>
+            <span style="font-size: 10px; color: #6C819C;">48 px</span>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+            <svg width="28" height="28" viewBox="0 0 100 100" fill="none"><path d="M50 6 L6 50 L50 94" stroke="{{accent}}" stroke-width="4" stroke-opacity="0.34"/><path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="4.4" stroke-opacity="0.62"/><path d="M50 34 L34 50 L50 66" stroke="{{accent}}" stroke-width="4.8" stroke-opacity="0.9"/><path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/><path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/></svg>
+            <span style="font-size: 10px; color: #6C819C;">28 px</span>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+            <svg width="16" height="16" viewBox="0 0 100 100" fill="none"><path d="M50 20 L20 50 L50 80" stroke="{{accent}}" stroke-width="8" stroke-opacity="0.65"/><path d="M50 6 L94 50 L50 50 Z" fill="{{accentLight}}"/><path d="M50 50 L94 50 L50 94 Z" fill="{{accent}}"/></svg>
+            <span style="font-size: 10px; color: {{accent}};">16 px — variante simplifiée</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 26px; flex-grow: 1;">
+
+    <div class="panel">
+      <span class="panel-label">Palette</span>
+      <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px;">
+        <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 62px; border-radius: 3px; background: #071528; border: 1px solid #16304F;"></div><span style="font-size: 10px; color: #8FA3BC;">Encre 900<br>#071528</span></div>
+        <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 62px; border-radius: 3px; background: #0E2340;"></div><span style="font-size: 10px; color: #8FA3BC;">Marine 800<br>#0E2340</span></div>
+        <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 62px; border-radius: 3px; background: {{accent}};"></div><span style="font-size: 10px; color: #8FA3BC;">Or 500<br>{{accent}}</span></div>
+        <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 62px; border-radius: 3px; background: {{accentLight}};"></div><span style="font-size: 10px; color: #8FA3BC;">Or 300<br>{{accentLight}}</span></div>
+        <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 62px; border-radius: 3px; background: #F4F1EA;"></div><span style="font-size: 10px; color: #8FA3BC;">Crème<br>#F4F1EA</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <span class="panel-label">Typographie</span>
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; align-items: baseline; gap: 14px;">
+          <span style="font-family: 'Marcellus', Georgia, serif; font-size: 30px; color: #F4F1EA; letter-spacing: 0.14em;">CAPUCINE</span>
+          <span style="font-size: 11px; color: #6C819C;">Marcellus · interlettrage 0,17 em</span>
+        </div>
+        <div style="height: 1px; background: #16304F;"></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <span style="font-size: 15px; color: #F4F1EA;">Je cherche. Je trouve. Tu décides.</span>
+          <span style="font-size: 11px; color: #6C819C;">Space Grotesk · 400/500 · interface et signature</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"#C8A24A","options":["#C8A24A","#B8873A","#D4B45F","#A88C3E"],"section":"Marque"}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#C8A24A';
+    return { accent, accentLight: this.lighten(accent, 0.34) };
+  }
+
+  // Derive the highlight facet from the single accent tweak, so changing the
+  // gold keeps the two-tone facet in harmony instead of stranding a literal.
+  lighten(hex, amount) {
+    const parsed = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+    if (!parsed) return '#E6C97F';
+    const value = parseInt(parsed[1], 16);
+    const mix = (channel) => Math.round(channel + (255 - channel) * amount);
+    const r = mix((value >> 16) & 255);
+    const g = mix((value >> 8) & 255);
+    const b = mix(value & 255);
+    return '#' + [r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('');
+  }
+}
+</script>
+</body>
+</html>
