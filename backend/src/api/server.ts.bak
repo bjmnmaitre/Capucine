@@ -30,7 +30,7 @@ import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import { buildAIOrchestrator } from '../application/ai-providers';
 import { InMemoryProfileStore } from '../application/profile-store';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
-import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
+import { PreferenceCriterion, SearchMatchQuality } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
 import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE } from '../application/ranking-preference';
 import { createDefaultCartPreparationEngine } from '../application/cart-preparation-engine';
@@ -697,16 +697,11 @@ export function buildApp(): express.Application {
         });
       }
 
-      // Helper function to safely get value from DataPoint
-      const getValue = <T>(dp: DataPoint<T> | null | undefined): T | null => {
-        return dp?.value ?? null;
-      };
-
       // Prepare the cart (this also determines execution capability)
       const preparation = await cartPreparationEngine.prepare({
         offer: rankedOffer.offer,
-        quantity: 1, // Default quantity, could be made configurable,
-        userEmail: userInfo?.email, userFirstName: userInfo?.firstName, userLastName: userInfo?.lastName, shippingCountry: userInfo?.shippingAddress?.country,
+        quantity: 1, // Default quantity, could be made configurable
+        userInfo,
       });
 
       if (preparation.status === 'unavailable' || preparation.status === 'failed') {
@@ -736,14 +731,14 @@ export function buildApp(): express.Application {
         productId: rankedOffer.offer.productId,
         merchantId: rankedOffer.offer.merchant.id,
         title: rankedOffer.offer.merchant.name,
-        brand: (getValue(rankedOffer.offer.characteristics.brand) as string | null) ?? null,
-        model: (getValue(rankedOffer.offer.characteristics.model) as string | null) ?? null,
-        condition: (getValue(rankedOffer.offer.characteristics.condition) as string | null) ?? null,
-        seller: (getValue(rankedOffer.offer.characteristics.seller) as string | null) ?? null,
+        brand: null,
+        model: null,
+        condition: null,
+        seller: null,
         availability: rankedOffer.offer.availability?.value ?? null,
         price: rankedOffer.offer.price.value ?? null,
         currency: rankedOffer.offer.currency ?? 'EUR',
-        productUrl: (getValue(rankedOffer.offer.characteristics.productUrl) as string | null) ?? null,
+        productUrl: rankedOffer.offer.productUrl ?? null,
         executionUrl: rankedOffer.offer.executionUrl ?? null,
         capturedAt: new Date()
       };

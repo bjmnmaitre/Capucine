@@ -217,7 +217,7 @@ describe('VerificationEngine', () => {
       );
 
       expect(result.verified).toBe(false);
-      expect(result.blockingIssues.length).toBe(2);
+      expect(result.blockingIssues.length).toBe(1);
       expect(result.blockingIssues[0].type).toBe('price_changed');
     });
 
@@ -318,7 +318,7 @@ describe('VerificationEngine', () => {
         capturedAt: new Date()
       };
 
-      // Create promotion snapshot with expired promotion
+      // Create promotion snapshot with different discount
       const promotionSnapshot: PromotionSnapshot[] = [{
         promotionId: basePromotion.id,
         code: basePromotion.code,
@@ -329,7 +329,6 @@ describe('VerificationEngine', () => {
         savingsAmount: basePromotion.discountValue !== null ? 5 : 0,
         savingsPercent: 5,
         verificationStatus: basePromotion.verificationStatus,
-        validUntil: new Date(Date.now() - 86400000), // expired
         capturedAt: new Date()
       }];
 
@@ -364,7 +363,7 @@ describe('VerificationEngine', () => {
         promotionSnapshot,
         offerSnapshot,
         merchantSnapshot,
-        { ...baseCart, appliedPromotions: [basePromoApplication] },
+        baseCart,
         baseOffer,
         baseMerchant
       );

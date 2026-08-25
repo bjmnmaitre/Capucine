@@ -420,6 +420,7 @@ export interface AuditEntry {
 }
 
 /**
+/**
  * Tracks the state of a checkout attempt from cart preparation to completion.
  * Maintains audit trail, retry state, and transactional integrity.
  */
@@ -572,7 +573,7 @@ export interface Offer {
   shippingCost: DataPoint<number>;
   shippingTime?: DataPoint<string>;
   /**
-   * Additional real-cost components beyond price/shippingCost — see
+   * Additional real-cost components beyond price/shipping — see
    * application/cost-engine.ts's CostEngine, which turns these (plus price
    * and shippingCost above) into a CostBreakdown with explicit UNKNOWN
    * propagation. All optional: no current extraction source (JSON-LD via
@@ -673,6 +674,7 @@ export interface ContextualSignalScore {
   signal: keyof ContextualSignals;
   /** The offer characteristic actually read, when one was found. */
   attribute?: string;
+  outcome: 'applied' | 'unknown' | 'superseded';
   /** Raw value read from the offer, when known. */
   foundValue?: unknown;
   /** Status of that value (never 'unknown' when outcome === 'applied'). */
@@ -703,9 +705,6 @@ export interface ContextualRelevance {
   signals: ContextualSignalScore[];
 }
 
-/**
- * The complete ranking result for one offer.
- */
 export interface RankedOffer {
   offer: Offer;
 
@@ -853,7 +852,7 @@ export interface MergedContext {
  * CRITICAL INVARIANT:
  * - The AI structures and interprets the query
  * - The AI does NOT decide what's best
- * - Ambiguous interpretations are flagged for clarification
+* - Ambiguous interpretations are flagged for clarification
  * - The output goes to the Priority Engine, not directly to the user
  */
 export interface AIInterpretationResult {
@@ -1098,6 +1097,7 @@ export interface CheckoutSession {
   /** Failure state if applicable */
   failureState?: FailureState;
 }
+
 
 /**
  * Snapshot of cart data at a point in time.
@@ -1351,67 +1351,4 @@ export interface PurchaseApproval {
   correlationId: string;
   /** Idempotency key */
   idempotencyKey: string;
-}
-
-/**
- * Request to purchase an offer.
- */
-export interface PurchaseRequest {
-  /** The offer to purchase */
-  offer: Offer;
-  /** Quantity of the offer */
-  quantity: number;
-  /** User-selected variants (e.g., size, color) */
-  selectedVariants: Record<string, string>;
-  /** User information for pre-fill (optional) */
-  userInfo?: UserInfo;
-  /** Promotion to apply (optional) */
-  appliedPromo?: PromotionApplication;
-  /** Flag indicating if this is a retry attempt */
-  isRetry?: boolean;
-}
-
-/**
- * Result of a purchase attempt.
- */
-export interface PurchaseResult {
-  /** Status of the purchase attempt */
-  status: string;
-  /** Prepared cart (if status is 'cart_prepared') */
-  cart?: Cart;
-  /** URL to complete the purchase (if applicable) */
-  checkoutUrl?: string;
-  /** Next action for the user */
-  nextAction: string;
-  /** Audit entry for this attempt */
-  auditEntry: AuditEntry;
-  /** Flag indicating if this is a retry attempt */
-  isRetry?: boolean;
-}
-
-/**
- * Interface for purchase execution handlers.
- */
-export interface PurchaseExecutionHandler {
-  /** The execution capability this handler supports */
-  capability: ExecutionCapabilityType;
-  /**
-   * Check if this handler can handle the given merchant
-   * @param merchant The merchant to check
-   * @returns true if the handler can handle the merchant
-   */
-  canHandle(merchant: Merchant): boolean;
-  /**
-   * Prepare a purchase for the given request
-   * @param request The purchase request
-   * @returns A promise that resolves to the purchase result
-   */
-  preparePurchase(request: PurchaseRequest): Promise<PurchaseResult>;
-  /**
-   * Handle a webhook from the merchant
-   * @param merchantId The merchant ID
-   * @param payload The webhook payload
-   * @returns A promise that resolves to true if the webhook was processed successfully
-   */
-  handleWebhook(merchantId: string, payload: Record<string, unknown>): Promise<boolean>;
 }

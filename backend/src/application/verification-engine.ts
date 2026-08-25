@@ -8,7 +8,7 @@
  * - Offer verification (still available)
  * - Merchant verification (still capable)
  */
-import { CartSnapshot, PriceSnapshot, PromotionSnapshot, OfferSnapshot, MerchantSnapshot } from '../domain/types';
+import { CartSnapshot, PriceSnapshot, PromotionSnapshot, OfferSnapshot, MerchantSnapshot, DataPoint } from '../domain/types';
 import { VerificationState, VerificationDiscrepancy, VerificationIssue } from '../domain/types';
 import { Cart, Offer, Merchant, PromotionApplication } from '../domain/types';
 
@@ -333,7 +333,8 @@ export class VerificationEngine {
     }
 
     // Check availability (offer.availability is a DataPoint<string>, so check its value)
-    if (currentOffer.availability && currentOffer.availability.value === null) {
+    const availabilityDataPoint = currentOffer.characteristics.availability as DataPoint<string> | undefined;
+    if (availabilityDataPoint && availabilityDataPoint.value === null) {
       issues.push({
         description: 'Offer availability is unknown',
         severity: 'warning'

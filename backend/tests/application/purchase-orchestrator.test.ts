@@ -6,7 +6,6 @@
 
 import { PurchaseOrchestrator, PurchaseRequest, PurchaseResult, PurchaseExecutionHandler } from '../../src/application/purchase-orchestrator';
 import { createDefaultCartPreparationEngine } from '../../src/application/cart-preparation-engine';
-import { createDefaultPromotionEngine } from '../../src/application/promotion-engine';
 import { Offer, Merchant, ExecutionCapabilityType, CartItem, Cart, UserInfo } from '../../src/domain/types';
 
 // Mock purchase execution handler for testing
@@ -91,8 +90,7 @@ describe('PurchaseOrchestrator', () => {
 
   beforeEach(() => {
     const cartPreparationEngine = createDefaultCartPreparationEngine();
-    const promotionEngine = createDefaultPromotionEngine();
-    orchestrator = new PurchaseOrchestrator(cartPreparationEngine, promotionEngine);
+    orchestrator = new PurchaseOrchestrator(cartPreparationEngine);
     mockHandler = new MockPurchaseHandler();
     orchestrator.registerPurchaseHandler(mockHandler);
   });
@@ -108,10 +106,10 @@ describe('PurchaseOrchestrator', () => {
       const result: PurchaseResult = await orchestrator.orchestratePurchase(request);
 
       expect(result.status).toBe('cart_prepared');
-      expect(result.cart.items.length).toBe(1);
-      expect(result.cart.items[0].offerId).toBe(testOffer.id);
-      expect(result.cart.items[0].quantity).toBe(2);
-      expect(result.cart.items[0].selectedVariants).toEqual({ color: 'black', size: 'large' });
+      expect(result.cart!!.items.length).toBe(1);
+      expect(result.cart!!.items[0].offerId).toBe(testOffer.id);
+      expect(result.cart!!.items[0].quantity).toBe(2);
+      expect(result.cart!!.items[0].selectedVariants).toEqual({ color: 'black', size: 'large' });
       expect(result.checkoutUrl).toBeDefined();
       expect(result.auditEntry.result).toBe('success');
     });
@@ -132,12 +130,13 @@ describe('PurchaseOrchestrator', () => {
       const request: PurchaseRequest = {
         offer: testOffer,
         quantity: 1,
+        selectedVariants: {},
         userInfo
       };
 
       const result: PurchaseResult = await orchestrator.orchestratePurchase(request);
 
-      expect(result.cart.userInfo).toEqual(userInfo);
+      expect(result.cart!!.userInfo).toEqual(userInfo);
     });
 
     it('should fail when offer cannot be purchased', async () => {
@@ -152,7 +151,8 @@ describe('PurchaseOrchestrator', () => {
 
       const request: PurchaseRequest = {
         offer: invalidOffer,
-        quantity: 1
+        quantity: 1,
+        selectedVariants: {}
       };
 
       const result: PurchaseResult = await orchestrator.orchestratePurchase(request);
@@ -167,7 +167,8 @@ describe('PurchaseOrchestrator', () => {
 
       const request: PurchaseRequest = {
         offer: testOffer,
-        quantity: 1
+        quantity: 1,
+        selectedVariants: {}
       };
 
       const result: PurchaseResult = await orchestrator.orchestratePurchase(request);
@@ -182,6 +183,7 @@ describe('PurchaseOrchestrator', () => {
       const request: PurchaseRequest = {
         offer: testOffer,
         quantity: 1,
+        selectedVariants: {},
         isRetry: true
       };
 

@@ -4,45 +4,18 @@
  * Orchestrates the full purchase flow from cart preparation to checkout completion.
  * Coordinates cart preparation, verification, approval, and execution.
  */
-import {
-  Offer,
-  ExecutionCapabilityType,
-  PromotionApplication,
-  CartSnapshot,
-  PriceSnapshot,
-  PromotionSnapshot,
-  OfferSnapshot,
-  MerchantSnapshot,
-  CheckoutSession,
-  CartItem,
-  Cart,
-  UserInfo,
-  DataPoint,
-  DataProvenance,
-  Merchant,
-  ExecutionState
-} from '../domain/types';
-import {
-  PurchaseRequest,
-  PurchaseResult,
-  PurchaseExecutionHandler
-} from '../domain/types';
-import {
-  CartPreparationEngine,
-  CartPreparationRequest,
-  CartPreparationResult,
-  createDefaultCartPreparationEngine
-} from './cart-preparation-engine';
+import { Offer, ExecutionCapabilityType, PromotionApplication, CartSnapshot, PriceSnapshot, PromotionSnapshot, OfferSnapshot, MerchantSnapshot } from '../domain/types';
+import { CartPreparationEngine, CartPreparationRequest, CartPreparationResult, PreparedCart, createDefaultCartPreparationEngine } from './cart-preparation-engine';
 import { VerificationEngine } from './verification-engine';
 import { ApprovalEngine } from './approval-engine';
-import { CheckoutSessionService } from './checkout-session-service';
+import { CheckoutSessionService, CheckoutSession } from './checkout-session-service';
+import { Cart, CartItem, UserInfo } from '../domain/types';
 
 export class PurchaseOrchestrator {
   private cartPreparationEngine: CartPreparationEngine;
   private verificationEngine: VerificationEngine;
   private approvalEngine: ApprovalEngine;
   private checkoutSessionService: CheckoutSessionService;
-  private handlers: Map<ExecutionCapabilityType, PurchaseExecutionHandler>;
 
   constructor(
     cartPreparationEngine: CartPreparationEngine = createDefaultCartPreparationEngine(),
@@ -54,24 +27,6 @@ export class PurchaseOrchestrator {
     this.verificationEngine = verificationEngine;
     this.approvalEngine = approvalEngine;
     this.checkoutSessionService = checkoutSessionService;
-    this.handlers = new Map();
-  }
-
-  /**
-   * Register a purchase execution handler for a specific capability.
-   * @param handler The handler to register
-   */
-  registerPurchaseHandler(handler: PurchaseExecutionHandler): void {
-    this.handlers.set(handler.capability, handler);
-  }
-
-  /**
-   * Check if an offer can be purchased (i.e., there is a handler for the merchant's capabilities).
-   * @param offer The offer to check
-   * @returns true if the offer can be purchased
-   */
-  canPurchaseOffer(offer: Offer): boolean {
-    return this.handlers.size > 0 && Array.from(this.handlers.values()).some(h => h.canHandle(offer.merchant));
   }
 
   /**
@@ -127,12 +82,12 @@ export class PurchaseOrchestrator {
 
     // For simplicity, we'll create a basic price snapshot (to be enhanced)
     const priceSnapshot: PriceSnapshot = {
-      productPrice: 0,
-      shippingCost: 0,
-      tax: 0,
-      importDuty: 0,
-      customsFees: 0,
-      serviceFees: 0,
+      productPrice: null,
+      shippingCost: null,
+      tax: null,
+      importDuty: null,
+      customsFees: null,
+      serviceFees: null,
       promotionSavings: 0,
       totalCost: 0,
       currency: 'EUR',
@@ -142,24 +97,19 @@ export class PurchaseOrchestrator {
     };
 
     const promotionSnapshot: PromotionSnapshot[] = [];
-    // Helper function to safely get value from DataPoint
-    const getValue = <T>(dp: DataPoint<T> | null | undefined): T | null => {
-      return dp?.value ?? null;
-    };
-
     const offerSnapshot: OfferSnapshot = {
       offerId: offer.id,
       productId: offer.productId,
       merchantId: offer.merchant.id,
-      title: getValue<string>(offer.characteristics.title as DataPoint<string>) ?? offer.productId, // Fallback to productId
-      brand: getValue<string>(offer.characteristics.brand as DataPoint<string>) ?? null,
-      model: getValue<string>(offer.characteristics.model as DataPoint<string>) ?? null,
-      condition: getValue<string>(offer.characteristics.condition as DataPoint<string>) ?? null,
-      seller: getValue<string>(offer.characteristics.seller as DataPoint<string>) ?? null,
-      availability: getValue<string>(offer.characteristics.availability as DataPoint<string>) ?? null,
-      price: getValue(offer.price) ?? null,
+      title: offer.title ?? '',
+      brand: offer.brand ?? null,
+      model: offer.model ?? null,
+      condition: offer.condition ?? null,
+      seller: offer.seller ?? null,
+      availability: offer.availability ?? null,
+      price: offer.price.value ?? null,
       currency: offer.currency ?? 'EUR',
-      productUrl: getValue<string>(offer.characteristics.productUrl as DataPoint<string>) ?? null,
+      productUrl: offer.productUrl ?? null,
       executionUrl: offer.executionUrl ?? null,
       capturedAt: new Date()
     };
@@ -225,40 +175,6 @@ export class PurchaseOrchestrator {
   }
 
   /**
-   * Orchestrate a purchase using registered handlers.
-   * This method is used for testing and delegates to the appropriate handler.
-   * @param request The purchase request
-   * @returns The purchase result
-   */
-  async orchestratePurchase(request: PurchaseRequest): Promise<PurchaseResult> {
-    // Find a handler that can handle the offer's merchant
-    const handler = Array.from(this.handlers.values()).find(h =>
-      h.canHandle(request.offer.merchant)
-    );
-
-    if (!handler) {
-      // No handler found, return a failed result
-      return {
-        status: 'failed',
-        cart: undefined,
-        checkoutUrl: undefined,
-        nextAction: 'No handler available for this merchant',
-        auditEntry: {
-          timestamp: new Date(),
-          action: 'purchase_orchestrator',
-          result: 'failure',
-          details: 'No purchase execution handler registered for the merchant',
-          error: 'Cannot be purchased: No purchase execution handler registered for the merchant'
-        },
-        isRetry: request.isRetry || false
-      };
-    }
-
-    // Delegate to the handler
-    return handler.preparePurchase(request);
-  }
-
-  /**
    * Verify the checkout session.
    * This runs the verification engine and updates the session.
    * @param sessionId The session ID
@@ -276,10 +192,7 @@ export class PurchaseOrchestrator {
       session.priceSnapshot,
       session.promotionSnapshot,
       session.offerSnapshot,
-      session.merchantSnapshot,
-      session.cart, // currentCart
-      /* currentOffer */ undefined, // TODO: Need to reconstruct or fetch current offer
-      /* currentMerchant */ undefined // TODO: Need to reconstruct or fetch current merchant
+      session.merchantSnapshot
     );
 
     // Update the session with the verification state
@@ -387,27 +300,6 @@ export class PurchaseOrchestrator {
   }
 
   /**
-   * Handle a webhook from a merchant.
-   * Delegates to the appropriate registered handler.
-   * @param merchantId The merchant ID
-   * @param payload The webhook payload
-   * @returns True if the webhook was handled successfully
-   */
-  async handleWebhook(merchantId: string, payload: Record<string, unknown>): Promise<boolean> {
-    // We'll iterate over all handlers and call handleWebhook on each until one returns true?
-    // But the handleWebhook method in the handler expects a merchantId and payload.
-    // We'll do that and return true if any handler returns true.
-    // This is not ideal but will make the test pass.
-    for (const handler of this.handlers.values()) {
-      const result = await handler.handleWebhook(merchantId, payload);
-      if (result) {
-        return result;
-      }
-    }
-    return false;
-  }
-
-  /**
    * Retry a failed checkout session.
    * @param sessionId The session ID
    * @returns The updated session (or a new session if retrying)
@@ -448,6 +340,3 @@ export class PurchaseOrchestrator {
 
 // Export a default instance for convenience
 export const purchaseOrchestrator = new PurchaseOrchestrator();
-
-// Export the types for use in tests
-export type { PurchaseRequest, PurchaseResult, PurchaseExecutionHandler };

@@ -59,6 +59,10 @@ class CheckoutSessionStore {
     }
     return undefined;
   }
+
+  getAllSessions(): CheckoutSession[] {
+    return Array.from(this.sessions.values());
+  }
 }
 
 /**
@@ -420,10 +424,10 @@ export class CheckoutSessionService {
    */
   cleanupExpiredSessions(): void {
     const now = new Date();
-    const sessionsArray = Array.from(this.store.sessions.entries());
-    for (const [id, session] of sessionsArray) {
+    const sessions = this.store.getAllSessions();
+    for (const session of sessions) {
       if (now > session.expiresAt) {
-        this.store.delete(id);
+        this.store.delete(session.id);
       }
     }
   }

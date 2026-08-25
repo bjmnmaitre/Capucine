@@ -140,6 +140,7 @@ function makeOffer(params: {
   shippingCost?: number;
   characteristics: Record<string, DataPoint<unknown>>;
   currency_str?: string;
+  executionUrl?: string;
 }): Offer {
   const id = `offer-${++offerIdCounter}`;
   return {
@@ -152,6 +153,7 @@ function makeOffer(params: {
     currency: params.currency ?? 'EUR',
     shippingCost: known(params.shippingCost ?? 0, params.merchant.id),
     characteristics: params.characteristics,
+    executionUrl: params.executionUrl,
     createdAt: NOW,
     retrievedAt: NOW,
     provenance: PROV(params.merchant.id),
@@ -1024,6 +1026,7 @@ function buildCatalog(): CatalogEntry[] {
         warranty: known('1 an', 'amazon-fr'),
         repairability_index: unknown_dp() as DataPoint<unknown>,
       },
+      executionUrl: 'https://www.amazon.fr/dp/B07Z4S2CS1',
     }),
     searchCorpus: 'audio technica ath m50x bt2 casque bluetooth studio monitoring',
     category: 'casque',
