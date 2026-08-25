@@ -34,6 +34,8 @@ import { PreferenceCriterion, SearchMatchQuality } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
 import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE } from '../application/ranking-preference';
 import { createDefaultCartPreparationEngine } from '../application/cart-preparation-engine';
+import { CheckoutSessionService } from '../application/checkout-session-service';
+import { CheckoutSession } from '../domain/types';
 
 // ============================================================================
 // APP FACTORY
@@ -89,10 +91,21 @@ export function buildApp(): express.Application {
   // into it (EXECUTION_INDEPENDENCE).
   const cartPreparationEngine = createDefaultCartPreparationEngine();
 
+  // Checkout session service
+  const checkoutSessionService = new CheckoutSessionService();
+
   // Tool registry — the single registry for this server process.
   // Shared with the engine so both use the same audit log and rate-limit counters.
   // In production this is the ONLY path tool calls take (enforces timeout/rate-limit/audit).
   const toolRegistry = buildDefaultToolRegistry(webAdapters);
+
+  // Simple UUID generator
+  function generateUUID(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
 
   // Engine (one instance per process, shared across requests)
   // Injecting toolRegistry ensures CapucineEngine routes all web search calls through it.
@@ -610,6 +623,301 @@ export function buildApp(): express.Application {
         // bought anything and never will.
         purchaseCompleted: false,
       });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * POST /checkout-session
+   *
+   * Create or resume a checkout session from a prepared cart.
+   * Requires idempotencyKey.
+   *
+   * Request body:
+   * {
+   *   "cartPreparationSessionId": "sess-...", // required - from /prepare-cart
+   *   "offerId": "offer-...",                 // required - the offer being purchased
+   *   "idempotencyKey": "key-...",            // required - to prevent duplicate sessions
+   *   "userInfo": {                           // optional - for pre-fill only
+   *     "firstName": "John",
+   *     "lastName": "Doe",
+   *     "email": "john@example.com"
+   *   }
+   * }
+   *
+   * Response: CheckoutSession
+   */
+  app.post('/checkout-session', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { cartPreparationSessionId, offerId, idempotencyKey, userInfo } = req.body as {
+        cartPreparationSessionId?: string;
+        offerId?: string;
+        idempotencyKey?: string;
+        userInfo?: {
+          firstName?: string;
+          lastName?: string;
+          email?: string;
+          shippingAddress?: {
+            street?: string;
+            city?: string;
+            postalCode?: string;
+            country?: string;
+          };
+        };
+      };
+
+      if (!cartPreparationSessionId || typeof cartPreparationSessionId !== 'string') {
+        return res.status(400).json({ error: 'MISSING_CART_PREPARATION_SESSION_ID', message: '"cartPreparationSessionId" is required.' });
+      }
+
+      if (!offerId || typeof offerId !== 'string') {
+        return res.status(400).json({ error: 'MISSING_OFFER_ID', message: '"offerId" is required.' });
+      }
+
+      if (!idempotencyKey || typeof idempotencyKey !== 'string') {
+        return res.status(400).json({ error: 'MISSING_IDEMPOTENCY_KEY', message: '"idempotencyKey" is required.' });
+      }
+
+      // Get the conversation session to find the prepared cart
+      const conversationSession = conversationManager.getSession(cartPreparationSessionId);
+      if (!conversationSession) {
+        return res.status(404).json({
+          error: 'SESSION_NOT_FOUND',
+          message: 'Cart preparation session not found or expired. Please start a new search.',
+        });
+      }
+
+      // Find the offer in the search results
+      const rankedOffer = conversationSession.lastResult?.ranking.rankedOffers.find(ro => ro.offer.id === offerId);
+      if (!rankedOffer) {
+        return res.status(404).json({
+          error: 'OFFER_NOT_FOUND',
+          message: 'This offer is not part of the current results for this session.',
+        });
+      }
+
+      // Prepare the cart (this also determines execution capability)
+      const preparation = await cartPreparationEngine.prepare({
+        offer: rankedOffer.offer,
+        quantity: 1, // Default quantity, could be made configurable
+        userInfo,
+      });
+
+      if (preparation.status === 'unavailable' || preparation.status === 'failed') {
+        return res.status(400).json({
+          error: 'OFFER_NOT_PREPARABLE',
+          message: preparation.nextAction || preparation.error || 'Offer cannot be prepared for purchase.',
+        });
+      }
+
+      // Convert the prepared cart (single offer) to domain Cart type (array of items)
+      const cart: Cart = {
+        id: `cart-${preparation.cart!.id}`,
+        items: [{
+          offerId: preparation.cart!.offer.id,
+          quantity: preparation.cart!.quantity,
+          selectedVariants: preparation.cart!.selectedVariants ?? {}
+        }],
+        appliedPromotions: preparation.cart!.appliedPromotions ?? [],
+        userInfo: preparation.cart!.userInfo,
+        createdAt: preparation.cart!.createdAt,
+        updatedAt: preparation.cart!.updatedAt
+      };
+
+      // Create offer snapshot from offer data
+      const offerSnapshot: OfferSnapshot = {
+        offerId: rankedOffer.offer.id,
+        productId: rankedOffer.offer.productId,
+        merchantId: rankedOffer.offer.merchant.id,
+        title: rankedOffer.offer.merchant.name,
+        brand: null,
+        model: null,
+        condition: null,
+        seller: null,
+        availability: rankedOffer.offer.availability?.value ?? null,
+        price: rankedOffer.offer.price.value ?? null,
+        currency: rankedOffer.offer.currency ?? 'EUR',
+        productUrl: rankedOffer.offer.productUrl ?? null,
+        executionUrl: rankedOffer.offer.executionUrl ?? null,
+        capturedAt: new Date()
+      };
+
+      // Create merchant snapshot
+      const merchantSnapshot: MerchantSnapshot = {
+        merchantId: rankedOffer.offer.merchant.id,
+        name: rankedOffer.offer.merchant.name,
+        country: rankedOffer.offer.merchant.country,
+        executionCapabilities: rankedOffer.offer.merchant.executionCapabilities,
+        capturedAt: new Date()
+      };
+
+      // Create promotion snapshots (empty for now - would come from promotion engine)
+      const promotionSnapshot: PromotionSnapshot[] = [];
+
+      // Create price snapshot from offer financial data
+      const priceSnapshot: PriceSnapshot = {
+        productPrice: rankedOffer.offer.price.value ?? null,
+        shippingCost: rankedOffer.offer.shippingCost.value ?? null,
+        tax: rankedOffer.offer.taxes?.value ?? null,
+        importDuty: rankedOffer.offer.importDuties?.value ?? null,
+        customsFees: null, // Not available in current Offer type
+        serviceFees: null, // Not available in current Offer type
+        promotionSavings: 0,
+        totalCost: (
+          (rankedOffer.offer.price.value ?? 0) +
+          (rankedOffer.offer.shippingCost.value ?? 0) +
+          (rankedOffer.offer.taxes?.value ?? 0) +
+          (rankedOffer.offer.importDuties?.value ?? 0) +
+          (rankedOffer.offer.fees?.value ?? 0)
+        ),
+        currency: rankedOffer.offer.currency ?? 'EUR',
+        confidence: 0, // Would be calculated based on data quality
+        source: 'offer_data',
+        capturedAt: new Date()
+      };
+
+      // Create the checkout session using the service
+      const session = await checkoutSessionService.createCheckoutSession(
+        {
+          items: cart.items,
+          quantities: Object.fromEntries(cart.items.map(item => [item.offerId, item.quantity])),
+          selectedVariants: Object.fromEntries(cart.items.map(item => [item.offerId, item.selectedVariants ?? {}])),
+          destinationCountry: userInfo?.shippingAddress?.country,
+          capturedAt: new Date()
+        },
+        offerSnapshot,
+        merchantSnapshot,
+        preparation.cart!.executionCapability,
+        idempotencyKey
+      );
+
+      // Update the session with the prepared data
+      session.cart = cart;
+      session.priceSnapshot = priceSnapshot;
+      session.promotionSnapshot = promotionSnapshot;
+
+      // Set userId from conversation session if available
+      if (conversationSession.userId) {
+        session.userId = conversationSession.userId;
+      }
+
+      // Generate correlationId if not set by service (though service should set it)
+      if (!session.correlationId) {
+        session.correlationId = `corr-${generateUUID()}`;
+      }
+
+      // Update the store with the modified session
+      checkoutSessionService.updateSession(session);
+
+      // Set initial next action
+      session.nextAction = 'awaiting_verification';
+      checkoutSessionService.updateSession(session);
+
+      return res.status(201).json(session);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * GET /checkout-session/:id
+   *
+   * Get the current state of a checkout session.
+   *
+   * Response: CheckoutSession
+   */
+  app.get('/checkout-session/:id', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const sessionId = req.params['id'] as string;
+
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'INVALID_SESSION_ID', message: '"id" must be a valid string.' });
+      }
+
+      const session = checkoutSessionService.getSession(sessionId);
+
+      if (!session) {
+        return res.status(404).json({
+          error: 'SESSION_NOT_FOUND',
+          message: 'Checkout session not found or expired.'
+        });
+      }
+
+      return res.json(session);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  /**
+   * POST /checkout-session/:id/retry
+   *
+   * Retry a failed checkout session.
+   * Only allowed if session is in a state that permits retry.
+   *
+   * Response: CheckoutSession
+   */
+  app.post('/checkout-session/:id/retry', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const sessionId = req.params['id'] as string;
+
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'INVALID_SESSION_ID', message: '"id" must be a valid string.' });
+      }
+
+      const session = checkoutSessionService.getSession(sessionId);
+
+      if (!session) {
+        return res.status(404).json({
+          error: 'SESSION_NOT_FOUND',
+          message: 'Checkout session not found or expired.'
+        });
+      }
+
+      // Check if session has expired
+      if (checkoutSessionService.isExpired(sessionId)) {
+        return res.status(400).json({
+          error: 'SESSION_EXPIRED',
+          message: 'Checkout session has expired and cannot be retried.'
+        });
+      }
+
+      // Check if session is in a state that allows retry
+      // According to state machine, only verification_failed, failed, or similar terminal states can be retried
+      // For simplicity, we'll allow retry on any non-terminal state except executed
+      if (session.status === 'executed') {
+        return res.status(400).json({
+          error: 'SESSION_ALREADY_COMPLETED',
+          message: 'Checkout session has already been executed and cannot be retried.'
+        });
+      }
+
+      // Increment retry count
+      const updatedSession = await checkoutSessionService.incrementRetryCount(sessionId);
+
+      // Reset to verification_required for retry
+      await checkoutSessionService.transitionState(sessionId, 'verification_required');
+
+      // Reset execution state (but keep audit trail)
+      const resetSession = checkoutSessionService.getSession(sessionId);
+      if (resetSession) {
+        resetSession.executionState = {
+          started: false,
+          startedAt: null,
+          completedAt: null,
+          result: null,
+          error: undefined,
+          merchantConfirmed: false,
+          merchantConfirmedAt: null
+        };
+        resetSession.version += 1;
+        checkoutSessionService.updateSession(resetSession);
+
+        return res.json(resetSession);
+      }
+
+      return res.json(updatedSession);
     } catch (err) {
       return next(err);
     }

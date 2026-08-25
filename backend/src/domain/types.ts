@@ -20,14 +20,19 @@ export type CartPreparedStatus =
  * Status of a checkout attempt.
  */
 export type CheckoutStatus =
-  | 'initiated'          // Checkout process started
-  | 'preparing_cart'     // Cart preparation in progress
-  | 'cart_prepared'      // Cart successfully prepared
-  | 'redirecting'        // User being redirected to merchant
-  | 'awaiting_user_action' // Waiting for user to complete payment
-  | 'completed'          // Purchase completed successfully
-  | 'failed'             // Checkout failed
-  | 'cancelled';         // User canceled the checkout
+  | 'verification_required'
+  | 'verified'
+  | 'user_approval_required'
+  | 'user_approving'
+  | 'approved'
+  | 'approval_invalidated'
+  | 'execution_ready'
+  | 'executing'
+  | 'executed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired'
+  | 'verification_failed';
 
 // ============================================================================
 // PREFERENCE HIERARCHY
@@ -415,12 +420,19 @@ export interface AuditEntry {
 }
 
 /**
+/**
  * Tracks the state of a checkout attempt from cart preparation to completion.
- * Maintains audit trail and retry state.
+ * Maintains audit trail, retry state, and transactional integrity.
  */
 export interface CheckoutSession {
   /** Unique session identifier */
   id: string;
+  /** Identifier of the user (if authenticated) */
+  userId?: string;
+  /** Identifier of the offer being purchased */
+  offerId: string;
+  /** Identifier of the merchant */
+  merchantId: string;
   /** The cart being purchased */
   cart: Cart;
   /** Merchant-specific cart representation (if applicable) */
@@ -445,8 +457,34 @@ export interface CheckoutSession {
   createdAt: Date;
   /** When the session was last updated */
   updatedAt: Date;
+  /** When the session expires */
+  expiresAt: Date;
   /** When the checkout was completed */
   completedAt?: Date;
+  /** Correlation ID for tracing across services */
+  correlationId: string;
+  /** Idempotency key to prevent duplicate operations */
+  idempotencyKey: string;
+  /** Version of the session for optimistic concurrency */
+  version: number;
+  /** Snapshot of the cart at session creation */
+  cartSnapshot: CartSnapshot;
+  /** Snapshot of the price at session creation */
+  priceSnapshot: PriceSnapshot;
+  /** Snapshot of promotions at session creation */
+  promotionSnapshot: PromotionSnapshot[];
+  /** Snapshot of the offer at session creation */
+  offerSnapshot: OfferSnapshot;
+  /** Snapshot of merchant info at session creation */
+  merchantSnapshot: MerchantSnapshot;
+  /** Verification state */
+  verificationState: VerificationState;
+  /** Approval state */
+  approvalState: ApprovalState;
+  /** Execution state */
+  executionState: ExecutionState;
+  /** Failure state if applicable */
+  failureState?: FailureState;
 }
 
 // ============================================================================
@@ -993,9 +1031,19 @@ export interface AuditEntry {
  * Tracks the state of a checkout attempt from cart preparation to completion.
  * Maintains audit trail and retry state.
  */
+/**
+ * Tracks the state of a checkout attempt from cart preparation to completion.
+ * Maintains audit trail, retry state, and transactional integrity.
+ */
 export interface CheckoutSession {
   /** Unique session identifier */
   id: string;
+  /** Identifier of the user (if authenticated) */
+  userId?: string;
+  /** Identifier of the offer being purchased */
+  offerId: string;
+  /** Identifier of the merchant */
+  merchantId: string;
   /** The cart being purchased */
   cart: Cart;
   /** Merchant-specific cart representation (if applicable) */
@@ -1020,6 +1068,287 @@ export interface CheckoutSession {
   createdAt: Date;
   /** When the session was last updated */
   updatedAt: Date;
+  /** When the session expires */
+  expiresAt: Date;
   /** When the checkout was completed */
   completedAt?: Date;
+  /** Correlation ID for tracing across services */
+  correlationId: string;
+  /** Idempotency key to prevent duplicate operations */
+  idempotencyKey: string;
+  /** Version of the session for optimistic concurrency */
+  version: number;
+  /** Snapshot of the cart at session creation */
+  cartSnapshot: CartSnapshot;
+  /** Snapshot of the price at session creation */
+  priceSnapshot: PriceSnapshot;
+  /** Snapshot of promotions at session creation */
+  promotionSnapshot: PromotionSnapshot[];
+  /** Snapshot of the offer at session creation */
+  offerSnapshot: OfferSnapshot;
+  /** Snapshot of merchant info at session creation */
+  merchantSnapshot: MerchantSnapshot;
+  /** Verification state */
+  verificationState: VerificationState;
+  /** Approval state */
+  approvalState: ApprovalState;
+  /** Execution state */
+  executionState: ExecutionState;
+  /** Failure state if applicable */
+  failureState?: FailureState;
+}
+
+
+/**
+ * Snapshot of cart data at a point in time.
+ */
+export interface CartSnapshot {
+  /** Items in the cart */
+  items: CartItem[];
+  /** Quantities of each item */
+  quantities: Record<string, number>;
+  /** Selected variants */
+  selectedVariants: Record<string, Record<string, string>>;
+  /** Shipping destination */
+  destinationCountry?: string;
+  /** Captured at timestamp */
+  capturedAt: Date;
+}
+
+/**
+ * Snapshot of price data at a point in time.
+ */
+export interface PriceSnapshot {
+  /** Base product price */
+  productPrice: number | null;
+  /** Shipping cost */
+  shippingCost: number | null;
+  /** Tax amount */
+  tax: number | null;
+  /** Import duty */
+  importDuty: number | null;
+  /** Customs fees */
+  customsFees: number | null;
+  /** Service fees */
+  serviceFees: number | null;
+  /** Promotion savings */
+  promotionSavings: number;
+  /** Total cost */
+  totalCost: number;
+  /** Currency */
+  currency: string;
+  /** Confidence in the price calculation */
+  confidence: number;
+  /** Source of the price data */
+  source: string;
+  /** Captured at timestamp */
+  capturedAt: Date;
+}
+
+/**
+ * Snapshot of promotion data at a point in time.
+ */
+export interface PromotionSnapshot {
+  /** Promotion ID */
+  promotionId: string;
+  /** Promotion code */
+  code: string;
+  /** Type of promotion */
+  type: PromotionType;
+  /** Discount value */
+  discountValue: number | null;
+  /** Discount unit */
+  discountUnit: 'percent' | 'euro' | 'shipping' | null;
+  /** Conditions */
+  conditions: PromotionCondition[];
+  /** Savings amount */
+  savingsAmount: number;
+  /** Savings percent */
+  savingsPercent: number;
+  /** Verification status */
+  verificationStatus: PromotionVerificationStatus;
+  /** Captured at timestamp */
+  capturedAt: Date;
+}
+
+/**
+ * Snapshot of offer data at a point in time.
+ */
+export interface OfferSnapshot {
+  /** Offer ID */
+  offerId: string;
+  /** Product ID */
+  productId: string;
+  /** Merchant ID */
+  merchantId: string;
+  /** Title/name of the offer */
+  title: string;
+  /** Brand */
+  brand: string | null;
+  /** Model */
+  model: string | null;
+  /** Condition */
+  condition: string | null;
+  /** Seller */
+  seller: string | null;
+  /** Availability */
+  availability: string | null;
+  /** Price */
+  price: number | null;
+  /** Currency */
+  currency: string;
+  /** Product URL */
+  productUrl: string | null;
+  /** Execution URL */
+  executionUrl: string | null;
+  /** Captured at timestamp */
+  capturedAt: Date;
+}
+
+/**
+ * Snapshot of merchant data at a point in time.
+ */
+export interface MerchantSnapshot {
+  /** Merchant ID */
+  merchantId: string;
+  /** Merchant name */
+  name: string;
+  /** Merchant country */
+  country: string;
+  /** Execution capabilities */
+  executionCapabilities: ExecutionCapabilityType[];
+  /** Captured at timestamp */
+  capturedAt: Date;
+}
+
+/**
+ * Verification state of the checkout session.
+ */
+export interface VerificationState {
+  /** Is the session verified */
+  verified: boolean;
+  /** Last verification timestamp */
+  verifiedAt: Date | null;
+  /** Verification discrepancies */
+  discrepancies: VerificationDiscrepancy[];
+  /** Blocking issues preventing approval */
+  blockingIssues: VerificationIssue[];
+  /** Warnings (non-blocking) */
+  warnings: VerificationIssue[];
+  /** Verification version */
+  version: number;
+}
+
+/**
+ * Approval state of the checkout session.
+ */
+export interface ApprovalState {
+  /** Is the session approved */
+  approved: boolean;
+  /** Approval timestamp */
+  approvedAt: Date | null;
+  /** Approved by user ID */
+  approvedBy: string | null;
+  /** Approval version */
+  version: number;
+  /** Approved total amount */
+  approvedTotal: number;
+  /** Approved currency */
+  approvedCurrency: string;
+  /** Expires at timestamp */
+  expiresAt: Date | null;
+}
+
+/**
+ * Execution state of the checkout session.
+ */
+export interface ExecutionState {
+  /** Has execution started */
+  started: boolean;
+  /** Execution start timestamp */
+  startedAt: Date | null;
+  /** Execution completion timestamp */
+  completedAt: Date | null;
+  /** Execution result */
+  result: 'success' | 'failure' | null;
+  /** Execution error */
+  error?: string;
+  /** Merchant confirmation */
+  merchantConfirmed: boolean;
+  /** Merchant confirmation timestamp */
+  merchantConfirmedAt: Date | null;
+}
+
+/**
+ * Failure state details.
+ */
+export interface FailureState {
+  /** Failure timestamp */
+  timestamp: Date;
+  /** Failure type */
+  type: 'price_changed' | 'cart_changed' | 'offer_unavailable' | 'execution_failed' | 'expired' | 'cancelled' | 'verification_failed' | 'approval_expired' | 'approval_invalidated';
+  /** Failure message */
+  message: string;
+  /** Failure details */
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Verification discrepancy type.
+ */
+export interface VerificationDiscrepancy {
+  /** Type of discrepancy */
+  type: 'price' | 'cart' | 'offer' | 'promotion' | 'shipping' | 'tax' | 'fee' | 'availability' | 'url' | 'merchant';
+  /** Description */
+  description: string;
+  /** Severity */
+  severity: 'warning' | 'blocking';
+  /** Expected value */
+  expected: unknown;
+  /** Actual value */
+  actual: unknown;
+}
+
+/**
+ * Verification issue (warning or blocking).
+ */
+export interface VerificationIssue {
+  /** Type of issue */
+  type: 'price_changed' | 'cart_changed' | 'offer_changed' | 'promotion_changed' | 'shipping_changed' | 'tax_changed' | 'fee_changed' | 'availability_changed' | 'url_changed' | 'merchant_changed' | 'expired' | 'execution_failed';
+  /** Description */
+  description: string;
+  /** Detected at timestamp */
+  detectedAt: Date;
+}
+
+/**
+ * Purchase approval record.
+ */
+export interface PurchaseApproval {
+  /** Unique approval identifier */
+  id: string;
+  /** Associated checkout session ID */
+  sessionId: string;
+  /** Requested at timestamp */
+  requestedAt: Date;
+  /** Approved at timestamp */
+  approvedAt: Date | null;
+  /** Approved by user ID */
+  approvedBy: string | null;
+  /** Approval scope */
+  scope: 'full' | 'price_only' | 'cart_only';
+  /** Approved price amount */
+  approvedAmount: number;
+  /** Approved currency */
+  approvedCurrency: string;
+  /** Approval version */
+  version: number;
+  /** Expires at timestamp */
+  expiresAt: Date | null;
+  /** Status */
+  status: 'pending' | 'approved' | 'expired' | 'invalidated' | 'cancelled';
+  /** Correlation ID */
+  correlationId: string;
+  /** Idempotency key */
+  idempotencyKey: string;
 }

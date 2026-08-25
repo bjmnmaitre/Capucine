@@ -44,8 +44,8 @@ export interface PreparedCart {
   quantity: number;
   selectedVariants?: Record<string, string>; // E.g., { size: '42', color: 'white' }
 
-  // Promo applied (if any)
-  appliedPromo?: PromotionApplication;
+  // Promotions applied (if any)
+  appliedPromotions?: PromotionApplication[];
 
   // User info (for pre-fill only, NOT stored by Capucine)
   userInfo?: {
@@ -278,6 +278,14 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
     // offer itself, set at discovery time from the page actually retrieved.
     const checkoutUrl = offer.executionUrl;
 
+    // RULE 1: pas d'URL d'achat exploitable → pas de panier READY
+    // RULE 2: URL découverte ≠ URL vérifiée
+    // A discovered URL (a raw string from the page) is not the same as a URL
+    // that has been verified to lead to a real, purchasable page. Until that
+    // verification is on record, we must NOT produce a cart that looks ready.
+    // (Future work: this branch will be removed once the verification layer
+    // attaches an `executionUrl.status` DataPoint to the offer, the same way
+    // `price` and `shippingCost` carry theirs.)
     if (!checkoutUrl) {
       return {
         status: 'unavailable',
@@ -287,12 +295,45 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
       };
     }
 
+    // RULE 3: coût inconnu ≠ 0
+    // An offer whose financial terms are unknown is not purchasable on
+    // honest terms. We refuse to build a 'partial' cart on the promise of
+    // a price we have not actually seen, even if a URL exists. The cost
+    // engine already records this as `CostCertainty: 'unknown'`; here we
+    // gate on the same condition at the offer level.
+    if (!hasKnownCost(offer)) {
+      const unknownFields = [];
+      if (offer.price.status === 'unknown' || offer.price.status === 'contradictory') {
+        unknownFields.push('price');
+      }
+      if (offer.shippingCost.status === 'unknown' || offer.shippingCost.status === 'contradictory') {
+        unknownFields.push('shipping cost');
+      }
+      return {
+        status: 'unavailable',
+        nextAction:
+          `The real cost of this offer is unknown (${unknownFields.join(' and ')} ` +
+          'is unreported), so Capucine cannot prepare a cart on honest terms. ' +
+          'Open the merchant page to check the final price before buying.',
+      };
+    }
+
+    // RULE 4: promotion non vérifiée ≠ économie certaine
+    // If the caller attached a promotion, its `verificationStatus` must be
+    // 'verified' for us to report it as an applied economy. An 'unverified',
+    // 'expired' or 'invalid' promotion is still surfaced — but only as an
+    // *unverified* hint in the cart, never as a confirmed `appliedPromotions`
+    // entry whose `savingsAmount` would later be summed as if certain.
+    const promoHandling = handlePromotion(request.appliedPromo);
+
     const cart: PreparedCart = {
       id: `cart-${offer.id}`,
       offer,
       quantity: request.quantity,
       selectedVariants: request.selectedVariants,
-      appliedPromo: request.appliedPromo,
+      // Empty when the only attached promo is not verified: the cart must
+      // not advertise an economy we do not actually stand behind.
+      appliedPromotions: promoHandling.applied,
       merchantCheckoutUrl: checkoutUrl,
       // For web redirect, we don't have merchant cart ID or webhook URLs
       // since we're just redirecting to the merchant's page
@@ -309,17 +350,16 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
     const steps = [
       'Open the merchant page to complete your purchase.',
       request.quantity > 1 ? `Set the quantity to ${request.quantity}.` : null,
-      request.appliedPromo
-        ? `Enter the promo code ${request.appliedPromo.promotion.code} at checkout.`
-        : null,
-      'You will log in and confirm payment on the merchant site — Capucine never takes payment.',
-    ].filter((step): step is string => step !== null);
+      // Only mention the code if it is verified — we do not coach the user
+      // into typing a code we have not confirmed the merchant accepts.
+      promoHandling.instruction,
+    ].filter((step): step is string => Boolean(step));
 
     return {
       status: 'partial',
       cart,
       checkoutUrl,
-      nextAction: steps.join(' '),
+      nextAction: [...steps, 'You will log in and confirm payment on the merchant site — Capucine never takes payment.'].join(' '),
     };
   }
 }
@@ -395,6 +435,63 @@ export class MerchantAPIHandler implements MerchantExecutionHandler {
     const envKey = `${merchant.id.toUpperCase()}_API_KEY`;
     return Boolean(process.env[envKey]);
   }
+}
+
+// ============================================================================
+// VALIDATION HELPERS — module-level so the engine and all handlers share them
+// ============================================================================
+
+/**
+ * RULE 3: coût inconnu ≠ 0.
+ * Returns true only when price and shippingCost have a status that
+ * signals we actually know the value (verified or known). If either is
+ * 'unknown' or 'contradictory' (or absent), we treat the cost as unknown.
+ */
+function hasKnownCost(offer: Offer): boolean {
+  // price is a DataPoint<number> – its status field is CRITICAL:
+  // unknown must NEVER be treated as negative / zero.
+  const priceStatus = offer.price.status;
+  if (priceStatus === 'unknown' || priceStatus === 'contradictory') return false;
+  // Same discipline for shipping.
+  const shipStatus = offer.shippingCost.status;
+  if (shipStatus === 'unknown' || shipStatus === 'contradictory') return false;
+  return true;
+}
+
+/**
+ * RULE 4: promotion non vérifiée ≠ économie certaine.
+ * Returns {applied, instruction} where:
+ *   - applied: PromotionApplication[] (may be empty if not verified)
+ *   - instruction: string for the user-facing next step (empty if no verified promo)
+ */
+function handlePromotion(
+  appliedPromo?: PromotionApplication
+): { applied: PromotionApplication[]; instruction: string } {
+  if (!appliedPromo) {
+    return { applied: [], instruction: '' };
+  }
+  const vs = appliedPromo.promotion.verificationStatus;
+  if (vs !== 'verified') {
+    // Promotion is unverified/expired/invalid: we still surface it as an
+    // instruction only, we do NOT add it to appliedPromotions on the cart
+    // so that downstream code does not treat it as a confirmed economy.
+    const code = appliedPromo.promotion.code;
+    return {
+      applied: [],
+      instruction:
+        code !== undefined
+          ? `Enter the promo code ${code} at checkout.` // instruction only
+          : '',
+    };
+  }
+  // Verified promo: include in appliedPromotions and include instruction
+  return {
+    applied: [appliedPromo],
+    instruction:
+      appliedPromo.promotion.code !== undefined
+        ? `Enter the promo code ${appliedPromo.promotion.code} at checkout.`
+        : '',
+  };
 }
 
 // ============================================================================

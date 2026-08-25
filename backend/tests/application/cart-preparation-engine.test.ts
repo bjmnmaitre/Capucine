@@ -29,12 +29,13 @@ import {
   createDefaultCartPreparationEngine,
   CartPreparationRequest,
 } from '../../src/application/cart-preparation-engine';
-import { PromotionApplication } from '../../src/application/promotion-engine';
+import { PromotionApplication } from '../../src/domain/types';
 import { rankOffers } from '../../src/decision/priority-engine';
 import {
   Offer,
   Merchant,
   DataPoint,
+  DataStatus,
   ExecutionCapabilityType,
   PreferenceCriterion,
 } from '../../src/domain/types';
@@ -43,8 +44,8 @@ import {
 // HELPERS
 // ============================================================================
 
-function dp<T>(value: T): DataPoint<T> {
-  return { value, status: 'known', provenance: { source: 'test', retrievedAt: new Date() } };
+function dp<T>(value: T, status: DataStatus = 'known'): DataPoint<T> {
+  return { value, status, provenance: { source: 'test', retrievedAt: new Date() } };
 }
 
 function merchant(id: string, capabilities: ExecutionCapabilityType[]): Merchant {
@@ -56,14 +57,18 @@ function offer(params: {
   merchant: Merchant;
   price?: number;
   executionUrl?: string;
+  priceStatus?: DataStatus;
+  shippingCostStatus?: 'known' | 'unknown' | 'contradictory';
 }): Offer {
+  const shippingStatus = params.shippingCostStatus ?? 'known';
+  const priceStatus = params.priceStatus ?? 'known';
   return {
     id: params.id ?? 'offer-1',
     productId: 'prod-1',
     merchant: params.merchant,
-    price: dp(params.price ?? 199),
+    price: dp(params.price ?? 199, priceStatus),
     currency: 'EUR',
-    shippingCost: { value: null, status: 'unknown' },
+    shippingCost: { value: null, status: shippingStatus },
     characteristics: {},
     executionUrl: params.executionUrl,
     createdAt: new Date(),
@@ -112,7 +117,7 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
   it("rend l'URL réelle de l'offre, verbatim", async () => {
     const url = 'https://www.fnac.com/a12345/Sony-WH-1000XM5';
     const result = await handler.prepareCart(
-      request({ offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: url }) })
+      request({ offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: url, shippingCostStatus: 'known' }) })
     );
 
     expect(result.checkoutUrl).toBe(url);
@@ -144,7 +149,7 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
     const url = 'https://www.fnac.com/a12345/Sony-WH-1000XM5';
     const result = await handler.prepareCart(
       request({
-        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: url }),
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: url, shippingCostStatus: 'known' }),
         userEmail: 'benjamin@example.com',
         userFirstName: 'Benjamin',
         userLastName: 'Durand',
@@ -162,7 +167,7 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
     const url = 'https://www.fnac.com/a12345/Sony-WH-1000XM5';
     const result = await handler.prepareCart(
       request({
-        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: url }),
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: url, shippingCostStatus: 'known' }),
         appliedPromo: promoApplication('CAPUCINE10'),
       })
     );
@@ -197,13 +202,124 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
   it('reporte la quantité demandée comme instruction explicite', async () => {
     const result = await handler.prepareCart(
       request({
-        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: 'https://x.fr/p' }),
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: 'https://x.fr/p', shippingCostStatus: 'known' }),
         quantity: 3,
       })
     );
 
     expect(result.cart?.quantity).toBe(3);
     expect(result.nextAction).toContain('3');
+  });
+
+  // ── RULE 3 : coût inconnu ≠ 0 ──────────────────────────────────────────
+  it("RULE 3 : coût inconnu (shippingCost unknown) → 'unavailable', pas de panier", async () => {
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({
+          merchant: merchant('fnac', ['web_redirect']),
+          executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5',
+          shippingCostStatus: 'unknown',
+        }),
+      })
+    );
+
+    expect(result.status).toBe('unavailable');
+    expect(result.checkoutUrl).toBeUndefined();
+    expect(result.cart).toBeUndefined();
+    expect(result.nextAction?.toLowerCase()).toContain('cost');
+    expect(result.nextAction?.toLowerCase()).toContain('unknown');
+  });
+
+  it("RULE 3 : coût contradictoire → 'unavailable'", async () => {
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({
+          merchant: merchant('fnac', ['web_redirect']),
+          executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5',
+          shippingCostStatus: 'contradictory',
+        }),
+      })
+    );
+
+    expect(result.status).toBe('unavailable');
+    expect(result.cart).toBeUndefined();
+  });
+
+  it("RULE 3 : prix inconnu → 'unavailable'", async () => {
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({
+          merchant: merchant('fnac', ['web_redirect']),
+          executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5',
+          priceStatus: 'unknown',
+        }),
+      })
+    );
+
+    expect(result.status).toBe('unavailable');
+    expect(result.cart).toBeUndefined();
+    expect(result.nextAction?.toLowerCase()).toContain('price');
+  });
+
+  // ── RULE 4 : promotion non vérifiée ≠ économie certaine ─────────────────
+  it("RULE 4 : promotion vérifiée → appliquée et mentionnée", async () => {
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5', shippingCostStatus: 'known' }),
+        appliedPromo: promoApplication('CAPUCINE10'),
+      })
+    );
+
+    expect(result.cart?.appliedPromotions?.length).toBe(1);
+    expect(result.cart?.appliedPromotions?.[0].promotion.code).toBe('CAPUCINE10');
+    expect(result.nextAction).toContain('CAPUCINE10');
+  });
+
+  it("RULE 4 : promotion non vérifiée → instruction seulement, pas d'économie appliquée", async () => {
+    const unverifiedPromo = promoApplication('CAPUCINE10');
+    unverifiedPromo.promotion.verificationStatus = 'unverified';
+
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5', shippingCostStatus: 'known' }),
+        appliedPromo: unverifiedPromo,
+      })
+    );
+
+    // RULE 4: the cart must NOT advertise an economy we do not stand behind
+    expect(result.cart?.appliedPromotions).toEqual([]);
+    // But the code is still surfaced as an instruction
+    expect(result.nextAction).toContain('CAPUCINE10');
+  });
+
+  it("RULE 4 : promotion expirée → instruction seulement", async () => {
+    const expiredPromo = promoApplication('CAPUCINE10');
+    expiredPromo.promotion.verificationStatus = 'expired';
+
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5', shippingCostStatus: 'known' }),
+        appliedPromo: expiredPromo,
+      })
+    );
+
+    expect(result.cart?.appliedPromotions).toEqual([]);
+    expect(result.nextAction).toContain('CAPUCINE10');
+  });
+
+  it("RULE 4 : promotion invalide → instruction seulement", async () => {
+    const invalidPromo = promoApplication('CAPUCINE10');
+    invalidPromo.promotion.verificationStatus = 'invalid';
+
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({ merchant: merchant('fnac', ['web_redirect']), executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5', shippingCostStatus: 'known' }),
+        appliedPromo: invalidPromo,
+      })
+    );
+
+    expect(result.cart?.appliedPromotions).toEqual([]);
+    expect(result.nextAction).toContain('CAPUCINE10');
   });
 });
 

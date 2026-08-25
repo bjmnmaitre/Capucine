@@ -4,7 +4,8 @@
  * Covers promo code discovery, validation, applicability, and discount calculation.
  */
 
-import { PromotionEngine, Promotion, createUnverifiedPromo } from '../../src/application/promotion-engine';
+import { PromotionEngine, createUnverifiedPromo } from '../../src/application/promotion-engine';
+import { Promotion } from '../../src/domain/types';
 
 // ============================================================================
 // TEST HELPERS
