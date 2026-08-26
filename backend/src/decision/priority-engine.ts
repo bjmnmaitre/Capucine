@@ -56,6 +56,8 @@ function scoreOffer(
 ): {
   criterionScores: CriterionScore[];
   overallScore: number;
+  /** Unrounded score — ordering uses this. See RankedOffer.overallScoreExact. */
+  overallScoreExact: number;
   satisfiesAllConstraints: boolean;
   violatedConstraints: Array<{criterionId: string; criterionName: string; reason: string}>;
 } {
@@ -115,6 +117,9 @@ function scoreOffer(
   return {
     criterionScores,
     overallScore: Math.round(overallScore),
+    // Kept unrounded so ordering can use the real difference — see
+    // RankedOffer.overallScoreExact.
+    overallScoreExact: overallScore,
     satisfiesAllConstraints,
     violatedConstraints,
   };
@@ -647,7 +652,7 @@ export function rankOffers(
 
   // Score all offers
   for (const offer of request.offers) {
-    const { criterionScores, overallScore, satisfiesAllConstraints, violatedConstraints } =
+    const { criterionScores, overallScore, overallScoreExact, satisfiesAllConstraints, violatedConstraints } =
       scoreOffer(offer, request.effectiveCriteria, admissibilityByOfferId?.get(offer.id));
 
     if (!satisfiesAllConstraints) {
@@ -677,10 +682,17 @@ export function rankOffers(
       const finalScore = bonus > 0
         ? Math.min(100, Math.round(overallScore + bonus))
         : overallScore;
+      // The exact counterpart of finalScore, kept unrounded for ordering. The
+      // bonus is added at full precision here for the same reason the base
+      // score is: rounding before comparing loses real differences.
+      const finalScoreExact = bonus > 0
+        ? Math.min(100, overallScoreExact + bonus)
+        : overallScoreExact;
 
       rankedOffers.push({
         offer,
         overallScore: finalScore,
+        overallScoreExact: finalScoreExact,
         criterionScores,
         summary: generateSummary(offer, criterionScores, finalScore),
         satisfiesAllConstraints: true,
@@ -695,9 +707,13 @@ export function rankOffers(
   // When scores are equal, use offer.id as a lexicographic tiebreaker so that
   // identical inputs always produce identical output regardless of discovery order.
   rankedOffers.sort((a, b) => {
-    const scoreDiff = b.overallScore - a.overallScore;
-    if (scoreDiff !== 0) return scoreDiff;
-    // Deterministic tiebreaker: offer ID (stable, source-neutral)
+    // Compare the UNROUNDED scores: rounding first made offers that differ by
+    // a fraction of a point compare as equal, handing the order to the id
+    // tiebreaker and putting worse offers above better ones.
+    const exactDiff = (b.overallScoreExact ?? b.overallScore) - (a.overallScoreExact ?? a.overallScore);
+    if (Math.abs(exactDiff) > 1e-9) return exactDiff;
+    // Genuinely equal scores: deterministic tiebreaker on offer ID (stable,
+    // source-neutral) so identical inputs always produce identical output.
     return a.offer.id < b.offer.id ? -1 : a.offer.id > b.offer.id ? 1 : 0;
   });
 

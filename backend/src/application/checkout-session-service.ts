@@ -5,7 +5,7 @@
  * Uses the CheckoutStateMachine to ensure valid state transitions.
  */
 
-import { CheckoutSession, CheckoutStatus, CartSnapshot, PriceSnapshot, PromotionSnapshot, OfferSnapshot, MerchantSnapshot, VerificationState, ApprovalState, ExecutionState, FailureState, VerificationDiscrepancy, VerificationIssue, PurchaseApproval, ExecutionCapabilityType } from '../domain/types';
+import { CheckoutSession, CheckoutStatus, CartSnapshot, PriceSnapshot, PromotionSnapshot, OfferSnapshot, MerchantSnapshot, VerificationState, ApprovalState, ExecutionState, FailureState, VerificationDiscrepancy, VerificationIssue, PurchaseApproval, ExecutionCapabilityType, AuditEntry } from '../domain/types';
 import { CheckoutStateMachine } from './checkout-state-machine';
 
 /**
@@ -139,18 +139,22 @@ export class CheckoutSessionService {
       idempotencyKey: finalIdempotencyKey,
       version: 1,
       cartSnapshot: cart,
+      // This service is handed a cart/offer/merchant snapshot, never price
+      // data. It therefore captures NOTHING about price and says so: null,
+      // not 0. Zero is a price; unknown is not. A caller that has the figures
+      // (see api/server.ts) overwrites this snapshot right after creation.
       priceSnapshot: {
-        productPrice: 0, // Will be filled from cart/offer data
-        shippingCost: 0,
-        tax: 0,
-        importDuty: 0,
-        customsFees: 0,
-        serviceFees: 0,
-        promotionSavings: 0,
-        totalCost: 0,
+        productPrice: null,
+        shippingCost: null,
+        tax: null,
+        importDuty: null,
+        customsFees: null,
+        serviceFees: null,
+        promotionSavings: null,
+        totalCost: null,
         currency: 'EUR',
         confidence: 0,
-        source: 'unknown',
+        source: 'not_captured',
         capturedAt: now
       },
       promotionSnapshot: [],
@@ -268,7 +272,13 @@ export class CheckoutSessionService {
     session.auditTrail.push({
       timestamp: new Date(),
       action: 'verification_state_updated',
-      result: verificationState.verified ? 'success' : 'failure',
+      // Since VerificationEngine distinguishes "compared, nothing blocking"
+      // from "could not compare", the audit must too: no blocking issue and
+      // not verified means the check did not run, which is 'unknown' — not a
+      // failed verification.
+      result: verificationState.verified
+        ? 'success'
+        : verificationState.blockingIssues.length > 0 ? 'failure' : 'unknown',
       details: `Verification state updated: verified=${verificationState.verified}, discrepancies=${verificationState.discrepancies.length}, blockingIssues=${verificationState.blockingIssues.length}`
     });
 
@@ -326,23 +336,21 @@ export class CheckoutSessionService {
     session.version += 1;
     session.updatedAt = new Date();
 
-    // Add audit entry
+    // ExecutionState.result is 'success' | 'failure' | null, and null means
+    // "not determined yet". The audit records that third state as 'unknown'.
+    // It used to be written as 'success', which claimed an outcome nobody had
+    // observed. An execution in flight is not an execution that succeeded.
+    const auditResult: AuditEntry['result'] =
+      executionState.result === 'success' ? 'success'
+      : executionState.result === 'failure' ? 'failure'
+      : 'unknown';
+
     session.auditTrail.push({
       timestamp: new Date(),
       action: 'execution_state_updated',
-      result: executionState.result === 'failure' ? 'failure' : 'success',
-      details: `Execution state updated: started=${executionState.started}, result=${executionState.result}`
+      result: auditResult,
+      details: `Execution state updated: started=${executionState.started}, result=${executionState.result ?? 'not determined'}, merchantConfirmed=${executionState.merchantConfirmed}`
     });
-
-    // Fix: we cannot have 'in_progress' as result, so we change to 'success' if started but no result yet?
-    // According to the ExecutionState type, result can be null, which we treat as in_progress.
-    // But the auditEntry result must be 'success' or 'failure'. So we map:
-    //   if result is null -> 'success' (because it's in progress, not failed yet)
-    //   if result is 'success' -> 'success'
-    //   if result is 'failure' -> 'failure'
-    const auditResult = executionState.result === 'failure' ? 'failure' : 'success';
-
-    session.auditTrail[session.auditTrail.length - 1].result = auditResult;
 
     this.updateSession(session);
     return session;

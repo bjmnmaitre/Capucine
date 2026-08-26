@@ -42,6 +42,66 @@ import { WebSearchAdapter, WebSearchParams, WebSearchOutput, WebSearchResult } f
  * IMPORTANT: This adapter does NOT scrape — it uses the official Brave
  * Search API, which is terms-compliant for programmatic use.
  */
+/**
+ * Turns ONE raw provider result into a WebSearchResult, or null when it is not
+ * usable.
+ *
+ * WHY THIS EXISTS: both adapters used to compute `new URL(item.url).hostname`
+ * inline inside `.map()`. `new URL()` THROWS on a malformed URL, and a throw
+ * inside map aborts the whole parse — so a single bad entry in an otherwise
+ * good provider response discarded every result of that search. Real search
+ * APIs do return odd entries.
+ *
+ * A result with no usable URL is DROPPED rather than emitted with `url: ''`.
+ * An empty string would travel downstream as an offer's executionUrl, i.e. an
+ * offer that claims a purchase link it does not have.
+ *
+ * Only http(s) is accepted: a `javascript:`, `data:` or `file:` URL has no
+ * business being fetched by the page extractor or handed to a user's browser.
+ */
+function toSearchResult(
+  raw: { title?: string; url?: string; snippet?: string; position?: number },
+  fallbackPosition: number
+): WebSearchResult | null {
+  if (typeof raw.url !== 'string' || raw.url.length === 0) return null;
+
+  let hostname: string;
+  try {
+    const parsed = new URL(raw.url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    hostname = parsed.hostname;
+  } catch {
+    return null; // Unparseable URL: drop this result, keep the others.
+  }
+  if (hostname.length === 0) return null;
+
+  return {
+    title: raw.title ?? '',
+    url: raw.url,
+    snippet: raw.snippet ?? '',
+    position: raw.position ?? fallbackPosition,
+    domain: hostname,
+  };
+}
+
+/**
+ * Names what a failing HTTP status actually means, so an operator reading the
+ * log knows whether to check the key, wait, or look elsewhere. The key itself
+ * is never included.
+ */
+function describeSearchFailure(provider: string, status: number, statusText: string): string {
+  if (status === 401 || status === 403) {
+    return `${provider} rejected the API key (${status}). Check the key is valid and active.`;
+  }
+  if (status === 429) {
+    return `${provider} quota or rate limit reached (429). Retry later or raise the plan limit.`;
+  }
+  if (status >= 500) {
+    return `${provider} is unavailable (${status} ${statusText}). This is on the provider's side.`;
+  }
+  return `${provider} error: ${status} ${statusText}`;
+}
+
 export class BraveSearchAdapter implements WebSearchAdapter {
   readonly adapterName = 'brave_search';
 
@@ -87,7 +147,7 @@ export class BraveSearchAdapter implements WebSearchAdapter {
       });
 
       if (!response.ok) {
-        throw new Error(`Brave Search API error: ${response.status} ${response.statusText}`);
+        throw new Error(describeSearchFailure('Brave Search', response.status, response.statusText));
       }
 
       const json = await response.json() as BraveSearchResponse;
@@ -99,13 +159,12 @@ export class BraveSearchAdapter implements WebSearchAdapter {
   }
 
   private parseResponse(json: BraveSearchResponse): WebSearchOutput {
-    const results: WebSearchResult[] = (json.web?.results ?? []).map((item, idx) => ({
-      title: item.title ?? '',
-      url: item.url ?? '',
-      snippet: item.description ?? '',
-      position: idx + 1,
-      domain: item.url ? new URL(item.url).hostname : '',
-    }));
+    const results: WebSearchResult[] = (json.web?.results ?? [])
+      .map((item, idx) => toSearchResult(
+        { title: item.title, url: item.url, snippet: item.description },
+        idx + 1
+      ))
+      .filter((r): r is WebSearchResult => r !== null);
 
     return {
       results,
@@ -182,7 +241,7 @@ export class SerperAdapter implements WebSearchAdapter {
       });
 
       if (!response.ok) {
-        throw new Error(`Serper API error: ${response.status} ${response.statusText}`);
+        throw new Error(describeSearchFailure('Serper', response.status, response.statusText));
       }
 
       const json = await response.json() as SerperResponse;
@@ -194,13 +253,12 @@ export class SerperAdapter implements WebSearchAdapter {
   }
 
   private parseResponse(json: SerperResponse): WebSearchOutput {
-    const results: WebSearchResult[] = (json.organic ?? []).map((item, idx) => ({
-      title: item.title ?? '',
-      url: item.link ?? '',
-      snippet: item.snippet ?? '',
-      position: item.position ?? idx + 1,
-      domain: item.link ? new URL(item.link).hostname : '',
-    }));
+    const results: WebSearchResult[] = (json.organic ?? [])
+      .map((item, idx) => toSearchResult(
+        { title: item.title, url: item.link, snippet: item.snippet, position: item.position },
+        idx + 1
+      ))
+      .filter((r): r is WebSearchResult => r !== null);
 
     return {
       results,

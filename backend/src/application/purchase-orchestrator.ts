@@ -34,6 +34,7 @@ import {
   createDefaultCartPreparationEngine
 } from './cart-preparation-engine';
 import { VerificationEngine } from './verification-engine';
+import { CostEngine } from './cost-engine';
 import { ApprovalEngine } from './approval-engine';
 import { CheckoutSessionService } from './checkout-session-service';
 
@@ -117,31 +118,51 @@ export class PurchaseOrchestrator {
 
     // Step 2: Create a checkout session
     // We need to create snapshots for the session
+    // Capture what the cart ACTUALLY contains. An empty capture would later be
+    // read by VerificationEngine as "the cart changed" the moment a real item
+    // is present — a discrepancy invented by the capture itself.
+    const preparedCart = cartPreparationResult.cart;
     const cartSnapshot: CartSnapshot = {
-      items: [], // We'll fill this from the prepared cart
-      quantities: {},
-      selectedVariants: {},
+      items: preparedCart ? [{ offerId: preparedCart.offer.id, quantity: preparedCart.quantity }] : [],
+      quantities: preparedCart ? { [preparedCart.offer.id]: preparedCart.quantity } : {},
+      selectedVariants: preparedCart ? { [preparedCart.offer.id]: preparedCart.selectedVariants ?? {} } : {},
       destinationCountry: userInfo?.shippingAddress?.country,
       capturedAt: new Date()
     };
 
-    // For simplicity, we'll create a basic price snapshot (to be enhanced)
+    // Capture the promotions actually carried by the prepared cart. RULE 4
+    // guarantees only 'verified' promotions are there.
+    const promotionSnapshot: PromotionSnapshot[] = (preparedCart?.appliedPromotions ?? []).map(applied => ({
+      promotionId: applied.promotion.id,
+      code: applied.promotion.code,
+      type: applied.promotion.type,
+      discountValue: applied.promotion.discountValue ?? null,
+      discountUnit: applied.promotion.discountUnit ?? null,
+      conditions: applied.promotion.conditions,
+      savingsAmount: applied.savingsAmount,
+      savingsPercent: applied.savingsPercent,
+      verificationStatus: applied.promotion.verificationStatus,
+      validUntil: applied.promotion.validUntil,
+      capturedAt: new Date()
+    }));
+
+    // Cost via CostEngine: an unknown component is never summed as 0, and the
+    // total stays null unless every component is known.
+    const costBreakdown = new CostEngine().computeCost(offer);
     const priceSnapshot: PriceSnapshot = {
-      productPrice: 0,
-      shippingCost: 0,
-      tax: 0,
-      importDuty: 0,
-      customsFees: 0,
-      serviceFees: 0,
-      promotionSavings: 0,
-      totalCost: 0,
-      currency: 'EUR',
+      productPrice: offer.price.value ?? null,
+      shippingCost: offer.shippingCost.value ?? null,
+      tax: offer.taxes?.value ?? null,
+      importDuty: offer.importDuties?.value ?? null,
+      customsFees: null,
+      serviceFees: null,
+      promotionSavings: promotionSnapshot.reduce((sum, pr) => sum + pr.savingsAmount, 0),
+      totalCost: costBreakdown.certainty === 'known' ? costBreakdown.totalKnown : null,
+      currency: offer.currency ?? 'EUR',
       confidence: 0,
-      source: 'unknown',
+      source: 'offer_data',
       capturedAt: new Date()
     };
-
-    const promotionSnapshot: PromotionSnapshot[] = [];
     // Helper function to safely get value from DataPoint
     const getValue = <T>(dp: DataPoint<T> | null | undefined): T | null => {
       return dp?.value ?? null;
@@ -248,14 +269,35 @@ export class PurchaseOrchestrator {
           action: 'purchase_orchestrator',
           result: 'failure',
           details: 'No purchase execution handler registered for the merchant',
-          error: 'Cannot be purchased: No purchase execution handler registered for the merchant'
+          error: 'cannot be purchased: No purchase execution handler registered for the merchant'
         },
         isRetry: request.isRetry || false
       };
     }
 
-    // Delegate to the handler
-    return handler.preparePurchase(request);
+    // Delegate to the handler. A handler that throws must NOT surface its
+    // exception to the caller: the contract of orchestratePurchase is to
+    // report a failure as a PurchaseResult, never to reject. The error is
+    // reported, not swallowed — it is kept verbatim in `details` and `error`.
+    try {
+      return await handler.preparePurchase(request);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        status: 'failed',
+        cart: undefined,
+        checkoutUrl: undefined,
+        nextAction: 'The merchant handler could not prepare this purchase. Open the merchant page to continue.',
+        auditEntry: {
+          timestamp: new Date(),
+          action: 'purchase_orchestrator',
+          result: 'failure',
+          details: `Purchase enhancement failed: ${message}`,
+          error: message
+        },
+        isRetry: request.isRetry || false
+      };
+    }
   }
 
   /**
@@ -345,43 +387,32 @@ export class PurchaseOrchestrator {
     // Transition to executing
     await this.checkoutSessionService.transitionState(sessionId, 'executing');
 
-    // Set execution state to started
-    const executionState: any = {
+    // Execution has STARTED and nothing more can honestly be said here. The
+    // outcome is not determined (`result: null`) and no merchant has confirmed
+    // anything (`merchantConfirmed: false`), because this method performs no
+    // merchant call whatsoever.
+    //
+    // This block previously wrote `result: 'success'` and
+    // `merchantConfirmed: true` with a comment saying it was a simulation.
+    // That recorded a purchase the merchant had never acknowledged, and the
+    // session then reached the terminal 'executed' state on no evidence at
+    // all. A simulation must never be stored as an observation.
+    //
+    // The session therefore stays in 'executing'. The only path that may move
+    // it to 'executed' is a real merchant signal — see handleWebhook(), which
+    // delegates to the registered PurchaseExecutionHandler. Until such a
+    // signal arrives, "we do not know yet" is the correct recorded state.
+    const executionState: ExecutionState = {
       started: true,
       startedAt: new Date(),
       completedAt: null,
-      result: null, // in progress
+      result: null,
       error: undefined,
       merchantConfirmed: false,
       merchantConfirmedAt: null
     };
 
     await this.checkoutSessionService.setExecutionState(sessionId, executionState);
-
-    // TODO: In reality, we would now redirect the user to the merchant's checkout URL
-    // and wait for a webhook or polling to know the result.
-    // For now, we'll simulate a successful execution after a delay?
-    // But we cannot wait in this method. Instead, we'll leave it as executing and
-    // let an external process (like a webhook) update it.
-
-    // However, for the sake of having a complete flow, let's assume we get a successful result immediately.
-    // In a real system, this would be asynchronous.
-
-    // Simulate successful execution
-    const finalExecutionState: ExecutionState = {
-      started: true,
-      startedAt: new Date(),
-      completedAt: new Date(),
-      result: 'success',
-      error: undefined,
-      merchantConfirmed: true,
-      merchantConfirmedAt: new Date()
-    };
-
-    await this.checkoutSessionService.setExecutionState(sessionId, finalExecutionState);
-
-    // Transition to executed
-    await this.checkoutSessionService.transitionState(sessionId, 'executed');
 
     return this.checkoutSessionService.getSession(sessionId)!;
   }

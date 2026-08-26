@@ -381,7 +381,9 @@ describe('HttpPageFetcher — response size cap (real fetch(), local loopback on
 
     try {
       const { HttpPageFetcher } = require('../../src/application/product-page-extractor');
-      const fetcher = new HttpPageFetcher();
+      const fetcher = // Ces tests servent une page depuis un serveur loopback local : le garde
+      // anti-SSRF doit être explicitement levé pour eux, et pour eux seuls.
+      new HttpPageFetcher({ allowPrivateHosts: true });
       const body = await fetcher.fetch(`http://127.0.0.1:${port}/huge-page`);
 
       expect(body).not.toBeNull();
@@ -405,7 +407,9 @@ describe('HttpPageFetcher — response size cap (real fetch(), local loopback on
 
     try {
       const { HttpPageFetcher } = require('../../src/application/product-page-extractor');
-      const fetcher = new HttpPageFetcher();
+      const fetcher = // Ces tests servent une page depuis un serveur loopback local : le garde
+      // anti-SSRF doit être explicitement levé pour eux, et pour eux seuls.
+      new HttpPageFetcher({ allowPrivateHosts: true });
       const body = await fetcher.fetch(`http://127.0.0.1:${port}/small-page`);
       expect(body).toBe('<html><head><title>Petite page</title></head></html>');
     } finally {

@@ -1,14 +1,15 @@
 {
   "name": "capucine-core",
   "version": "0.1.0",
-  "description": "Capucine — AI-powered shopping agent core",
+  "description": "Capucine \u2014 AI-powered shopping agent core",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "test": "jest",
     "test:watch": "jest --watch",
-    "dev": "tsx src/api/server.ts",
-    "type-check": "tsc --noEmit"
+    "dev": "node --env-file-if-exists=.env --import tsx src/api/server.ts",
+    "type-check": "tsc --noEmit",
+    "start": "node --env-file-if-exists=.env --import tsx src/api/server.ts"
   },
   "keywords": [
     "shopping",

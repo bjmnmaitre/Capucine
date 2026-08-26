@@ -46,6 +46,13 @@ import { COUNTRY_NAMES } from './request-interpreter';
 
 export interface ExtractedProductData {
   price: DataPoint<number>;
+  /**
+   * Delivery cost as published by the merchant (schema.org
+   * OfferShippingDetails.shippingRate). 'unknown' on the vast majority of
+   * pages — most merchants do not publish a rate in JSON-LD. Never defaulted
+   * to 0: an unpublished rate is not free delivery.
+   */
+  shippingCost: DataPoint<number>;
   currency: string | null;
   availability: DataPoint<'in_stock' | 'out_of_stock' | 'preorder'>;
   merchantName: DataPoint<string>;
@@ -127,7 +134,68 @@ export interface PageFetcher {
  * non-2xx, non-HTML) resolves to null so callers can degrade gracefully
  * without special-casing exceptions.
  */
+/**
+ * Refuses a URL this process must not fetch.
+ *
+ * The extractor is pointed at URLs that came from a search provider, i.e. from
+ * outside. Fetching whatever it is handed makes this the classic SSRF hop: a
+ * result naming `169.254.169.254`, `localhost` or a `10.x` host would have the
+ * SERVER retrieve it, from inside the network, and hand the body to the
+ * parser. Only public http(s) is fetched.
+ *
+ * KNOWN LIMIT (deliberate, documented rather than half-solved): redirects are
+ * still followed by fetch itself, so a public URL that 302s to a private
+ * address is not caught here. Closing that needs manual redirect handling with
+ * per-hop validation; it is out of scope for the MVP and noted as such.
+ */
+function isFetchableUrl(url: string, allowPrivateHosts = false): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+
+  // Opt-in escape hatch for tests that serve a page from a local loopback
+  // server. Never enabled by default, and never driven by an environment
+  // variable — a private-host fetch has to be asked for in code, at the call
+  // site, so it cannot be switched on inadvertently in production.
+  if (allowPrivateHosts) return true;
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') return false;
+
+  // IPv4 literals in loopback / private / link-local ranges.
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (a === 127 || a === 0 || a === 10) return false;
+    if (a === 169 && b === 254) return false;            // link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+  }
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
+  if (/^(fc|fd|fe8|fe9|fea|feb)/.test(host)) return false;
+
+  return true;
+}
+
+export interface HttpPageFetcherOptions {
+  /**
+   * Allow loopback/private addresses. FOR TESTS ONLY: a fetcher built with
+   * this flag is an SSRF relay by construction. Production must never set it.
+   */
+  allowPrivateHosts?: boolean;
+}
+
 export class HttpPageFetcher implements PageFetcher {
+  private readonly allowPrivateHosts: boolean;
+
+  constructor(options: HttpPageFetcherOptions = {}) {
+    this.allowPrivateHosts = options.allowPrivateHosts ?? false;
+  }
+
   /**
    * Hard cap on bytes read from a page's body — the Web is an untrusted
    * boundary (megaprompt PARTIE 13): a hostile or simply pathologically
@@ -138,6 +206,9 @@ export class HttpPageFetcher implements PageFetcher {
   private static readonly MAX_RESPONSE_BYTES = 3 * 1024 * 1024; // 3 MB
 
   async fetch(url: string, timeoutMs = 8000): Promise<string | null> {
+    // Refused before any network call is made.
+    if (!isFetchableUrl(url, this.allowPrivateHosts)) return null;
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -341,6 +412,50 @@ function countriesFromRegion(region: unknown, into: Set<SupportedCountry>): void
 }
 
 /**
+ * Extracts the shipping RATE from Offer.shippingDetails[].shippingRate
+ * (schema.org MonetaryAmount). This is the amount the buyer pays for delivery
+ * — distinct from shippingDestination, which says only WHERE the offer ships.
+ *
+ * Merchants may publish several OfferShippingDetails (one per zone/service),
+ * each with its own rate. We do NOT pick one:
+ *   - every resolvable rate agrees        → 'known'
+ *   - resolvable rates disagree           → 'contradictory' (a real state:
+ *                                            we saw the data and it conflicts)
+ *   - nothing resolvable, or field absent → 'unknown'
+ * A free-shipping rate of 0 is a fact and is reported as such; the absence of
+ * a rate is NOT 0, and the two never collapse.
+ */
+function extractShippingRate(offerNode: Record<string, unknown> | null): DataPoint<number> {
+  const shippingDetailsRaw = offerNode?.['shippingDetails'];
+  if (!shippingDetailsRaw) return { value: null, status: 'unknown' };
+
+  const detailsList = Array.isArray(shippingDetailsRaw) ? shippingDetailsRaw : [shippingDetailsRaw];
+  const rates: number[] = [];
+
+  for (const details of detailsList) {
+    if (typeof details !== 'object' || details === null) continue;
+    const rateRaw = (details as Record<string, unknown>)['shippingRate'];
+    if (typeof rateRaw !== 'object' || rateRaw === null) continue;
+
+    // MonetaryAmount.value — a number, or a numeric string.
+    const rawValue = (rateRaw as Record<string, unknown>)['value'];
+    const parsed =
+      typeof rawValue === 'number' ? rawValue
+      : typeof rawValue === 'string' && rawValue.trim() !== '' ? Number(rawValue.replace(',', '.'))
+      : NaN;
+
+    if (Number.isFinite(parsed) && parsed >= 0) rates.push(parsed);
+  }
+
+  if (rates.length === 0) return { value: null, status: 'unknown' };
+
+  const allAgree = rates.every(r => Math.abs(r - rates[0]) < 0.005);
+  if (!allAgree) return { value: null, status: 'contradictory' };
+
+  return { value: rates[0], status: 'known', provenance: nowProvenance() };
+}
+
+/**
  * Extracts every country an offer ships to from Offer.shippingDetails
  * (OfferShippingDetails — possibly an array of several, one per shipping
  * zone/rate). Returns 'unknown' when the field is absent OR present but
@@ -506,9 +621,11 @@ function mapToExtractedData(product: Record<string, unknown>, sourceUrl: string)
         : { value: null, status: 'unknown' };
 
   const shipsToCountries = extractShippingDestinations(offerNode);
+  const shippingCost = extractShippingRate(offerNode);
 
   return {
     price,
+    shippingCost,
     currency,
     availability,
     merchantName,

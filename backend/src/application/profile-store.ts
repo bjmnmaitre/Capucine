@@ -228,3 +228,223 @@ export function mergeProfiles(base: UserProfile, incoming: UserProfile): UserPro
     updatedAt: new Date(),
   };
 }
+
+// ============================================================================
+// FILE-BACKED STORE (local persistence)
+// ============================================================================
+
+/**
+ * FileProfileStore — profiles that survive a process restart.
+ *
+ * WHY A FILE AND NOT A DATABASE
+ * ─────────────────────────────
+ * A preference the user typed a minute ago disappearing when the backend
+ * restarts makes the feature not worth having, so in-memory is not enough.
+ * But the project has no database, no ORM and no storage dependency at all,
+ * and adding one to hold a handful of criteria would be infrastructure the
+ * MVP does not need. One JSON file per user, written through Node's own `fs`,
+ * is the smallest thing that is actually persistent. This is the
+ * `FileProfileStore (single-user, local mode)` this module's header already
+ * anticipated; swapping in Postgres later means implementing IProfileStore
+ * again, nothing else.
+ *
+ * FILENAME = SHA-256 OF THE USER ID
+ * ─────────────────────────────────
+ * userIds come from HTTP requests. Deriving a path from one directly invites
+ * traversal (`../../etc/something`), and escaping schemes are easy to get
+ * subtly wrong. A hash is not an escaping scheme that might have a hole: it
+ * cannot contain a separator at all. The real userId is stored inside the
+ * file, so nothing is lost.
+ *
+ * HONEST FAILURES
+ * ───────────────
+ * A missing file means the user has no profile yet — an empty profile, which
+ * is a fact. Any OTHER read failure (permissions, I/O, corrupt JSON) throws.
+ * Returning an empty profile there would tell the user "you have no
+ * preferences" when the truth is "your preferences could not be read", and
+ * the next save would overwrite what we failed to load.
+ *
+ * CONCURRENCY
+ * ───────────
+ * updateCriterion/removeCriterion are read-modify-write. Operations on the
+ * SAME user are chained through a per-user promise queue, so two concurrent
+ * HTTP requests cannot interleave and lose an update. Writes are atomic
+ * (temp file + rename), so a reader never sees a half-written file and a
+ * crash mid-write leaves the previous version intact.
+ *
+ * KNOWN LIMIT (acceptable for a local MVP, deliberately not solved here):
+ * the queue is per-process. Two backend processes sharing one directory could
+ * still lose an update — last writer wins. Single-process local use, which is
+ * what `npm run dev` does, is unaffected.
+ */
+export class FileProfileStore implements IProfileStore {
+  private readonly directory: string;
+  /** Serializes operations per user id — see CONCURRENCY above. */
+  private readonly queues: Map<string, Promise<unknown>> = new Map();
+
+  constructor(directory: string) {
+    this.directory = directory;
+  }
+
+  async load(userId: string): Promise<UserProfile> {
+    return this.enqueue(userId, () => this.readProfile(userId));
+  }
+
+  async save(profile: UserProfile): Promise<void> {
+    return this.enqueue(profile.userId, () =>
+      this.writeProfile({ ...profile, updatedAt: new Date() })
+    );
+  }
+
+  async delete(userId: string): Promise<void> {
+    return this.enqueue(userId, async () => {
+      const { unlink } = await import('node:fs/promises');
+      try {
+        await unlink(this.pathFor(userId));
+      } catch (err) {
+        // Already absent is the desired end state, not a failure.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    });
+  }
+
+  async exists(userId: string): Promise<boolean> {
+    return this.enqueue(userId, async () => {
+      const { access } = await import('node:fs/promises');
+      try {
+        await access(this.pathFor(userId));
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        // Cannot tell — say so rather than answer "no".
+        throw err;
+      }
+    });
+  }
+
+  async updateCriterion(userId: string, criterion: PreferenceCriterion): Promise<void> {
+    // Read and write inside ONE queued unit: another request for this user
+    // cannot slip between them and have its change overwritten.
+    return this.enqueue(userId, async () => {
+      const profile = await this.readProfile(userId);
+      const index = profile.preferences.criteria.findIndex(c => c.id === criterion.id);
+      if (index >= 0) {
+        profile.preferences.criteria[index] = { ...criterion };
+      } else {
+        profile.preferences.criteria.push({ ...criterion });
+      }
+      profile.preferences.updatedAt = new Date();
+      await this.writeProfile({ ...profile, updatedAt: new Date() });
+    });
+  }
+
+  async removeCriterion(userId: string, criterionId: string): Promise<void> {
+    return this.enqueue(userId, async () => {
+      const profile = await this.readProfile(userId);
+      const before = profile.preferences.criteria.length;
+      profile.preferences.criteria = profile.preferences.criteria.filter(
+        c => c.id !== criterionId
+      );
+      if (profile.preferences.criteria.length === before) return; // nothing to do
+      profile.preferences.updatedAt = new Date();
+      await this.writeProfile({ ...profile, updatedAt: new Date() });
+    });
+  }
+
+  // ── internals ────────────────────────────────────────────────────────────
+
+  private enqueue<T>(userId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.queues.get(userId) ?? Promise.resolve();
+    // `.catch` keeps one failed operation from poisoning the queue for the
+    // next caller, while the failure itself is still returned to ITS caller.
+    const next = previous.catch(() => undefined).then(operation);
+    this.queues.set(userId, next.catch(() => undefined));
+    return next;
+  }
+
+  private pathFor(userId: string): string {
+    const createHash = require('node:crypto').createHash as typeof import('node:crypto').createHash;
+    const name = createHash('sha256').update(userId, 'utf8').digest('hex');
+    const path = require('node:path') as typeof import('node:path');
+    return path.join(this.directory, `${name}.json`);
+  }
+
+  private async readProfile(userId: string): Promise<UserProfile> {
+    const { readFile } = await import('node:fs/promises');
+    let raw: string;
+    try {
+      raw = await readFile(this.pathFor(userId), 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        // No file = no profile yet. A fact, not a failure.
+        return createEmptyProfile(userId);
+      }
+      throw err;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `Stored profile for user is unreadable (invalid JSON). Refusing to report an ` +
+        `empty profile, which would silently discard the stored preferences.`
+      );
+    }
+    return reviveProfile(parsed, userId);
+  }
+
+  private async writeProfile(profile: UserProfile): Promise<void> {
+    const { mkdir, writeFile, rename } = await import('node:fs/promises');
+    const path = require('node:path') as typeof import('node:path');
+    await mkdir(this.directory, { recursive: true });
+
+    const target = this.pathFor(profile.userId);
+    // Same directory, so the rename is atomic (same filesystem). A reader
+    // sees either the old file or the new one, never a partial write.
+    const temp = path.join(
+      this.directory,
+      `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`
+    );
+    await writeFile(temp, JSON.stringify(profile, null, 2), 'utf8');
+    await rename(temp, target);
+  }
+}
+
+/**
+ * Rebuilds a UserProfile from parsed JSON, restoring the Date fields that
+ * JSON.stringify flattened into strings. Throws on a structurally invalid
+ * payload: a corrupt file must not quietly become an empty profile.
+ */
+function reviveProfile(parsed: unknown, userId: string): UserProfile {
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('Stored profile is not an object.');
+  }
+  const raw = parsed as Record<string, unknown>;
+  const preferences = raw['preferences'] as Record<string, unknown> | undefined;
+  const criteria = preferences?.['criteria'];
+  if (!Array.isArray(criteria)) {
+    throw new Error('Stored profile has no criteria list.');
+  }
+
+  const toDate = (value: unknown, fallback: Date): Date => {
+    if (typeof value !== 'string') return fallback;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? fallback : date;
+  };
+  const now = new Date();
+
+  return {
+    ...(raw as unknown as UserProfile),
+    // The file name is derived from the requested userId, so this is the
+    // authoritative one even if the stored copy disagrees.
+    userId,
+    preferences: {
+      ...(preferences as unknown as UserProfile['preferences']),
+      criteria: criteria as PreferenceCriterion[],
+      updatedAt: toDate(preferences?.['updatedAt'], now),
+    },
+    createdAt: toDate(raw['createdAt'], now),
+    updatedAt: toDate(raw['updatedAt'], now),
+  };
+}

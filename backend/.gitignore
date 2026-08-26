@@ -14,3 +14,6 @@ coverage/
 # output — the blanket *.js rule above exists for compiled dist/ artifacts
 # (dist/ is already ignored on its own above), not for this.
 !public/js/**/*.js
+
+# Persisted user profiles (local storage, never committed)
+.data/

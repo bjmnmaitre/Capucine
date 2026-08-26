@@ -411,8 +411,15 @@ export interface AuditEntry {
   timestamp: Date;
   /** What action was performed */
   action: string;
-  /** Result of the action */
-  result: 'success' | 'failure';
+  /**
+   * Outcome of the action. 'unknown' is NOT a soft failure: it means no
+   * determination was made — the action is still running, or the data needed
+   * to decide was not available. It must never be collapsed into 'success',
+   * which would be exactly the UNKNOWN -> certain conversion Capucine forbids.
+   * NOTE: AuditEntry is declared twice in this file; TypeScript merges the two
+   * declarations, so both MUST carry an identical `result` type.
+   */
+  result: 'success' | 'failure' | 'unknown';
   /** Additional details about the action */
   details?: string;
   /** Error message if action failed */
@@ -710,8 +717,25 @@ export interface ContextualRelevance {
 export interface RankedOffer {
   offer: Offer;
 
-  // Overall ranking score (0-100 or similar scale)
+  // Overall ranking score (0-100 or similar scale), ROUNDED for display and
+  // for the API contract.
   overallScore: number;
+
+  /**
+   * The same score before rounding. Ordering uses THIS value.
+   *
+   * WHY IT EXISTS: `overallScore` is rounded to an integer, and the sort used
+   * to read that rounded value. Two offers whose real scores differed by less
+   * than half a point therefore compared as exactly equal, and the order fell
+   * back to the id tiebreaker — so a genuinely better offer could be listed
+   * below a worse one. The engine had computed the difference and then
+   * discarded it before using it.
+   *
+   * This changes no weight and no score: it only stops throwing away a
+   * distinction that was already computed. The weighting question itself
+   * (how much price should count) remains open and untouched.
+   */
+  overallScoreExact?: number;
 
   // Per-criterion breakdown
   criterionScores: CriterionScore[];
@@ -1021,8 +1045,15 @@ export interface AuditEntry {
   timestamp: Date;
   /** What action was performed */
   action: string;
-  /** Result of the action */
-  result: 'success' | 'failure';
+  /**
+   * Outcome of the action. 'unknown' is NOT a soft failure: it means no
+   * determination was made — the action is still running, or the data needed
+   * to decide was not available. It must never be collapsed into 'success',
+   * which would be exactly the UNKNOWN -> certain conversion Capucine forbids.
+   * NOTE: AuditEntry is declared twice in this file; TypeScript merges the two
+   * declarations, so both MUST carry an identical `result` type.
+   */
+  result: 'success' | 'failure' | 'unknown';
   /** Additional details about the action */
   details?: string;
   /** Error message if action failed */
@@ -1132,10 +1163,15 @@ export interface PriceSnapshot {
   customsFees: number | null;
   /** Service fees */
   serviceFees: number | null;
-  /** Promotion savings */
-  promotionSavings: number;
-  /** Total cost */
-  totalCost: number;
+  /** Promotion savings actually captured. null when not determined. */
+  promotionSavings: number | null;
+  /**
+   * Total cost as captured. null when at least one required component was
+   * unknown: an unknown component must never be summed as 0. Producers are
+   * expected to derive this from CostEngine's CostBreakdown, which already
+   * propagates UNKNOWN explicitly (see application/cost-engine.ts).
+   */
+  totalCost: number | null;
   /** Currency */
   currency: string;
   /** Confidence in the price calculation */
@@ -1168,6 +1204,13 @@ export interface PromotionSnapshot {
   savingsPercent: number;
   /** Verification status */
   verificationStatus: PromotionVerificationStatus;
+  /**
+   * End of the promotion's validity window AS CAPTURED. Optional on purpose:
+   * a producer that did not capture the window leaves it absent, and absent
+   * means UNKNOWN — never "expired". VerificationEngine only reports an
+   * expiry against the captured window when this field is actually present.
+   */
+  validUntil?: Date;
   /** Captured at timestamp */
   capturedAt: Date;
 }
@@ -1315,7 +1358,7 @@ export interface VerificationDiscrepancy {
  */
 export interface VerificationIssue {
   /** Type of issue */
-  type: 'price_changed' | 'cart_changed' | 'offer_changed' | 'promotion_changed' | 'shipping_changed' | 'tax_changed' | 'fee_changed' | 'availability_changed' | 'url_changed' | 'merchant_changed' | 'expired' | 'execution_failed';
+  type: 'price_changed' | 'cart_changed' | 'offer_changed' | 'promotion_changed' | 'shipping_changed' | 'tax_changed' | 'fee_changed' | 'availability_changed' | 'url_changed' | 'merchant_changed' | 'expired' | 'execution_failed' | 'not_verified';
   /** Description */
   description: string;
   /** Detected at timestamp */

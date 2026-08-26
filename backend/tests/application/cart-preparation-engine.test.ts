@@ -212,7 +212,23 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
   });
 
   // ── RULE 3 : coût inconnu ≠ 0 ──────────────────────────────────────────
-  it("RULE 3 : coût inconnu (shippingCost unknown) → 'unavailable', pas de panier", async () => {
+  it("RULE 3 : livraison inconnue → panier préparé MAIS le manque est dit, et rien n'est compté comme 0", async () => {
+    // CONTRAT MIS À JOUR (chantier « MVP réel »).
+    //
+    // Auparavant : shippingCost 'unknown' → 'unavailable'.
+    // Ce comportement refusait 100 % des offres découvertes sur le Web — un
+    // snippet ne publie jamais de tarif de livraison, et la plupart des pages
+    // produit ne publient pas OfferShippingDetails.shippingRate non plus. La
+    // règle fermait donc tout le parcours d'achat sans protéger l'utilisateur
+    // de quoi que ce soit : l'alternative qu'elle imposait était de ne
+    // proposer AUCUN accès à une page dont Capucine avait pourtant vérifié le
+    // prix.
+    //
+    // Nouveau contrat : un prix inconnu OU contradictoire reste bloquant, une
+    // livraison CONTRADICTOIRE reste bloquante (donnée vue et en conflit),
+    // mais une livraison INCONNUE laisse préparer la redirection — à condition
+    // de dire explicitement ce qui manque. UNKNOWN reste UNKNOWN : il n'est ni
+    // sommé comme 0, ni appelé « offerte », ni fondu dans un total.
     const result = await handler.prepareCart(
       request({
         offer: offer({
@@ -223,11 +239,39 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
       })
     );
 
+    expect(result.status).toBe('partial');
+    expect(result.checkoutUrl).toBe('https://www.fnac.com/a12345/Sony-WH-1000XM5');
+    // Le panier reste un transfert de page, jamais une commande créée.
+    expect(result.cart?.status).toBe('partially_prepared');
+
+    // LE POINT ESSENTIEL : le manque est annoncé à l'utilisateur.
+    const next = result.nextAction!.toLowerCase();
+    expect(next).toContain('delivery cost');
+    expect(next).toContain('not reported');
+    // Et jamais présenté comme gratuit ni chiffré.
+    expect(next).not.toContain('free');
+    expect(next).not.toMatch(/delivery cost is \d/);
+    // Le paiement reste chez le marchand.
+    expect(next).toContain('merchant');
+  });
+
+  it("RULE 3 : prix inconnu reste bloquant même si une URL réelle existe", async () => {
+    const result = await handler.prepareCart(
+      request({
+        offer: offer({
+          merchant: merchant('fnac', ['web_redirect']),
+          executionUrl: 'https://www.fnac.com/a12345/Sony-WH-1000XM5',
+          priceStatus: 'unknown',
+          shippingCostStatus: 'unknown',
+        }),
+      })
+    );
+
+    // Sans prix, rien d'honnête ne peut être remis : on ne sait même pas ce
+    // que l'utilisateur s'apprête à regarder.
     expect(result.status).toBe('unavailable');
-    expect(result.checkoutUrl).toBeUndefined();
     expect(result.cart).toBeUndefined();
-    expect(result.nextAction?.toLowerCase()).toContain('cost');
-    expect(result.nextAction?.toLowerCase()).toContain('unknown');
+    expect(result.nextAction?.toLowerCase()).toContain('price');
   });
 
   it("RULE 3 : coût contradictoire → 'unavailable'", async () => {

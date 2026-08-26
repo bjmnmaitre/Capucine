@@ -596,6 +596,17 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
           candidate.offer.characteristics['availability'] = extracted.availability;
           changed = true;
         }
+        // Shipping RATE (OfferShippingDetails.shippingRate). A snippet never
+        // carries it, so a web offer's shippingCost starts 'unknown' — which
+        // RULE 3 (cart-preparation-engine.ts) treats as "cost not known", so
+        // the offer cannot be prepared. When the merchant DOES publish a rate,
+        // reading it here is what lets the offer become preparable at all.
+        // 'contradictory' is written through too: conflicting published rates
+        // are a fact about the page, not something to silently resolve.
+        if (extracted.shippingCost.status === 'known' || extracted.shippingCost.status === 'contradictory') {
+          candidate.offer.shippingCost = extracted.shippingCost;
+          changed = true;
+        }
         if (extracted.brand.status === 'known' && extracted.brand.value) {
           candidate.offer.characteristics['brand'] = extracted.brand;
           changed = true;
@@ -762,7 +773,21 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         id: result.domain,
         name: result.domain,
         country: 'unknown',
-        executionCapabilities: [],
+        // 'web_redirect' is a capability of CAPUCINE, not a claim about this
+        // merchant. It says only: "we hold a real, retrieved URL for this
+        // offer and can hand it to the user". WebRedirectHandler creates
+        // nothing on the merchant's side — it returns 'partially_prepared'
+        // precisely because handing over a page is not creating a cart, and
+        // its instructions end with "you will confirm payment on the merchant
+        // site — Capucine never takes payment".
+        //
+        // It is declared ONLY when a URL actually exists. An offer that
+        // carries a real executionUrl while declaring no way to use it was
+        // internally inconsistent: the redirect route existed and was
+        // unreachable, so every web-discovered offer was refused at cart
+        // preparation. Nothing here asserts an API, an account, or any
+        // verified integration with the merchant.
+        executionCapabilities: result.url ? ['web_redirect'] : [],
       },
       price: priceDP,
       currency: currency,

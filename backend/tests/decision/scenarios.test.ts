@@ -153,14 +153,32 @@ describe('Scenario 1: Permanent Profile + Punctual Demand (No Exception)', () =>
     // All satisfy hard constraints (price + wireless)
     expect(result.rejectedOffers?.length).toBeFalsy();
 
-    // CORRECTED: With proper boolean scoring for "Avoid marketplace":
-    // o1 (not marketplace) and o2 (not marketplace) score higher than o3 (is marketplace).
-    // Both o1 and o2 tie at score 75 (price differentials cancel out with equal marketplace avoidance).
-    // o1 ranks first (stable sort preserves input order when tied).
-    // Profile preferences (marketplace=important) now correctly exclude o3.
+    // Intention du scénario : la préférence permanente « éviter les
+    // marketplaces » doit écarter o3, et parmi les deux offres qui la
+    // respectent, la meilleure sur le reste doit gagner.
+    //
+    // NOTE — assertion corrigée. Elle exigeait auparavant `o1` en tête, avec
+    // pour justification que « les écarts de prix s'annulent » et que le tri
+    // stable conservait l'ordre d'entrée. Les écarts ne s'annulaient pas : ils
+    // étaient ARRONDIS. o1 et o2 sont identiques sur tous les critères sauf le
+    // prix, où o2 marque 83 contre 81 à o1. o2 est donc strictement meilleure,
+    // et o1 ne l'emportait que par le départage sur l'id. Depuis que l'ordre
+    // utilise le score non arrondi, c'est o2 qui gagne — ce qui est correct.
+    // L'ancienne attente figeait un artefact d'arrondi, pas une règle métier.
 
-    const topOffer = result.rankedOffers[0];
-    expect(topOffer.offer.id).toBe('o1'); // Marketplace avoidance correctly prioritized
+    // o3 est la marketplace : elle doit être dernière.
+    expect(result.rankedOffers[result.rankedOffers.length - 1].offer.id).toBe('o3');
+
+    // Les deux offres non-marketplace passent devant.
+    const topTwo = result.rankedOffers.slice(0, 2).map(r => r.offer.id);
+    expect(topTwo.sort()).toEqual(['o1', 'o2']);
+
+    // Et entre elles, celle qui marque le mieux sur le prix est première.
+    const scoreOf = (id: string, criterionId: string) =>
+      result.rankedOffers.find(r => r.offer.id === id)!
+        .criterionScores.find(c => c.criterionId === criterionId)!.score;
+    const [firstId, secondId] = result.rankedOffers.slice(0, 2).map(r => r.offer.id);
+    expect(scoreOf(firstId, 'price')).toBeGreaterThanOrEqual(scoreOf(secondId, 'price'));
   });
 
   test('DEBUG: Check detailed scores for Scenario 1', () => {

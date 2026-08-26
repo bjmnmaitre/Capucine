@@ -27,14 +27,16 @@ import path from 'path';
 import { CapucineEngine, SearchRequest } from '../application/capucine-engine';
 import { buildDefaultToolRegistry } from '../application/tools';
 import { detectWebSearchAdapters } from '../application/web-search-adapters';
+import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator } from '../application/ai-providers';
-import { InMemoryProfileStore } from '../application/profile-store';
+import { FileProfileStore } from '../application/profile-store';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
 import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE } from '../application/ranking-preference';
 import { createDefaultCartPreparationEngine } from '../application/cart-preparation-engine';
 import { CheckoutSessionService } from '../application/checkout-session-service';
+import { CostEngine } from '../application/cost-engine';
 import { CheckoutSession } from '../domain/types';
 
 // ============================================================================
@@ -45,11 +47,110 @@ import { CheckoutSession } from '../domain/types';
  * Build and configure the Express application.
  * Separated from listen() so the app can be tested without starting a server.
  */
-export function buildApp(): express.Application {
+/**
+ * Options for buildApp. Same injection discipline as CapucineEngine's
+ * `discoveryOrchestrator`: production passes nothing and gets the real
+ * detection, while a test can supply its own web search adapter to exercise
+ * the web-discovery path without a network call or an API key.
+ */
+export interface BuildAppOptions {
+  /** Overrides detectWebSearchAdapters(). Production must leave this unset. */
+  webAdapters?: WebSearchAdapter[];
+  /**
+   * Directory holding persisted user profiles. Defaults to
+   * PROFILE_STORE_DIR, then `<cwd>/.data/profiles`. Tests pass a temp
+   * directory so they never touch (or depend on) real profiles.
+   */
+  profileStoreDir?: string;
+}
+
+/**
+ * One structured line per search, so a real search can actually be diagnosed.
+ *
+ * Until now a search produced NO server-side trace at all. The day a real
+ * provider returns something odd — no results, offers all rejected, a total
+ * that cannot be computed — there was no way to tell which provider answered,
+ * how many results it returned, or why offers were dropped. Every field below
+ * is already computed for the response; nothing new is calculated here.
+ *
+ * DELIBERATELY NOT LOGGED: the API key (never leaves the adapter), the userId
+ * (a personal identifier — requestId is enough to correlate), and offer URLs
+ * (bulky and already in the response). The query IS logged: diagnosing "why
+ * did this search return nothing" without it is not possible.
+ */
+interface SearchDiagnosticsView {
+  requestId?: string;
+  results?: Array<{
+    productId?: string;
+    merchant?: { id?: string };
+    price?: unknown | null;
+    offerUrl?: string | null;
+    shipping?: { status?: string };
+    cost?: { certainty?: string };
+  }>;
+  summary?: { totalRejected?: number };
+  provenanceSummary?: { contributingSources?: string[] };
+  timing?: { totalMs?: number; discoveryMs?: number };
+}
+
+function logSearchDiagnostics(query: string, serialized: object): void {
+  // `serializeResult` is typed `object`; we read only the handful of fields
+  // below, so the view is declared structurally rather than widening the
+  // serializer's contract for a logging concern.
+  const payload = serialized as SearchDiagnosticsView;
+  const results = payload.results ?? [];
+  const certainty = results.reduce<Record<string, number>>((acc, offer) => {
+    const key = offer.cost?.certainty ?? 'absent';
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const diagnostics = {
+    requestId: payload.requestId,
+    query,
+    // Which sources actually contributed — empty means the local catalog only.
+    sources: payload.provenanceSummary?.contributingSources ?? [],
+    offers: results.length,
+    merchants: new Set(results.map(o => o.merchant?.id).filter(Boolean)).size,
+    products: new Set(results.map(o => o.productId).filter(Boolean)).size,
+    rejected: payload.summary?.totalRejected ?? 0,
+    withUrl: results.filter(o => Boolean(o.offerUrl)).length,
+    priceUnknown: results.filter(o => o.price === null).length,
+    shippingUnknown: results.filter(o => o.shipping?.status === 'unknown').length,
+    cost: certainty,
+    timingMs: payload.timing?.totalMs,
+    discoveryMs: payload.timing?.discoveryMs,
+  };
+
+  console.log(`[CapucineAPI] search ${JSON.stringify(diagnostics)}`);
+}
+
+export function buildApp(options: BuildAppOptions = {}): express.Application {
   const app = express();
 
   // Parse JSON bodies
   app.use(express.json({ limit: '64kb' }));
+
+  // CORS — OFF unless CORS_ORIGIN is set. Native Expo Go talks to this API
+  // without preflights, so the mobile journey needs nothing here; only a
+  // browser client (Expo web, a dev page) does. Enabling it is therefore a
+  // deliberate, explicit act: the origin is echoed from configuration, never
+  // '*', and credentials are never allowed — an API that answers every origin
+  // is a decision, not a default.
+  const corsOrigin = process.env['CORS_ORIGIN'];
+  if (corsOrigin) {
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
+      next();
+    });
+  }
 
   // Serve the minimal first-version frontend (public/) from the same
   // server/port as the API — avoids CORS and avoids requiring a second
@@ -70,7 +171,7 @@ export function buildApp(): express.Application {
 
   // Web search adapters — ALL configured sources, not just the first one, so
   // ToolRegistry can register each as its own source (multi-source discovery).
-  const webAdapters = detectWebSearchAdapters();
+  const webAdapters = options.webAdapters ?? detectWebSearchAdapters();
   const configuredAdapters = webAdapters.filter(a => a.isConfigured());
   if (configuredAdapters.length > 0) {
     console.log(`[CapucineAPI] Web search: ${configuredAdapters.map(a => a.adapterName).join(', ')} (configured)`);
@@ -81,7 +182,16 @@ export function buildApp(): express.Application {
   // Profile store — in-memory for now (swap for PostgresProfileStore in production)
   // ARCHITECTURAL NOTE: This is a stateless replacement point. The store is injected
   // here; CapucineEngine itself never touches storage.
-  const profileStore = new InMemoryProfileStore();
+  // Profiles are PERSISTENT: a preference the user saved must still be there
+  // after a restart, otherwise the feature is not worth offering. The
+  // directory sits outside `public/` (served statically just above), so
+  // profile files are never reachable over HTTP. Tests point
+  // PROFILE_STORE_DIR at a temp directory to isolate their storage.
+  const profileStore = new FileProfileStore(
+    options.profileStoreDir
+      ?? process.env['PROFILE_STORE_DIR']
+      ?? path.join(process.cwd(), '.data', 'profiles')
+  );
 
   // Conversation manager — tracks multi-turn clarification sessions (30-min TTL)
   const conversationManager = new ConversationManager();
@@ -133,10 +243,21 @@ export function buildApp(): express.Application {
           configured: aiSetup.configured,
           blocked: aiSetup.blocked,
         },
-        webSearch: {
-          status: configuredAdapters.length > 0 ? 'configured' : 'not_configured',
-          adapters: webAdapters.map(a => a.adapterName),
-        },
+        // NoOpWebSearchAdapter reports isConfigured() === true (it is a real,
+        // deliberately empty adapter), so counting configured adapters alone
+        // would answer "configured" on a server that cannot search the web at
+        // all. That reading is what makes an API key look installed when it is
+        // not, so the noop case is named for what it is: no real source.
+        webSearch: (() => {
+          const realAdapters = configuredAdapters.filter(a => a.adapterName !== 'noop');
+          return {
+            status: realAdapters.length > 0 ? 'configured' : 'no_real_source',
+            /** Reachable web search providers. Empty means results can only
+             *  come from the local catalog. */
+            providers: realAdapters.map(a => a.adapterName),
+            adapters: webAdapters.map(a => a.adapterName),
+          };
+        })(),
       },
     });
   });
@@ -337,7 +458,9 @@ export function buildApp(): express.Application {
       );
 
       // ── Serialize ─────────────────────────────────────────────────────────
-      return res.json(serializeResult(result, sessionId));
+      const payload = serializeResult(result, sessionId);
+      logSearchDiagnostics(query.trim(), payload);
+      return res.json(payload);
 
     } catch (err) {
       return next(err);
@@ -757,10 +880,31 @@ export function buildApp(): express.Application {
         capturedAt: new Date()
       };
 
-      // Create promotion snapshots (empty for now - would come from promotion engine)
-      const promotionSnapshot: PromotionSnapshot[] = [];
+      // Capture the promotions that are ACTUALLY on the prepared cart. RULE 4
+      // (cart-preparation-engine.ts) guarantees only 'verified' promotions get
+      // there, so this captures exactly what Capucine stands behind — nothing
+      // is fabricated, and an empty cart yields an empty capture.
+      const promotionSnapshot: PromotionSnapshot[] = cart.appliedPromotions.map(applied => ({
+        promotionId: applied.promotion.id,
+        code: applied.promotion.code,
+        type: applied.promotion.type,
+        discountValue: applied.promotion.discountValue ?? null,
+        discountUnit: applied.promotion.discountUnit ?? null,
+        conditions: applied.promotion.conditions,
+        savingsAmount: applied.savingsAmount,
+        savingsPercent: applied.savingsPercent,
+        verificationStatus: applied.promotion.verificationStatus,
+        validUntil: applied.promotion.validUntil,
+        capturedAt: new Date()
+      }));
 
-      // Create price snapshot from offer financial data
+      // Cost is computed by CostEngine, which propagates UNKNOWN explicitly
+      // instead of summing a missing component as 0. A total is only a total
+      // when every component is known: otherwise it is null, never a figure
+      // the user could mistake for the real price.
+      const costBreakdown = new CostEngine().computeCost(rankedOffer.offer);
+      const capturedSavings = promotionSnapshot.reduce((sum, p) => sum + p.savingsAmount, 0);
+
       const priceSnapshot: PriceSnapshot = {
         productPrice: rankedOffer.offer.price.value ?? null,
         shippingCost: rankedOffer.offer.shippingCost.value ?? null,
@@ -768,14 +912,8 @@ export function buildApp(): express.Application {
         importDuty: rankedOffer.offer.importDuties?.value ?? null,
         customsFees: null, // Not available in current Offer type
         serviceFees: null, // Not available in current Offer type
-        promotionSavings: 0,
-        totalCost: (
-          (rankedOffer.offer.price.value ?? 0) +
-          (rankedOffer.offer.shippingCost.value ?? 0) +
-          (rankedOffer.offer.taxes?.value ?? 0) +
-          (rankedOffer.offer.importDuties?.value ?? 0) +
-          (rankedOffer.offer.fees?.value ?? 0)
-        ),
+        promotionSavings: capturedSavings,
+        totalCost: costBreakdown.certainty === 'known' ? costBreakdown.totalKnown : null,
         currency: rankedOffer.offer.currency ?? 'EUR',
         confidence: 0, // Would be calculated based on data quality
         source: 'offer_data',
@@ -1087,6 +1225,22 @@ function serializeResult(
         verifiedAt: ro.offer.price.provenance?.retrievedAt?.toISOString() ?? null,
         source: ro.offer.price.provenance?.source ?? null,
       } : null,
+      // Shipping is a cost the user actually pays, so a client must be able to
+      // show it next to the price. It is ALWAYS present as an object (never
+      // omitted): `amount: null` with `status: 'unknown'` says "we do not know
+      // what delivery costs", which is a different statement from `amount: 0`
+      // ("delivery is free"). Collapsing the two would be the exact
+      // UNKNOWN -> certain conversion this codebase forbids.
+      shipping: (() => {
+        const engineCost = result.costs?.get(ro.offer.id) ?? ro.cost;
+        const dp = engineCost.shipping;
+        return {
+          amount: dp.value,
+          currency: engineCost.currency,
+          status: dp.status,
+          source: dp.provenance?.source ?? null,
+        };
+      })(),
       // Real total cost (CostEngine) — NEVER just `price` re-labeled.
       // certainty is 'known' only when every component (shipping/taxes/
       // importDuties/fees) was actually reported by a source; otherwise

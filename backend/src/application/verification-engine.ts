@@ -39,6 +39,22 @@ export class VerificationEngine {
     const blockingIssues: VerificationIssue[] = [];
     const warnings: VerificationIssue[] = [];
 
+    // A verification that never ran is NOT a verification that passed.
+    // UNKNOWN != BAD: a missing current value is no evidence that anything
+    // changed, so it never becomes a blocking issue. But it does mean we
+    // cannot claim the session was verified — see `verified` below.
+    const missingInputs: string[] = [];
+    if (!currentOffer) missingInputs.push('offer');
+    if (!currentCart) missingInputs.push('cart');
+    if (!currentMerchant) missingInputs.push('merchant');
+    for (const input of missingInputs) {
+      warnings.push({
+        type: 'not_verified',
+        description: `No current ${input} was supplied, so it could not be compared against the captured snapshot`,
+        detectedAt: new Date()
+      });
+    }
+
     // Price verification
     if (currentOffer) {
       const priceDiscrepancy = this.verifyPrice(
@@ -88,8 +104,7 @@ export class VerificationEngine {
     if (currentOffer && currentCart) {
       const promotionIssues = this.verifyPromotions(
         currentCart.appliedPromotions || [],
-        promotionSnapshot,
-        currentOffer
+        promotionSnapshot
       );
       promotionIssues.forEach(issue => {
         if (issue.severity === 'blocking') {
@@ -100,7 +115,7 @@ export class VerificationEngine {
           });
         } else {
           warnings.push({
-            type: 'promotion_changed',
+            type: issue.type ?? 'promotion_changed',
             description: issue.description,
             detectedAt: new Date()
           });
@@ -149,7 +164,9 @@ export class VerificationEngine {
     }
 
     return {
-      verified: blockingIssues.length === 0,
+      // Verified means "compared, and nothing blocking was found" — never
+      // "nothing was compared". Missing current data keeps this false.
+      verified: blockingIssues.length === 0 && missingInputs.length === 0,
       verifiedAt: new Date(),
       discrepancies,
       blockingIssues,
@@ -258,47 +275,108 @@ export class VerificationEngine {
    */
   private verifyPromotions(
     appliedPromotions: PromotionApplication[],
-    promotionSnapshots: PromotionSnapshot[],
-    currentOffer: Offer
-  ): { description: string; severity: 'warning' | 'blocking' }[] {
-    const issues: { description: string; severity: 'warning' | 'blocking' }[] = [];
+    promotionSnapshots: PromotionSnapshot[]
+  ): { description: string; severity: 'warning' | 'blocking'; type?: VerificationIssue['type'] }[] {
+    const issues: { description: string; severity: 'warning' | 'blocking'; type?: VerificationIssue['type'] }[] = [];
+    const now = new Date();
 
     for (const appliedPromo of appliedPromotions) {
-      // Check if promotion still exists in snapshots
-      const snapshotPromo = promotionSnapshots.find(p => p.promotionId === appliedPromo.promotion.id);
+      const promo = appliedPromo.promotion;
+
+      // ── Facts about the promotion as it stands NOW ──────────────────────
+      // These need no snapshot: an expired or deactivated promotion is not
+      // applicable whatever was captured earlier.
+      if (now < promo.validFrom || now > promo.validUntil) {
+        issues.push({
+          description: `Promotion ${promo.code} has expired`,
+          severity: 'blocking'
+        });
+        continue;
+      }
+
+      if (!promo.isActive) {
+        issues.push({
+          description: `Promotion ${promo.code} is no longer active`,
+          severity: 'blocking'
+        });
+        continue;
+      }
+
+      // ── Comparison against the CAPTURED state ───────────────────────────
+      // UNKNOWN != BAD. Nothing was captured at all: we cannot compare, and
+      // "we did not look" is not "the promotion changed". This is a warning,
+      // never a blocking issue — otherwise every session whose capture layer
+      // is not wired would be blocked on promotions that are perfectly fine.
+      if (promotionSnapshots.length === 0) {
+        issues.push({
+          description: `Promotion ${promo.code} was not captured at session creation, so it cannot be compared against a captured state`,
+          severity: 'warning',
+          // Not 'promotion_changed': nothing is known to have changed.
+          type: 'not_verified'
+        });
+        continue;
+      }
+
+      // A capture exists but does not contain this promotion: it was added
+      // after the snapshot was taken. That IS a demonstrated change.
+      const snapshotPromo = promotionSnapshots.find(p => p.promotionId === promo.id);
       if (!snapshotPromo) {
         issues.push({
-          description: `Promotion ${appliedPromo.promotion.code} no longer available`,
+          description: `Promotion ${promo.code} was not part of the captured state`,
           severity: 'blocking'
         });
         continue;
       }
 
-      // Check if promotion is still valid (not expired)
-      const now = new Date();
-      if (now < appliedPromo.promotion.validFrom || now > appliedPromo.promotion.validUntil) {
+      // Captured validity window. Absent = not captured = UNKNOWN: no verdict.
+      if (snapshotPromo.validUntil !== undefined && now > snapshotPromo.validUntil) {
         issues.push({
-          description: `Promotion ${appliedPromo.promotion.code} has expired`,
+          description: `Promotion ${promo.code} has expired since it was captured`,
           severity: 'blocking'
         });
         continue;
       }
 
-      // Check if promotion is still active
-      if (!appliedPromo.promotion.isActive) {
+      // The economy actually promised. A captured saving that no longer holds
+      // is exactly what this layer exists to catch: the user approved a total
+      // computed with the captured amount.
+      if (Math.abs(snapshotPromo.savingsAmount - appliedPromo.savingsAmount) > 0.01) {
         issues.push({
-          description: `Promotion ${appliedPromo.promotion.code} is no longer active`,
+          description: `Savings for promotion ${promo.code} changed from ${snapshotPromo.savingsAmount} to ${appliedPromo.savingsAmount} since capture`,
           severity: 'blocking'
         });
         continue;
       }
 
-      // Verify the discount calculation still matches
+      // Discount terms. Both sides use `null` for "no value", so an absent
+      // value on one side only is a real difference, not an unknown.
+      if (snapshotPromo.discountValue !== (promo.discountValue ?? null)) {
+        issues.push({
+          description: `Discount value for promotion ${promo.code} changed from ${snapshotPromo.discountValue} to ${promo.discountValue ?? null} since capture`,
+          severity: 'blocking'
+        });
+        continue;
+      }
+
+      // A promotion captured as verified that is no longer verified must not
+      // keep passing as a certain economy (same discipline as RULE 4 in
+      // cart-preparation-engine.ts).
+      if (snapshotPromo.verificationStatus === 'verified' && promo.verificationStatus !== 'verified') {
+        issues.push({
+          description: `Promotion ${promo.code} is no longer verified (was 'verified' at capture, now '${promo.verificationStatus}')`,
+          severity: 'blocking'
+        });
+        continue;
+      }
+
+      // Internal consistency of the application itself — this compares the
+      // application against itself, not against the snapshot, so it stays a
+      // warning: it signals a malformed PromotionApplication, not a change.
       const expectedDiscount = appliedPromo.originalPrice - appliedPromo.discountedPrice;
       const actualDiscount = appliedPromo.savingsAmount;
       if (Math.abs(expectedDiscount - actualDiscount) > 0.01) {
         issues.push({
-          description: `Discount calculation mismatch for promotion ${appliedPromo.promotion.code}`,
+          description: `Discount calculation mismatch for promotion ${promo.code}`,
           severity: 'warning'
         });
       }
