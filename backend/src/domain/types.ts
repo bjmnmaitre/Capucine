@@ -643,8 +643,21 @@ export interface CriterionScore {
   criterionName: string;
   level: PreferenceLevel;
 
-  // The actual score for this criterion (0-100 or similar)
+  // The actual score for this criterion (0-100 or similar), ROUNDED for display.
   score: number;
+
+  /**
+   * The same criterion score before rounding. AGGREGATION uses this one.
+   *
+   * WHY IT EXISTS: sub-scores were rounded to integers at computation, and the
+   * weighted total was then built from those rounded values. Two offers 10 €
+   * apart could therefore receive an identical criterion score (319 € and
+   * 329 € against a 400 € budget both round to 84), so a real difference was
+   * gone before it ever reached the total. This is the same defect as the one
+   * fixed on `overallScore`, one level lower: precision must survive until the
+   * comparison, and rounding is a display concern.
+   */
+  scoreExact?: number;
 
   // Why did it get this score?
   reasoning: string;

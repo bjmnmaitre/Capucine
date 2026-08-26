@@ -38,6 +38,7 @@
 
 import { DataPoint } from '../domain/types';
 import { SUPPORTED_COUNTRIES, SupportedCountry } from './i18n';
+import { extractHtmlFields, toDataPoint } from './html-field-extractors';
 import { COUNTRY_NAMES } from './request-interpreter';
 
 // ============================================================================
@@ -118,7 +119,13 @@ export interface ExtractedProductData {
    */
   shipsToCountries: DataPoint<SupportedCountry[]>;
   sourceUrl: string;
-  extractionMethod: 'json_ld_product';
+  /**
+   * Quelle voie a produit ces données. La distinction compte : 'json_ld_product'
+   * vient d'un balisage structuré publié par le marchand, 'html_fields' d'une
+   * lecture d'OpenGraph/microdata/meta/HTML — moins explicite, donc à ne pas
+   * confondre en aval.
+   */
+  extractionMethod: 'json_ld_product' | 'html_fields';
 }
 
 export interface PageFetcher {
@@ -649,13 +656,101 @@ function mapToExtractedData(product: Record<string, unknown>, sourceUrl: string)
  * the fetch step so it can be unit-tested with fixtures, with zero
  * network dependency.
  */
+/**
+ * Complète une extraction JSON-LD avec les champs lisibles ailleurs dans la
+ * page (OpenGraph, microdata, meta, HTML), UNIQUEMENT là où le JSON-LD n'a
+ * rien fourni. Le JSON-LD reste prioritaire : c'est la source la plus
+ * structurée et la plus explicitement publiée par le marchand.
+ *
+ * Ne remplace jamais une valeur connue par une autre. Ne comble jamais un
+ * champ contradictoire — une contradiction reste une contradiction.
+ */
+function completeWithHtmlFields(
+  base: ExtractedProductData,
+  html: string
+): ExtractedProductData {
+  const fields = extractHtmlFields(html);
+  const completed = { ...base };
+
+  if (base.price.status === 'unknown') {
+    const fromHtml = toDataPoint(fields.price);
+    if (fromHtml.status !== 'unknown') completed.price = fromHtml;
+  }
+  if (base.currency === null && fields.currency.status === 'known') {
+    completed.currency = fields.currency.value;
+  }
+  if (base.availability.status === 'unknown' && fields.availability.status === 'known') {
+    completed.availability = toDataPoint(fields.availability) as ExtractedProductData['availability'];
+  }
+  if (base.shippingCost.status === 'unknown') {
+    const fromHtml = toDataPoint(fields.shippingCost);
+    if (fromHtml.status !== 'unknown') completed.shippingCost = fromHtml;
+  }
+  if (base.productName.status === 'unknown' && fields.title.status === 'known') {
+    completed.productName = toDataPoint(fields.title);
+  }
+  if (base.brand.status === 'unknown' && fields.brand.status === 'known') {
+    completed.brand = toDataPoint(fields.brand);
+  }
+
+  return completed;
+}
+
+/**
+ * Construit une extraction à partir des SEULS champs HTML, pour les pages qui
+ * ne publient aucun JSON-LD Product. Avant cette voie, une telle page ne
+ * produisait rien du tout (mesuré : 0 % de couverture hors JSON-LD).
+ *
+ * Retourne null quand la page ne livre RIEN d'exploitable — une page vide ne
+ * doit pas devenir une offre creuse.
+ */
+function extractFromHtmlOnly(html: string, sourceUrl: string): ExtractedProductData | null {
+  const fields = extractHtmlFields(html);
+
+  // Le seuil : la page doit apporter quelque chose que le résultat de
+  // recherche ne donnait PAS déjà. Un titre seul n'en fait pas partie — le
+  // snippet en fournit un — et produirait une offre creuse. Il faut donc un
+  // prix, une disponibilité ou une marque pour justifier une extraction.
+  const addsRealInformation =
+    fields.price.status !== 'unknown' ||
+    fields.availability.status === 'known' ||
+    fields.brand.status === 'known';
+  if (!addsRealInformation) return null;
+
+  const unknownDp = <T>() => ({ value: null, status: 'unknown' as const }) as DataPoint<T>;
+
+  return {
+    price: toDataPoint(fields.price),
+    shippingCost: toDataPoint(fields.shippingCost),
+    currency: fields.currency.value,
+    availability: toDataPoint(fields.availability) as ExtractedProductData['availability'],
+    merchantName: unknownDp<string>(),
+    productName: toDataPoint(fields.title),
+    category: unknownDp<string>(),
+    ram: unknownDp<string>(),
+    screenSize: unknownDp<string>(),
+    storage: unknownDp<string>(),
+    gtin: unknownDp<string>(),
+    sku: unknownDp<string>(),
+    brand: toDataPoint(fields.brand),
+    condition: unknownDp<ExtractedProductData['condition']['value']>(),
+    shipsToCountries: unknownDp<SupportedCountry[]>(),
+    sourceUrl,
+    // Nommée distinctement du JSON-LD : la provenance de la méthode compte.
+    extractionMethod: 'html_fields',
+  } as ExtractedProductData;
+}
+
 export function extractJsonLdProduct(html: string, sourceUrl: string): ExtractedProductData | null {
   const blocks = extractJsonLdBlocks(html);
   for (const block of blocks) {
     const product = findProductNode(block);
-    if (product) return mapToExtractedData(product, sourceUrl);
+    // JSON-LD trouvé : il fait autorité, mais ses trous sont comblés par les
+    // autres formes présentes sur la même page.
+    if (product) return completeWithHtmlFields(mapToExtractedData(product, sourceUrl), html);
   }
-  return null;
+  // Aucun JSON-LD Product : on tente les autres formats plutôt que d'abandonner.
+  return extractFromHtmlOnly(html, sourceUrl);
 }
 
 // ============================================================================

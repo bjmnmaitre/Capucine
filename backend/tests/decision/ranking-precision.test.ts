@@ -105,3 +105,47 @@ describe('Le classement respecte les différences que le moteur a calculées', (
     expect(b).toEqual(a);
   });
 });
+
+describe('La précision survit aussi au niveau des SOUS-scores', () => {
+  // Second défaut d'arrondi, un niveau plus bas que le premier : chaque
+  // sous-score était arrondi à l'entier AVANT d'entrer dans le total pondéré.
+  // 319 € et 329 € face à un budget de 400 € donnaient tous deux 84, si bien
+  // qu'un écart de 10 € disparaissait avant même l'agrégation.
+  const PRICE_ONLY: PreferenceCriterion[] = [{
+    id: 'price', name: 'Prix', level: 'required',
+    parameters: { maxBudget: 400, currency: 'EUR' },
+  }];
+
+  it('deux prix proches produisent des sous-scores exacts DIFFÉRENTS', () => {
+    const ranked = rank([offer('o1', 329, 'fnac'), offer('o2', 319, 'amazon')], PRICE_ONLY);
+    const priceScore = (id: string) =>
+      ranked.find(r => r.offer.id === id)!.criterionScores.find(c => c.criterionId === 'price')!;
+
+    const cheap = priceScore('o2');
+    const dear = priceScore('o1');
+
+    // Affichés, les deux arrondissent à la même valeur…
+    expect(cheap.score).toBe(dear.score);
+    // …mais la valeur exacte distingue bien les deux prix.
+    expect(cheap.scoreExact).toBeGreaterThan(dear.scoreExact!);
+    // Et l'affiché reste l'arrondi de l'exact : aucun des deux n'est inventé.
+    expect(cheap.score).toBe(Math.round(cheap.scoreExact!));
+  });
+
+  it("l'ordre suit le prix même quand les sous-scores affichés sont égaux", () => {
+    const offers = [
+      offer('o1', 349, 'sony'), offer('o2', 329, 'fnac'),
+      offer('o3', 319, 'amazon'), offer('o4', 335, 'boulanger'),
+    ];
+    const ranked = rank(offers, [...PRICE_ONLY, ...DILUTING]);
+    const prices = ranked.map(r => r.offer.price.value!);
+    // Strictement croissant : plus aucun écart réel n'est perdu.
+    expect(prices).toEqual([...prices].sort((a, b) => a - b));
+  });
+
+  it("un écart de prix minime n'est plus effacé par l'arrondi", () => {
+    // 1 € d'écart : invisible après arrondi, mais réel.
+    const ranked = rank([offer('o1', 300, 'a'), offer('o2', 299, 'b')], [...PRICE_ONLY, ...DILUTING]);
+    expect(ranked[0].offer.price.value).toBe(299);
+  });
+});

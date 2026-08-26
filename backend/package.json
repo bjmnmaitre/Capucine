@@ -9,7 +9,9 @@
     "test:watch": "jest --watch",
     "dev": "node --env-file-if-exists=.env --import tsx src/api/server.ts",
     "type-check": "tsc --noEmit",
-    "start": "node --env-file-if-exists=.env --import tsx src/api/server.ts"
+    "start": "node --env-file-if-exists=.env --import tsx src/api/server.ts",
+    "diagnose": "node --env-file-if-exists=.env scripts/diagnose.mjs",
+    "smoke": "node scripts/smoke-test.mjs"
   },
   "keywords": [
     "shopping",
@@ -32,6 +34,7 @@
   },
   "dependencies": {
     "@types/express": "^5.0.6",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "node-html-parser": "^9.0.1"
   }
 }

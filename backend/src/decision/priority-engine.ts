@@ -95,7 +95,8 @@ function scoreOffer(
 
     // Weight scoring by preference level
     const weight = getLevelWeight(criterion.level);
-    totalScore += score.score * weight;
+    // Aggregate the UNROUNDED sub-score — see CriterionScore.scoreExact.
+    totalScore += (score.scoreExact ?? score.score) * weight;
     constraintCount += weight;
   }
 
@@ -165,13 +166,16 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
 
   switch (offerData.status) {
     case 'verified':
-    case 'known':
+    case 'known': {
       // Data is known; evaluate it
+      const exactScore = evaluateDataValue(offerData.value, criterion);
       return {
         criterionId: id,
         criterionName: name,
         level,
-        score: evaluateDataValue(offerData.value, criterion),
+        // Rounded for display; the exact value below is what aggregation uses.
+        score: Math.round(exactScore),
+        scoreExact: exactScore,
         reasoning: `Criterion '${name}' evaluated: ${formatValue(offerData.value)}`,
         dataUsed: {
           value: offerData.value,
@@ -179,6 +183,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
           source: offerData.provenance?.source,
         },
       };
+    }
 
     case 'unknown':
       // Critical: Unknown is NOT negative
@@ -287,6 +292,13 @@ function extractSpecialCriterion(offer: Offer, criterionId: string, criterion?: 
  * For CONSTRAINTS (required, forbidden): 0-100 pass/fail
  * For PREFERENCES (important, preference): 0-100 gradual scale
  */
+/**
+ * NOTE — returns FULL PRECISION on purpose. It used to round each result to an
+ * integer, which made two offers 10 € apart score identically (319 € and 329 €
+ * against a 400 € budget both became 84) and destroyed the difference before
+ * the weighted total was even computed. Callers round for display; the value
+ * that feeds aggregation must not be rounded here.
+ */
 function evaluateDataValue(rawValue: unknown, criterion: PreferenceCriterion): number {
   // Defensive coercion: catalog entries may store typed values as strings.
   // The NormalizationEngine is the canonical place to do this, but scoring must
@@ -321,7 +333,7 @@ function evaluateDataValue(rawValue: unknown, criterion: PreferenceCriterion): n
     } else {
       // Price is under/at budget: score based on how far under budget
       // Cheaper (lower ratio) = higher score
-      return Math.round(100 - ratio * 20);
+      return 100 - ratio * 20;
     }
   }
 
@@ -464,19 +476,19 @@ function evaluateDataValue(rawValue: unknown, criterion: PreferenceCriterion): n
       if (value >= targetValue) return 100;
       // Below target: score proportionally (0 at 0, up to 100 at targetValue)
       const ratio = targetValue > 0 ? value / targetValue : 0;
-      return Math.max(0, Math.round(ratio * 100));
+      return Math.max(0, ratio * 100);
     }
 
     // minValue: value must be at least minValue to score well
     if (minValue !== undefined) {
       if (value >= minValue) {
         // Meets minimum — bonus for exceeding it (up to 100)
-        const bonus = Math.min(10, Math.round(((value - minValue) / minValue) * 10));
+        const bonus = Math.min(10, ((value - minValue) / minValue) * 10);
         return Math.min(100, 85 + bonus);
       }
       // Below minimum: hard failure (score proportional to deficit)
       const ratio = minValue > 0 ? value / minValue : 0;
-      return Math.max(0, Math.round(ratio * 50)); // Max 50 if below min
+      return Math.max(0, ratio * 50); // Max 50 if below min
     }
 
     // maxValue: lower is better (e.g., weight, price for non-budget criteria)
@@ -484,7 +496,7 @@ function evaluateDataValue(rawValue: unknown, criterion: PreferenceCriterion): n
       if (value <= maxValue) {
         // Under max — better the lower the value
         const ratio = maxValue > 0 ? value / maxValue : 0;
-        return Math.round(100 - ratio * 20); // Max 100, min 80 at the limit
+        return 100 - ratio * 20; // Max 100, min 80 at the limit
       }
       // Over max: score 0
       return 0;
