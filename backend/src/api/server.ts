@@ -740,7 +740,7 @@ export function buildApp(): express.Application {
         model: (getValue(rankedOffer.offer.characteristics.model) as string | null) ?? null,
         condition: (getValue(rankedOffer.offer.characteristics.condition) as string | null) ?? null,
         seller: (getValue(rankedOffer.offer.characteristics.seller) as string | null) ?? null,
-        availability: rankedOffer.offer.availability?.value ?? null,
+        availability: (getValue(rankedOffer.offer.characteristics.availability) as string | null) ?? null,
         price: rankedOffer.offer.price.value ?? null,
         currency: rankedOffer.offer.currency ?? 'EUR',
         productUrl: (getValue(rankedOffer.offer.characteristics.productUrl) as string | null) ?? null,

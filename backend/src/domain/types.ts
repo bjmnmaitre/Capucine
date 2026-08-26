@@ -673,6 +673,7 @@ export interface ContextualSignalScore {
   signal: keyof ContextualSignals;
   /** The offer characteristic actually read, when one was found. */
   attribute?: string;
+  outcome: 'applied' | 'unknown' | 'superseded';
   /** Raw value read from the offer, when known. */
   foundValue?: unknown;
   /** Status of that value (never 'unknown' when outcome === 'applied'). */
