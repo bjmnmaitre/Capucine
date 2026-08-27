@@ -171,13 +171,13 @@ describe('Parcours produit complet sur des offres issues du Web', () => {
 
     // Et la livraison inconnue est DITE, jamais transformée en gratuité.
     const next = (res.body.nextAction as string).toLowerCase();
-    expect(next).toContain('delivery cost');
-    expect(next).toContain('not reported');
+    expect(next).toContain('livraison');
+    expect(next).toContain("n'est pas communiqué");
     expect(next).not.toContain('free delivery');
 
     // Malgré la redirection : aucun achat, aucun paiement.
     expect(res.body.purchaseCompleted).toBe(false);
-    expect(next).toContain('merchant');
+    expect(next).toContain('marchand');
   });
 
   it("un prix inconnu ferme le parcours même sur une offre du Web avec URL réelle", async () => {

@@ -157,7 +157,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
       criterionName: name,
       level,
       score: handleMissingData(level, unknownPolicy),
-      reasoning: `No data available for criterion '${name}'`,
+      reasoning: `Aucune donnée disponible pour le critère « ${name} »`,
       dataUsed: {
         status: 'unknown',
       },
@@ -176,7 +176,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
         // Rounded for display; the exact value below is what aggregation uses.
         score: Math.round(exactScore),
         scoreExact: exactScore,
-        reasoning: `Criterion '${name}' evaluated: ${formatValue(offerData.value)}`,
+        reasoning: `Critère « ${name} » évalué : ${formatValue(offerData.value)}`,
         dataUsed: {
           value: offerData.value,
           status: offerData.status,
@@ -192,7 +192,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
         criterionName: name,
         level,
         score: handleUnknownData(level, unknownPolicy),
-        reasoning: `Criterion '${name}' cannot be verified (data unknown)`,
+        reasoning: `Critère « ${name} » non vérifiable (donnée inconnue)`,
         dataUsed: {
           status: 'unknown',
           source: offerData.provenance?.source,
@@ -206,7 +206,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
         criterionName: name,
         level,
         score: handleContradictoryData(level, offerData.conflictingValues),
-        reasoning: `Criterion '${name}' has contradictory data from multiple sources: ${
+        reasoning: `Critère « ${name} » : données contradictoires entre plusieurs sources — ${
           offerData.conflictingValues?.map(formatValue).join(', ') || 'unknown'
         }`,
         dataUsed: {
@@ -222,7 +222,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
         criterionName: name,
         level,
         score: handleUnverifiableData(level),
-        reasoning: `Criterion '${name}' exists but cannot be verified`,
+        reasoning: `Critère « ${name} » présent mais non vérifiable`,
         dataUsed: {
           status: 'unverifiable',
           source: offerData.provenance?.source,
@@ -236,7 +236,7 @@ function scoreCriterion(offer: Offer, criterion: PreferenceCriterion): Criterion
         criterionName: name,
         level,
         score: 50, // Neutral
-        reasoning: `Criterion '${name}' could not be evaluated`,
+        reasoning: `Critère « ${name} » n'a pas pu être évalué`,
         dataUsed: {
           status: 'unknown',
         },
@@ -675,6 +675,9 @@ export function rankOffers(
       rejectedOffers.push({
         offer,
         reason: violatedConstraints.map((c) => c.reason).join('; '),
+        // Portés structurellement : aucun consommateur ne doit avoir à les
+        // déduire du texte ci-dessus.
+        violatedCriterionIds: [...new Set(violatedConstraints.map((c) => c.criterionId))],
       });
     } else {
       // Offer is acceptable. Only now may the usage context (if any) add a

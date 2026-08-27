@@ -13,16 +13,39 @@ import { displayText, formatMoney } from './theme';
 import type { RankedOffer } from './types';
 
 /** Libellé de livraison. « inconnue » et « offerte » ne se confondent jamais. */
-export function shippingLabel(offer: Pick<RankedOffer, 'shipping'>): string {
+/**
+ * Valeur seule, pour un tableau déjà intitulé « Livraison ».
+ *
+ * L'écran de détail en portait une COPIE, qui avait divergé : elle ne traitait
+ * pas la contradiction et affichait donc un montant disputé comme un fait.
+ * Deux implémentations d'une même règle d'honnêteté finissent toujours par
+ * diverger — il n'y en a plus qu'une.
+ */
+export function shippingValueLabel(offer: Pick<RankedOffer, 'shipping'>): string {
   const s = offer.shipping;
-  if (!s) return 'livraison inconnue';
+  if (!s) return 'inconnue';
   // La contradiction est testée AVANT l'absence de montant : elle en a un
-  // aussi (null), mais dire « inconnue » perdrait l'information la plus
-  // utile — que la page annonce deux tarifs différents.
-  if (s.status === 'contradictory') return 'livraison : information contradictoire';
-  if (s.status === 'unknown' || s.amount === null) return 'livraison inconnue';
-  if (s.amount === 0) return 'livraison offerte';
-  return `livraison ${formatMoney(s.amount, s.currency)}`;
+  // aussi, mais dire « inconnue » perdrait l'information la plus utile —
+  // que les sources annoncent deux tarifs différents.
+  if (s.status === 'contradictory') return 'information contradictoire';
+  if (s.status === 'unknown' || s.amount === null) return 'inconnue';
+  if (s.amount === 0) return 'offerte';
+  return formatMoney(s.amount, s.currency);
+}
+
+/** Phrase complète, pour une lecture continue (résumé, accessibilité). */
+export function shippingLabel(offer: Pick<RankedOffer, 'shipping'>): string {
+  const value = shippingValueLabel(offer);
+  return value === 'information contradictoire'
+    ? 'livraison : information contradictoire'
+    : `livraison ${value}`;
+}
+
+/** Le tarif de livraison est-il une donnée établie ? */
+export function isShippingKnown(offer: Pick<RankedOffer, 'shipping'>): boolean {
+  const s = offer.shipping;
+  if (!s || s.amount === null) return false;
+  return s.status === 'known' || s.status === 'verified';
 }
 
 /** Libellé du coût. Un total partiel est toujours préfixé « au moins ». */

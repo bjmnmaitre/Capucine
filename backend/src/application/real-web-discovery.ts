@@ -37,6 +37,7 @@ import { classifyMatchQuality } from './match-quality';
 import { SearchStrategyPlanner, SearchStrategy } from './search-strategy-planner';
 import { computeSearchCoverage, SearchCoverageThresholds, DEFAULT_COVERAGE_THRESHOLDS } from './search-coverage';
 import { SupportedLanguage } from './i18n';
+import { classifyPage, isOfferEligible, type PageType } from './page-classification';
 
 /** Run `fn` over `items` with at most `limit` in flight at once. Simple chunked
  *  batching — enough to bound concurrency without a full scheduler/pool. */
@@ -75,6 +76,15 @@ export interface RealWebDiscoveryOptions {
    * See SearchStrategyPlanner.buildInternationalStrategies().
    */
   internationalLanguages?: SupportedLanguage[];
+  /**
+   * Combien de pages sont récupérées et lues par recherche.
+   *
+   * Chaque lecture est une requête sortante vers un marchand ; elles partent
+   * en parallèle et sont bornées individuellement par ENRICHMENT_BUDGET_MS,
+   * si bien qu'en relever le nombre coûte des requêtes, non du temps
+   * d'horloge. Défaut : 5.
+   */
+  maxPagesRead?: number;
 }
 
 // ============================================================================
@@ -104,6 +114,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
   private readonly adapters: WebSearchAdapter[];
   private readonly registry: ToolRegistry | null;
   private readonly pageExtractor: ProductPageExtractor | null;
+  private readonly maxPagesRead: number;
   private readonly strategyPlanner = new SearchStrategyPlanner();
   private readonly maxPhases: number;
   private readonly maxConcurrentQueries: number;
@@ -111,8 +122,42 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
   private readonly internationalLanguages: SupportedLanguage[];
   private readonly coverageThresholds: SearchCoverageThresholds;
 
-  /** How many top candidates get a real page-fetch enrichment attempt per search. */
-  private static readonly MAX_ENRICHED_CANDIDATES = 5;
+  /**
+   * Combien de pages sont réellement récupérées et lues par recherche.
+   *
+   * HISTORIQUE DES MESURES — la valeur a changé de justification en cours de
+   * route, et il importe de savoir laquelle vaut aujourd'hui.
+   *
+   * 1. Portée à 12 pour améliorer le TAUX DE PRIX : aucun gain (32 % → 31 %),
+   *    pour 2,4 fois plus de requêtes sortantes. Ramenée à 5. La cause était
+   *    ailleurs : 42 % des pages sont inaccessibles (403 même à un
+   *    User-Agent de navigateur) et une part des « offres » n'en était pas.
+   *    Cette conclusion-là reste vraie : lire plus de pages n'apporte pas
+   *    plus de prix.
+   *
+   * 2. Depuis le découplage lecture/extraction, lire une page ne sert plus
+   *    seulement à en tirer un prix : elle sert à savoir si la page EST une
+   *    offre. La valeur d'une lecture a donc changé, et la mesure précédente
+   *    ne tranchait plus la question. Remesuré en conditions réelles, trois
+   *    tirages de 8 recherches chacun :
+   *
+   *      budget 5 : ~99 offres, 51-52 % avec prix, 29-32 s, 4-5 démises
+   *      budget 8 : ~91 offres, 57-59 % avec prix, 32-36 s, 5-9 démises
+   *      budget 12: ~89 offres, 52 % avec prix,    39 s,    12 démises
+   *
+   *    L'ordre est stable sur les trois tirages. Le mécanisme n'est PAS
+   *    « plus de prix trouvés » — le nombre absolu de prix bouge à peine
+   *    (50→54, 52→52, 51→54) — mais « moins de non-offres sans prix au
+   *    dénominateur » : les pages retirées après lecture sont des rubriques
+   *    et des pages de résultats, qui par nature n'ont pas de prix propre.
+   *
+   *    12 n'apporte pas davantage et coûte 7 s de plus.
+   *
+   * Injectable par `maxPagesRead` pour que le compromis reste mesurable sans
+   * recompilation, plutôt que figé dans une constante.
+   */
+  private static readonly DEFAULT_MAX_PAGES_READ = 8;
+
   /** Hard budget for the whole enrichment phase, so a slow/unreachable site never stalls the pipeline. */
   private static readonly ENRICHMENT_BUDGET_MS = 6000;
 
@@ -151,6 +196,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         : [adapterOrAdaptersOrRegistry];
     }
     this.pageExtractor = pageExtractor ?? null;
+    this.maxPagesRead = options?.maxPagesRead ?? RealWebDiscoveryStrategy.DEFAULT_MAX_PAGES_READ;
     this.maxPhases = options.maxPhases ?? 2;
     this.maxConcurrentQueries = options.maxConcurrentQueries ?? 4;
     this.maxTotalTimeMs = options.maxTotalTimeMs ?? 15_000;
@@ -370,6 +416,33 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     // filter — DeduplicationEngine does the real cross-field merge downstream).
     const candidates = this.buildCandidates(allResults, criteria);
 
+    // Optional enrichment: fetch the actual page for the top candidates and
+    // extract structured Product/Offer data (JSON-LD) to replace the
+    // fragile snippet-regex price with a real published price when possible.
+    // Best-effort only: never blocks, never overwrites good data with worse
+    // data, never invents anything when extraction fails.
+    let enrichedCount = 0;
+    /** Candidats que la lecture de la page a révélés incapables de porter une offre. */
+    const demoted = new Set<string>();
+    const readCounter = { pagesRead: 0 };
+    if (this.pageExtractor) {
+      enrichedCount = await this.enrichTopCandidates(candidates, criteria, demoted, readCounter);
+    }
+    if (demoted.size > 0) {
+      // Retiré APRÈS l'enrichissement, jamais pendant : les tâches tournent
+      // en parallèle sur ce même tableau.
+      for (let i = candidates.length - 1; i >= 0; i--) {
+        if (demoted.has(candidates[i].offer.id)) candidates.splice(i, 1);
+      }
+      console.log(
+        `[Discovery] ${demoted.size} page(s) retirée(s) après lecture — la page n'est pas une offre`
+      );
+    }
+
+    // La couverture est mesurée APRÈS la démotion : elle doit décrire les
+    // offres réellement retenues, pas celles qu'on croyait tenir avant
+    // d'avoir lu les pages. Annoncer une couverture calculée sur un ensemble
+    // qui n'existe plus reviendrait à surestimer ce qui a été trouvé.
     coverage = computeSearchCoverage(
       {
         queriesExecuted,
@@ -385,16 +458,6 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
       this.coverageThresholds
     );
 
-    // Optional enrichment: fetch the actual page for the top candidates and
-    // extract structured Product/Offer data (JSON-LD) to replace the
-    // fragile snippet-regex price with a real published price when possible.
-    // Best-effort only: never blocks, never overwrites good data with worse
-    // data, never invents anything when extraction fails.
-    let enrichedCount = 0;
-    if (this.pageExtractor) {
-      enrichedCount = await this.enrichTopCandidates(candidates, criteria);
-    }
-
     return {
       id: resultId,
       timestamp: new Date(),
@@ -407,6 +470,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         searchTimeMs: Date.now() - start,
         relevanceEstimate: candidates.length > 0 ? 'medium' : 'low',
         pageEnrichedCount: enrichedCount,
+        pagesRead: readCounter.pagesRead,
         coverage,
       },
       strategy: this.name,
@@ -442,7 +506,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
   private selectEnrichmentTargets(
     candidates: DiscoveryResult['candidates']
   ): DiscoveryResult['candidates'] {
-    const n = RealWebDiscoveryStrategy.MAX_ENRICHED_CANDIDATES;
+    const n = this.maxPagesRead;
     if (candidates.length <= n) return candidates;
 
     const MISSING_PRICE_BONUS = 0.15;
@@ -484,7 +548,11 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
    */
   private async enrichTopCandidates(
     candidates: DiscoveryResult['candidates'],
-    criteria: DiscoveryCriteria
+    criteria: DiscoveryCriteria,
+    /** Rempli par la méthode : identifiants des offres que la lecture de la page a disqualifiées. */
+    demoted: Set<string> = new Set(),
+    /** Rempli par la méthode : nombre de pages réellement récupérées et caractérisées. */
+    readCounter: { pagesRead: number } = { pagesRead: 0 }
   ): Promise<number> {
     const targets = this.selectEnrichmentTargets(candidates);
     if (targets.length === 0 || !this.pageExtractor) return 0;
@@ -521,8 +589,90 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         const url = candidate.offer.characteristics['url']?.value;
         if (typeof url !== 'string') return;
 
-        const extracted = await withTimeout(this.pageExtractor!.extract(url));
-        if (!extracted) return; // fetch/parse failed — leave snippet-only skeleton untouched
+        // ── Lecture de la page, indépendante de l'extraction produit ──────
+        // `read()` ne rend `null` que si la page n'a pas pu être récupérée.
+        // Toute page obtenue produit un instantané, y compris quand aucune
+        // donnée produit n'y est lisible — ce qui est le cas de 44 % des
+        // pages réellement lues du corpus.
+        const reading = await withTimeout(this.pageExtractor!.read(url));
+        if (!reading) return; // page inaccessible — squelette laissé intact
+        readCounter.pagesRead += 1;
+
+        // ── Second étage de classification ────────────────────────────────
+        // La page a réellement été lue : ce qu'elle déclare d'elle-même prime
+        // sur ce que sa seule URL laissait supposer. Une rubrique dont l'URL
+        // ne disait rien se révèle ici par son `ItemList`, sa pagination ou
+        // ses contrôles de tri — et ce constat existe désormais même quand
+        // l'extraction produit n'a rien donné.
+        {
+          const refined = classifyPage({
+            url,
+            title: String(candidate.offer.characteristics['title']?.value ?? ''),
+            snippet: String(candidate.offer.characteristics['description']?.value ?? ''),
+            structure: reading.snapshot.signals,
+          });
+          candidate.offer.characteristics['pageType'] = {
+            value: refined.type,
+            status: refined.confidence === 'ambiguous' ? 'unknown' : 'known',
+            provenance: { source: 'page-classification+page', retrievedAt: new Date() },
+          };
+          candidate.offer.characteristics['pageTypeEvidence'] = {
+            value: refined.signals.join(' | ') || refined.reasons[0],
+            status: 'known',
+            provenance: { source: 'page-classification+page', retrievedAt: new Date() },
+          };
+          if (!isOfferEligible(refined.type)) {
+            // La page se révèle incapable de porter une offre. On la marque —
+            // elle sera retirée après l'enrichissement — plutôt que de muter
+            // le tableau pendant que d'autres tâches parallèles le lisent.
+            demoted.add(candidate.offer.id);
+            return;
+          }
+        }
+
+        // ── URL : ce qui a été DEMANDÉ vs ce qui a été SERVI ──────────────
+        // L'URL d'exécution doit désigner la page réellement atteinte. Une
+        // adresse qui redirige reste utilisable, mais la donner comme URL
+        // d'achat reviendrait à affirmer une page qu'on n'a pas vue. On
+        // n'écrase donc qu'avec une adresse EFFECTIVEMENT observée, jamais
+        // avec une supposition, et on conserve le chemin parcouru.
+        const snap = reading.snapshot;
+        if (snap.finalUrl !== null && snap.finalUrl !== snap.requestedUrl) {
+          candidate.offer.executionUrl = snap.finalUrl;
+          candidate.offer.characteristics['url'] = {
+            value: snap.finalUrl,
+            status: 'known',
+            provenance: { source: 'page-reader:final-url', retrievedAt: new Date() },
+          };
+          candidate.offer.characteristics['requestedUrl'] = {
+            value: snap.requestedUrl,
+            status: 'known',
+            provenance: { source: 'web_search', retrievedAt: new Date() },
+          };
+          candidate.offer.characteristics['redirectChain'] = {
+            value: snap.redirectChain.join(' → '),
+            status: 'known',
+            provenance: { source: 'page-reader:final-url', retrievedAt: new Date() },
+          };
+        }
+        if (snap.canonicalUrl !== null) {
+          // Affirmation du site sur sa propre adresse. Conservée telle quelle,
+          // JAMAIS substituée à l'URL d'exécution : une fiche de variante
+          // déclare couramment la fiche mère en canonique, et acheter la mère
+          // n'est pas acheter la variante.
+          candidate.offer.characteristics['canonicalUrl'] = {
+            value: snap.canonicalUrl,
+            status: 'known',
+            provenance: { source: 'page:canonical', retrievedAt: new Date() },
+          };
+        }
+
+        // ── Extraction produit : facultative, jamais prérequis ─────────────
+        // La page a été lue et classée quoi qu'il arrive. L'absence de données
+        // produit n'annule rien de ce qui précède ; elle laisse simplement le
+        // squelette issu de l'extrait de recherche en l'état.
+        const extracted = reading.product;
+        if (!extracted) return;
 
         let changed = false;
 
@@ -696,6 +846,10 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
     criteria: DiscoveryCriteria
   ): DiscoveryResult['candidates'] {
     const candidates: DiscoveryResult['candidates'] = [];
+    /** Pages écartées parce qu'elles ne peuvent porter aucune offre. */
+    const rejectedByType: string[] = [];
+    /** Décompte par type, pour l'observabilité (§24). */
+    const rejectedTypeCounts: Partial<Record<PageType, number>> = {};
     const seenUrls = new Set<string>();
 
     for (const result of results) {
@@ -735,8 +889,55 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         keywordsTotal: keywords.length,
       });
 
+      // Une page ne devient une OFFRE que si elle peut en porter une.
+      //
+      // Deux questions distinctes, jamais confondues : « cette page vend-elle
+      // quelque chose ? » (commerciality.ts) et « cette page est-elle une
+      // offre ? » (page-classification.ts). Une rubrique marchande répond oui
+      // à la première et non à la seconde — et c'est la seconde qui décide
+      // ici, parce qu'une rubrique n'a ni prix propre, ni URL d'achat.
+      //
+      // Premier étage seulement : l'URL, le titre et l'extrait. La page n'a
+      // pas encore été téléchargée. Le second étage s'exerce à
+      // l'enrichissement, sur les candidats retenus.
+      //
+      // Asymétrie assumée : seuls les types PROUVÉS non-offres sont écartés.
+      // UNKNOWN et COMMERCIAL_UNKNOWN passent.
+      const classification = classifyPage({
+        url: result.url,
+        title: result.title,
+        snippet: result.snippet,
+      });
+      if (!classification.offerEligible) {
+        rejectedByType.push(
+          `${result.domain} [${classification.type}]: ${classification.reasons[0]}`
+        );
+        rejectedTypeCounts[classification.type] = (rejectedTypeCounts[classification.type] ?? 0) + 1;
+        continue;
+      }
+
+      const now = new Date();
       candidates.push({
-        offer: { ...offer, matchQuality },
+        offer: {
+          ...offer,
+          matchQuality,
+          characteristics: {
+            ...offer.characteristics,
+            // §18 — la classification est conservée avec la preuve qui l'a
+            // produite, pour qu'un rejet comme une promotion restent
+            // explicables après coup.
+            pageType: {
+              value: classification.type,
+              status: classification.confidence === 'ambiguous' ? 'unknown' : 'known',
+              provenance: { source: 'page-classification', retrievedAt: now },
+            },
+            pageTypeEvidence: {
+              value: classification.signals.join(' | ') || classification.reasons[0],
+              status: 'known',
+              provenance: { source: 'page-classification', retrievedAt: now },
+            },
+          },
+        },
         matchScore,
         matchReason: `Web result: "${result.title}"`,
         matchQuality,
@@ -749,11 +950,33 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
       return (a.offer.id < b.offer.id ? -1 : 1); // Stable sort by id
     });
 
+    if (rejectedByType.length > 0) {
+      // Observabilité : sans cette ligne, une offre absente serait
+      // indistinguable d'une offre jamais trouvée. Le décompte par type dit
+      // AUSSI pourquoi, ce qui est la seule façon de repérer un filtre devenu
+      // trop large sans relire le code.
+      const summary = Object.entries(rejectedTypeCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([t, n]) => `${t}=${n}`)
+        .join(' ');
+      console.log(
+        `[Discovery] ${rejectedByType.length} page(s) écartée(s) — aucune offre possible (${summary}) — `
+        + rejectedByType.slice(0, 8).join(' | ')
+      );
+    }
+
     return candidates.slice(0, criteria.limit ?? 20);
   }
 
   private buildOfferSkeleton(result: SourcedWebResult, price: number | null, currency: string): Offer {
     const id = `web-${result.domain}-${result.position}`;
+
+    // Une chaîne vide n'est pas une URL. Laissée telle quelle, elle voyageait
+    // jusqu'à `executionUrl` et se présentait comme un lien d'achat qui
+    // n'ouvre rien. Une URL absente doit être ABSENTE, pas vide.
+    const url = typeof result.url === 'string' && result.url.trim().length > 0
+      ? result.url
+      : undefined;
 
     // Price DataPoint — provenance names the EXACT source that produced this
     // result (tagged at fetch time in discover()'s runStrategies, from
@@ -787,7 +1010,7 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
         // unreachable, so every web-discovered offer was refused at cart
         // preparation. Nothing here asserts an API, an account, or any
         // verified integration with the merchant.
-        executionCapabilities: result.url ? ['web_redirect'] : [],
+        executionCapabilities: url ? ['web_redirect'] : [],
       },
       price: priceDP,
       currency: currency,
@@ -795,9 +1018,13 @@ export class RealWebDiscoveryStrategy implements IDiscoveryStrategy {
       characteristics: {
         title: { value: result.title, status: 'known', provenance: prov },
         description: { value: result.snippet, status: 'known', provenance: prov },
-        url: { value: result.url, status: 'known', provenance: prov },
+        // Absente plutôt que vide : `unknown` dit qu'on ne l'a pas, une chaîne
+        // vide prétendrait qu'on l'a.
+        url: url
+          ? { value: url, status: 'known' as const, provenance: prov }
+          : { value: null, status: 'unknown' as const },
       },
-      executionUrl: result.url,
+      executionUrl: url,
       provenance: prov,
       createdAt: now,
       retrievedAt: now,

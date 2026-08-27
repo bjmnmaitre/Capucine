@@ -127,7 +127,27 @@ export interface SearchResponse {
   summary?: SearchSummary;
   interpretation?: { productTerms?: string[]; [k: string]: unknown } | null;
   effectiveCriteria?: unknown;
-  noResultsDiagnosis?: { reason?: string; suggestion?: string } | null;
+  /**
+   * Pourquoi aucune offre n'est retenue.
+   *
+   * Le contrat déclaré ici ne correspondait PAS à celui du backend
+   * (`{ reason, suggestion }` contre `{ primaryCause, message, recoveryOptions }`).
+   * Conséquence mesurée : le diagnostic existait, était traduit, et n'était
+   * jamais affiché — l'utilisateur voyait « aucune offre » sans jamais savoir
+   * que c'était SON critère qui les avait toutes écartées.
+   */
+  noResultsDiagnosis?: {
+    primaryCause?: string;
+    /** Phrase déjà traduite par le backend. */
+    message?: string;
+    recoveryOptions?: Array<{
+      id: string;
+      type: string;
+      description: string;
+      impact: string;
+      requiresConfirmation: boolean;
+    }>;
+  } | null;
   provenanceSummary?: unknown;
 }
 

@@ -18,6 +18,7 @@
  * - browser_automation: Last resort (slow, unreliable)
  */
 
+import { translate, registerCatalog, DEFAULT_LANGUAGE, type SupportedLanguage } from './i18n';
 import { Offer, Merchant, ExecutionCapabilityType, PromotionApplication } from '../domain/types';
 
 // ============================================================================
@@ -87,8 +88,58 @@ export interface PreparedCart {
 // CART PREPARATION REQUEST
 // ============================================================================
 
+
+/**
+ * Consignes rendues à l'utilisateur au moment d'agir.
+ *
+ * Elles ne décrivent pas un état interne : elles disent où cliquer, ce qui
+ * manque et ce qu'il faudra vérifier soi-même. Elles doivent donc être dans
+ * la langue de la personne, et dire exactement ce que Capucine a fait — jamais
+ * plus. « Ouvrir la page » n'est pas « le panier est prêt ».
+ */
+registerCatalog('fr', {
+  'cart.noUrl':
+    "Aucune URL d'achat vérifiée n'est connue pour cette offre : Capucine ne peut pas vous emmener chez le marchand. "
+    + 'Cherchez cette offre sur le site du marchand pour continuer.',
+  'cart.costUnknown':
+    "Le coût réel de cette offre est inconnu ({fields} non communiqué) : Capucine ne peut pas préparer un panier honnêtement. "
+    + 'Ouvrez la page du marchand pour vérifier le prix final avant d\'acheter.',
+  'cart.openPage': 'Ouvrez la page du marchand pour finaliser votre achat.',
+  'cart.setQuantity': 'Réglez la quantité sur {quantity}.',
+  'cart.deliveryUnknown':
+    "Le coût de livraison n'est pas communiqué pour cette offre — vérifiez-le sur la page du marchand avant de payer.",
+  // Dit à chaque préparation : Capucine ne prend jamais le paiement. C'est la
+  // phrase qui empêche l'utilisateur de croire que l'achat est fait.
+  'cart.paymentOnMerchant':
+    'Vous vous connecterez et confirmerez le paiement sur le site du marchand — Capucine ne prend jamais de paiement.',
+});
+
+registerCatalog('en', {
+  'cart.noUrl':
+    'No verified purchase URL is known for this offer, so Capucine cannot take you to the merchant. '
+    + 'Search this offer on the merchant site to continue.',
+  'cart.costUnknown':
+    'The real cost of this offer is unknown ({fields} is unreported), so Capucine cannot prepare a cart on honest terms. '
+    + 'Open the merchant page to check the final price before buying.',
+  'cart.openPage': 'Open the merchant page to complete your purchase.',
+  'cart.setQuantity': 'Set the quantity to {quantity}.',
+  'cart.deliveryUnknown':
+    'The delivery cost is not reported for this offer — check it on the merchant page before paying.',
+  'cart.paymentOnMerchant':
+    'You will log in and confirm payment on the merchant site — Capucine never takes payment.',
+});
+
 export interface CartPreparationRequest {
   offer: Offer;
+  /**
+   * Langue des consignes rendues à l'utilisateur.
+   *
+   * Ces textes sont LUS par la personne au moment d'agir : ils lui disent où
+   * cliquer, ce qui manque, ce qu'elle devra vérifier elle-même. Les servir en
+   * anglais au milieu d'un parcours français était un défaut produit réel,
+   * constaté en parcourant l'application. Défaut : `fr`.
+   */
+  language?: SupportedLanguage;
   quantity: number;
   selectedVariants?: Record<string, string>;
   appliedPromo?: PromotionApplication;
@@ -165,6 +216,7 @@ export class CartPreparationEngine {
    * Selects the appropriate merchant handler based on execution capability.
    */
   async prepare(request: CartPreparationRequest): Promise<CartPreparationResult> {
+    const lang = request.language ?? DEFAULT_LANGUAGE;
     const offer = request.offer;
     const merchant = offer.merchant;
 
@@ -271,6 +323,7 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
   }
 
   async prepareCart(request: CartPreparationRequest): Promise<CartPreparationResult> {
+    const lang = request.language ?? DEFAULT_LANGUAGE;
     const offer = request.offer;
     const now = new Date();
 
@@ -282,8 +335,7 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
       return {
         status: 'unavailable',
         nextAction:
-          'No verified purchase URL is known for this offer, so Capucine cannot ' +
-          'take you to the merchant. Search this offer on the merchant site to continue.',
+          translate('cart.noUrl', lang),
       };
     }
 
@@ -293,9 +345,7 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
       return {
         status: 'unavailable',
         nextAction:
-          `The real cost of this offer is unknown (${costVerdict.unusableFields.join(' and ')} ` +
-          'is unreported), so Capucine cannot prepare a cart on honest terms. ' +
-          'Open the merchant page to check the final price before buying.',
+          translate('cart.costUnknown', lang, { fields: costVerdict.unusableFields.join(', ') }),
       };
     }
 
@@ -329,14 +379,14 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
     };
 
     const steps = [
-      'Open the merchant page to complete your purchase.',
-      request.quantity > 1 ? `Set the quantity to ${request.quantity}.` : null,
+      translate('cart.openPage', lang),
+      request.quantity > 1 ? translate('cart.setQuantity', lang, { quantity: request.quantity }) : null,
       // The delivery cost was not reported. Saying so is what makes a
       // redirect honest when the total is not knowable in advance: the user
       // is told what is missing and where they will see it.
       costVerdict.deliveryCostKnown
         ? null
-        : 'The delivery cost is not reported for this offer — check it on the merchant page before paying.',
+        : translate('cart.deliveryUnknown', lang),
       // Only mention the code if it is verified — we do not coach the user
       // into typing a code we have not confirmed the merchant accepts.
       promoHandling.instruction,
@@ -346,7 +396,7 @@ export class WebRedirectHandler implements MerchantExecutionHandler {
       status: 'partial',
       cart,
       checkoutUrl,
-      nextAction: [...steps, 'You will log in and confirm payment on the merchant site — Capucine never takes payment.'].join(' '),
+      nextAction: [...steps, translate('cart.paymentOnMerchant', lang)].join(' '),
     };
   }
 }

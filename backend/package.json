@@ -1,7 +1,7 @@
 {
   "name": "capucine-core",
   "version": "0.1.0",
-  "description": "Capucine \u2014 AI-powered shopping agent core",
+  "description": "Capucine — AI-powered shopping agent core",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -11,7 +11,8 @@
     "type-check": "tsc --noEmit",
     "start": "node --env-file-if-exists=.env --import tsx src/api/server.ts",
     "diagnose": "node --env-file-if-exists=.env scripts/diagnose.mjs",
-    "smoke": "node scripts/smoke-test.mjs"
+    "smoke": "node scripts/smoke-test.mjs",
+    "smoke:product": "node --env-file-if-exists=.env scripts/smoke-product.mjs"
   },
   "keywords": [
     "shopping",

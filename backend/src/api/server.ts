@@ -22,6 +22,7 @@
  * - Payment, purchase, affiliate — NEVER
  */
 
+import { networkInterfaces } from 'node:os';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { CapucineEngine, SearchRequest } from '../application/capucine-engine';
@@ -62,6 +63,19 @@ export interface BuildAppOptions {
    * directory so they never touch (or depend on) real profiles.
    */
   profileStoreDir?: string;
+  /**
+   * Autoriser la lecture réelle des pages marchandes.
+   *
+   * `true` en production : c'est ainsi que Capucine caractérise une page et en
+   * tire un prix publié. `false` dans les tests d'intégration, qui emploient
+   * des domaines `.example` : sans cela, chaque recherche déclenchait de
+   * vraies résolutions DNS vers des noms qui n'existent pas, ce qui ralentit
+   * la suite et la rend tributaire du réseau.
+   *
+   * Défaut : `true` — un test doit demander l'isolement, jamais la production
+   * demander la lecture.
+   */
+  enablePageEnrichment?: boolean;
 }
 
 /**
@@ -222,6 +236,9 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
   const engine = new CapucineEngine({
     aiOrchestrator: aiSetup.orchestrator,
     toolRegistry,
+    // Voir BuildAppOptions.enablePageEnrichment. Non renseigné en production,
+    // où la lecture réelle des pages est le comportement voulu.
+    enablePageEnrichment: options.enablePageEnrichment,
   });
 
   // ── Routes ─────────────────────────────────────────────────────────────────
@@ -1352,12 +1369,27 @@ function serializeResult(
       provenance: {
         source: ro.offer.provenance?.source ?? 'unknown',
         reliability: ro.offer.provenance?.reliability ?? null,
+        /**
+         * Nature de la page dont cette offre est issue, et la preuve qui l'a
+         * établie. Conservé jusqu'ici pour qu'une offre retenue reste
+         * explicable après coup — sans quoi seul un journal volatil dirait
+         * pourquoi telle page est devenue une offre et telle autre non.
+         *
+         * `null` pour les offres du catalogue local, qui ne viennent d'aucune
+         * page Web : l'absence est ici une information, pas un trou.
+         */
+        pageType: (ro.offer.characteristics['pageType']?.value as string | undefined) ?? null,
+        pageTypeEvidence: (ro.offer.characteristics['pageTypeEvidence']?.value as string | undefined) ?? null,
       },
     })),
 
     // Summary
     summary: {
-      totalFound: result.ranking.rankedOffers.length,
+      // Compté sur le tableau RÉELLEMENT renvoyé, jamais sur une source
+      // parallèle : le nombre annoncé doit toujours désigner les offres que
+      // l'utilisateur voit. `sortByPreference` ne filtre pas aujourd'hui, mais
+      // l'invariant ne doit pas dépendre de ce détail.
+      totalFound: preferenceResult.offers.length,
       totalRejected: result.admissibility.rejectedOffers.length,
       // Localized in result.language — falls back to the French text only
       // defensively (resultSummaryCode is always set by ExplanationEngine).
@@ -1487,10 +1519,20 @@ export function startServer(port?: number): void {
   const listenPort = port ?? parseInt(process.env['PORT'] ?? '3001', 10);
 
   app.listen(listenPort, () => {
-    console.log(`[CapucineAPI] Server listening on port ${listenPort}`);
-    console.log(`[CapucineAPI] POST http://localhost:${listenPort}/search`);
-    console.log(`[CapucineAPI] GET  http://localhost:${listenPort}/health`);
-    console.log(`[CapucineAPI] GET  http://localhost:${listenPort}/tools`);
+    console.log(`[CapucineAPI] Serveur à l'écoute sur le port ${listenPort}`);
+    console.log(`[CapucineAPI] Sur cette machine : http://localhost:${listenPort}/health`);
+
+    // Expo Go tourne sur un TÉLÉPHONE : `localhost` y désigne le téléphone,
+    // pas ce Mac. Annoncer l'adresse du réseau local évite la confusion la
+    // plus coûteuse au moment du premier lancement — et permet de vérifier
+    // d'un coup d'œil que le téléphone vise la bonne machine.
+    for (const [name, addrs] of Object.entries(networkInterfaces())) {
+      for (const addr of addrs ?? []) {
+        if (addr.family === 'IPv4' && !addr.internal) {
+          console.log(`[CapucineAPI] Depuis le téléphone (${name}) : http://${addr.address}:${listenPort}/health`);
+        }
+      }
+    }
   });
 }
 

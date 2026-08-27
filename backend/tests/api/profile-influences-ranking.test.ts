@@ -29,13 +29,50 @@ interface Ranked {
   criteria?: { id: string; name: string; level?: string; status: string }[];
 }
 
+/**
+ * Source d'offres DÉTERMINISTE.
+ *
+ * Cette suite affirme que retirer une préférence rétablit EXACTEMENT les
+ * scores de référence. Une telle égalité n'a de sens que si les deux
+ * recherches portent sur les mêmes offres — or, laissée à elle-même,
+ * `buildApp()` interrogeait le Web réel, dont deux appels successifs ne
+ * rendent pas la même chose. Le test échouait alors par intermittence, en
+ * dénonçant une non-reproductibilité du CLASSEMENT là où seule la SOURCE
+ * avait changé.
+ */
+function fixtureAdapter() {
+  const pages = [
+    { url: 'https://marchand-a.example/produit/casque-sony', snippet: 'Casque Sony WH-1000XM5 — 349,00 €' },
+    { url: 'https://marchand-b.example/dp/B09XS7JWHH', snippet: 'Casque Sony WH-1000XM5 — 329 €' },
+    { url: 'https://marchand-c.example/p/casque-sony', snippet: 'Casque Sony WH-1000XM5 — 429 €' },
+    { url: 'https://marchand-d.example/item/778899', snippet: 'Casque Sony WH-1000XM5 — 309,90 €' },
+  ];
+  return {
+    adapterName: 'fixture',
+    isConfigured: () => true,
+    async search() {
+      return {
+        searchEngine: 'fixture',
+        results: pages.map((p, i) => ({
+          title: 'Casque Sony WH-1000XM5', url: p.url, snippet: p.snippet,
+          domain: new URL(p.url).hostname, position: i + 1,
+        })),
+      };
+    },
+  } as never;
+}
+
 describe('Une préférence permanente influence réellement le classement', () => {
   let dir: string;
   let app: Application;
 
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'capucine-rank-profile-'));
-    app = buildApp({ profileStoreDir: dir });
+    app = buildApp({
+      profileStoreDir: dir,
+      webAdapters: [fixtureAdapter()],
+      enablePageEnrichment: false,
+    });
   });
 
   afterEach(async () => {
@@ -108,13 +145,21 @@ describe('Une préférence permanente influence réellement le classement', () =
     // L'ordre change réellement.
     expect(personalized.map(identity)).not.toEqual(neutral.map(identity));
 
-    const priceAt = (list: Ranked[], rank: number) => list[rank - 1].price?.amount;
     const dearest = Math.max(
       ...neutral.map(o => o.price?.amount).filter((p): p is number => typeof p === 'number')
     );
-    // L'offre la plus chère était première sans profil ; elle ne l'est plus.
-    expect(priceAt(neutral, 1)).toBe(dearest);
-    expect(priceAt(personalized, 1)).not.toBe(dearest);
+    const rankOfDearest = (list: Ranked[]) => {
+      const found = list.findIndex(o => o.price?.amount === dearest);
+      // Écartée par la contrainte de budget : c'est le recul le plus net qui soit.
+      return found === -1 ? Number.POSITIVE_INFINITY : found + 1;
+    };
+
+    // L'INTENTION du test : une contrainte de prix fait reculer la plus chère.
+    // Formulée d'abord comme « la plus chère était première, elle ne l'est
+    // plus », elle présupposait un jeu de données particulier — et se brisait
+    // dès que le premier rang revenait à une autre offre pour de bonnes
+    // raisons. On vérifie le recul lui-même, qui est ce qui compte.
+    expect(rankOfDearest(personalized)).toBeGreaterThan(rankOfDearest(neutral));
   });
 
   it('la préférence enregistrée apparaît dans les critères évalués de l’offre', async () => {
@@ -186,7 +231,13 @@ describe('Une préférence permanente influence réellement le classement', () =
     const before = await search('persistant');
 
     // Instance entièrement neuve : équivalent d'un redémarrage backend.
-    app = buildApp({ profileStoreDir: dir });
+    // Même source d'offres qu'avant — sans quoi on comparerait deux jeux de
+    // données différents et non la survie de la préférence.
+    app = buildApp({
+      profileStoreDir: dir,
+      webAdapters: [fixtureAdapter()],
+      enablePageEnrichment: false,
+    });
     const after = await search('persistant');
 
     // Les offerId du catalogue local sont régénérés à chaque instance : on

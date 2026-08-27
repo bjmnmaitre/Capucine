@@ -5,7 +5,7 @@
  */
 import {
   costLabel, merchantLabel, offerAccessibilityLabel, offerUrlLabel,
-  priceLabel, resultsSummary, shippingLabel,
+  priceLabel, resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
 } from './presentation';
 
 const base = {
@@ -131,5 +131,50 @@ describe('Résumé de la liste', () => {
     [4, 3, '4 offres · 3 marchands'],
   ])('%i offres / %i marchands', (c, m, expected) => {
     expect(resultsSummary(c, m)).toBe(expected);
+  });
+});
+
+/**
+ * L'écran de détail portait une COPIE de la règle de livraison, qui avait
+ * divergé : elle ne traitait pas la contradiction et affichait un montant
+ * disputé comme un fait établi. Ces tests verrouillent la source unique.
+ */
+describe('Valeur de livraison — source unique, partagée par les écrans', () => {
+  const withShipping = (shipping: unknown) => ({ shipping } as never);
+
+  it.each([
+    ['absente',                  undefined,                                          'inconnue'],
+    ['statut inconnu',           { status: 'unknown', amount: null, currency: 'EUR' }, 'inconnue'],
+    ['montant 0 mais inconnu',   { status: 'unknown', amount: 0, currency: 'EUR' },    'inconnue'],
+    ['montant absent',           { status: 'known', amount: null, currency: 'EUR' },   'inconnue'],
+    ['réellement gratuite',      { status: 'known', amount: 0, currency: 'EUR' },      'offerte'],
+  ])('%s → « %s »', (_l, shipping, expected) => {
+    expect(shippingValueLabel(withShipping(shipping))).toBe(expected);
+  });
+
+  it('un tarif contradictoire n’est jamais rendu comme un montant', () => {
+    const label = shippingValueLabel(withShipping({ status: 'contradictory', amount: 4.99, currency: 'EUR' }));
+    expect(label).toBe('information contradictoire');
+    expect(label).not.toContain('4');
+  });
+
+  it('isShippingKnown ne dit vrai que sur une donnée établie', () => {
+    expect(isShippingKnown(withShipping({ status: 'known', amount: 4.99, currency: 'EUR' }))).toBe(true);
+    expect(isShippingKnown(withShipping({ status: 'unknown', amount: null, currency: 'EUR' }))).toBe(false);
+    expect(isShippingKnown(withShipping({ status: 'contradictory', amount: 4.99, currency: 'EUR' }))).toBe(false);
+    expect(isShippingKnown(withShipping(undefined))).toBe(false);
+  });
+
+  it('les deux formulations restent cohérentes entre elles', () => {
+    for (const shipping of [
+      undefined,
+      { status: 'unknown', amount: null, currency: 'EUR' },
+      { status: 'known', amount: 0, currency: 'EUR' },
+      { status: 'known', amount: 4.99, currency: 'EUR' },
+      { status: 'contradictory', amount: 4.99, currency: 'EUR' },
+    ]) {
+      const value = shippingValueLabel(withShipping(shipping));
+      expect(shippingLabel(withShipping(shipping))).toContain(value);
+    }
   });
 });

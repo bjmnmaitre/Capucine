@@ -347,7 +347,7 @@ describe('Scenario 4: Contradictory Data is Preserved', () => {
     // Offer should be rejected due to contradiction on required criterion
     expect(result.rankedOffers.length).toBe(0);
     expect(result.rejectedOffers?.length).toBe(1);
-    expect(result.rejectedOffers?.[0].reason).toContain('contradictory');
+    expect(result.rejectedOffers?.[0].reason).toContain('contradictoires');
   });
 });
 

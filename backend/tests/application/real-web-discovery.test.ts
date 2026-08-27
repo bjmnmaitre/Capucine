@@ -295,10 +295,18 @@ describe('RealWebDiscoveryStrategy — enrichment target selection prioritizes v
     pages.set(nicheUrl, jsonLdPage(nicheMarker));
 
     const adapter = new FakeWebSearchAdapter(results);
-    const strategy = new RealWebDiscoveryStrategy(adapter, new ProductPageExtractor(new FakePageFetcher(pages)));
+    // Budget déclaré ici plutôt que hérité du défaut : ce test porte sur la
+    // PRIORISATION des pages à lire, pas sur la valeur du budget — laquelle
+    // est une mesure, donc appelée à bouger. Le figer ici rendait le test
+    // solidaire d'un réglage qu'il ne vérifie pas.
+    const strategy = new RealWebDiscoveryStrategy(
+      adapter,
+      new ProductPageExtractor(new FakePageFetcher(pages)),
+      { maxPagesRead: 5 }
+    );
 
     const result = await strategy.discover(baseCriteria());
-    expect(result.statistics.pageEnrichedCount).toBe(5); // exactly MAX_ENRICHED_CANDIDATES
+    expect(result.statistics.pageEnrichedCount).toBe(5); // exactement le budget déclaré
 
     const niche = result.candidates.find(c => c.offer.merchant.id === 'niche-shop.fr');
     // Only true if niche-shop.fr's page was actually fetched — i.e. it WAS

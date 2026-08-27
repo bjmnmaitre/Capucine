@@ -196,7 +196,7 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
     );
 
     expect(result.status).not.toBe('success'); // aucun achat n'a été effectué
-    expect(result.nextAction?.toLowerCase()).toContain('payment');
+    expect(result.nextAction?.toLowerCase()).toContain('paiement');
   });
 
   it('reporte la quantité demandée comme instruction explicite', async () => {
@@ -246,13 +246,15 @@ describe('WebRedirectHandler — jamais d\'URL inventée', () => {
 
     // LE POINT ESSENTIEL : le manque est annoncé à l'utilisateur.
     const next = result.nextAction!.toLowerCase();
-    expect(next).toContain('delivery cost');
-    expect(next).toContain('not reported');
+    // Les consignes sont rendues dans la langue de l'utilisateur (défaut fr) :
+    // ce sont des phrases qu'une personne LIT au moment d'agir.
+    expect(next).toContain('livraison');
+    expect(next).toContain("n'est pas communiqué");
     // Et jamais présenté comme gratuit ni chiffré.
-    expect(next).not.toContain('free');
-    expect(next).not.toMatch(/delivery cost is \d/);
+    expect(next).not.toMatch(/gratuit|offerte|free/);
+    expect(next).not.toMatch(/livraison[^.]{0,20}\d/);
     // Le paiement reste chez le marchand.
-    expect(next).toContain('merchant');
+    expect(next).toContain('marchand');
   });
 
   it("RULE 3 : prix inconnu reste bloquant même si une URL réelle existe", async () => {

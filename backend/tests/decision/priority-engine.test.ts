@@ -225,7 +225,7 @@ describe('Priority Engine - 14 Critical Invariants', () => {
 
     // Check that the reason mentions contradiction
     const reason = result.rejectedOffers?.[0].reason || '';
-    expect(reason).toContain('contradictory');
+    expect(reason).toContain('contradictoires');
   });
 
   // TEST 6: Multiple offers for same product

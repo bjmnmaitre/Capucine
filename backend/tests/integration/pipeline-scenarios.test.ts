@@ -1681,7 +1681,40 @@ describe('Scenario O — French technical constraint interpretation', () => {
 
     const rankedIds = result.ranking.rankedOffers.map(r => r.offer.id);
     expect(rankedIds).toContain('known-good');
-    expect(rankedIds).not.toContain('unknown-ram');
+
+    // CONTRAT MIS À JOUR — mesuré sur le Web réel.
+    //
+    // Cette assertion exigeait auparavant l'EXCLUSION de l'offre à RAM
+    // inconnue. Une campagne de 12 recherches Serper a montré ce que cela
+    // coûte : sur « MacBook Air M2 13 pouces », aucune des 18 pages
+    // marchandes trouvées ne publie sa taille d'écran de façon extractible,
+    // et la recherche renvoyait ZÉRO résultat pour une requête légitime.
+    //
+    // Rejeter une offre parce qu'une spec est INCONNUE, c'est traiter UNKNOWN
+    // comme BAD. Le titre de ce test dit « pas SILENCIEUSEMENT traité comme
+    // satisfaisant » — et c'est bien cela qui doit être garanti, pas
+    // l'exclusion. Vérifié sur la réponse API réelle : l'offre porte
+    // `criteria[].status: 'unknown'`, `dataQuality.overall: 'low'` et
+    // `missingForConstraints: ['ram']`, et l'écran de détail affiche cette
+    // phrase. L'utilisateur voit donc explicitement que le critère n'a pas pu
+    // être vérifié.
+    //
+    // Ce que le test garantit désormais, et qui est PLUS fort que l'exclusion :
+    // l'inconnu n'est jamais présenté comme satisfait, et ne devance jamais
+    // une offre qui satisfait réellement le critère.
+    const unknown = result.ranking.rankedOffers.find(r => r.offer.id === 'unknown-ram');
+    if (unknown) {
+      const ramScore = unknown.criterionScores.find(c => c.criterionId === 'ram');
+      expect(ramScore).toBeDefined();
+      // Jamais annoncé comme satisfait.
+      expect(ramScore!.dataUsed.status).toBe('unknown');
+      expect(ramScore!.reasoning.toLowerCase()).toMatch(/inconnue|aucune donnée|non vérifiable/);
+
+      // Et jamais devant l'offre qui satisfait réellement le critère.
+      const known = result.ranking.rankedOffers.find(r => r.offer.id === 'known-good')!;
+      expect(result.ranking.rankedOffers.indexOf(known))
+        .toBeLessThan(result.ranking.rankedOffers.indexOf(unknown));
+    }
   });
 });
 

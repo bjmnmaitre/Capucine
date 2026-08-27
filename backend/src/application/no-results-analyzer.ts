@@ -208,14 +208,30 @@ export class NoResultsAnalyzer {
   // ── Private ────────────────────────────────────────────────────────────────
 
   private extractRejectionPatterns(
-    rejectedOffers: Array<{ offer: Offer; reason: string }>,
+    rejectedOffers: Array<{ offer: Offer; reason: string; violatedCriterionIds?: string[] }>,
     criteria: PreferenceCriterion[]
   ): RejectionPattern[] {
     // Count how many times each criterion caused a rejection
     const criterionCounts = new Map<string, number>();
     const criterionViolations = new Map<string, string>();
 
-    for (const { reason } of rejectedOffers) {
+    for (const rejection of rejectedOffers) {
+      const { reason } = rejection;
+
+      // Voie sûre : le moteur de priorité rapporte désormais les identifiants
+      // des critères violés. On ne devine plus rien.
+      if (rejection.violatedCriterionIds && rejection.violatedCriterionIds.length > 0) {
+        for (const id of rejection.violatedCriterionIds) {
+          criterionCounts.set(id, (criterionCounts.get(id) ?? 0) + 1);
+          if (!criterionViolations.has(id)) criterionViolations.set(id, reason);
+        }
+        continue;
+      }
+
+      // Repli pour les appelants qui ne fournissent pas encore les
+      // identifiants. Analyse de prose, donc faillible : conservée comme
+      // filet, jamais comme voie principale.
+      {
       // Parse rejection reason to find which criterion ID was violated.
       // AdmissibilityEngine produces reasons like:
       //   "Price 250 exceeds maximum budget 200"
@@ -236,6 +252,7 @@ export class NoResultsAnalyzer {
       criterionCounts.set(criterionId, (criterionCounts.get(criterionId) ?? 0) + 1);
       if (!criterionViolations.has(criterionId)) {
         criterionViolations.set(criterionId, reason);
+      }
       }
     }
 

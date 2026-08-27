@@ -107,12 +107,19 @@ export function ResultsScreen({ query, response, onSelect, onBack }: Props) {
         <View style={styles.empty} accessibilityLiveRegion="polite">
           <Text style={styles.emptyTitle}>Aucune offre trouvée</Text>
           <Text style={styles.emptyBody}>
-            {response.noResultsDiagnosis?.reason ??
+            {response.noResultsDiagnosis?.message ??
               "Capucine n’a trouvé aucune offre correspondant à cette demande."}
           </Text>
-          {response.noResultsDiagnosis?.suggestion ? (
-            <Text style={styles.emptyBody}>{response.noResultsDiagnosis.suggestion}</Text>
-          ) : null}
+          {/*
+            Ce que l'utilisateur peut faire pour élargir. Chaque option demande
+            sa confirmation : Capucine ne relâche jamais un critère toute seule.
+          */}
+          {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) => (
+            <View key={option.id} style={styles.recovery}>
+              <Text style={styles.recoveryText}>{option.description}</Text>
+              {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
+            </View>
+          ))}
         </View>
       ) : (
         <FlatList
@@ -172,6 +179,9 @@ const styles = StyleSheet.create({
     fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
   },
   explanation: { fontSize: theme.font.small, color: theme.color.text, marginTop: theme.space(1) },
+  recovery: { marginTop: theme.space(1.5), paddingLeft: theme.space(1.5), borderLeftWidth: 3, borderLeftColor: theme.color.accent },
+  recoveryText: { fontSize: theme.font.body, color: theme.color.text },
+  recoveryImpact: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
   empty: { padding: theme.space(3) },
   emptyTitle: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text },
   emptyBody: {

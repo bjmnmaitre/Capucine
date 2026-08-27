@@ -175,6 +175,15 @@ export interface DiscoveryResult {
      *  enrichment (JSON-LD). Optional — only present when a ProductPageExtractor
      *  was provided to the discovery strategy. */
     pageEnrichedCount?: number;
+    /**
+     * Pages effectivement RÉCUPÉRÉES et caractérisées.
+     *
+     * Distinct de `pageEnrichedCount`, qui ne compte que les offres dont une
+     * donnée a réellement changé. Une page peut être lue et classée sans rien
+     * apporter au produit — c'est le cas de 44 % des pages du corpus. Confondre
+     * les deux ferait passer une lecture réussie pour un échec.
+     */
+    pagesRead?: number;
     /** Search-coverage assessment (see search-coverage.ts). Optional — only
      *  populated by strategies that run multiple queries/phases and need to
      *  decide "have I searched enough?" (currently RealWebDiscoveryStrategy). */

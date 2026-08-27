@@ -839,6 +839,17 @@ export interface RankingResult {
   rejectedOffers?: {
     offer: Offer;
     reason: string;
+    /**
+     * Identifiants des critères réellement violés.
+     *
+     * `reason` est une phrase destinée à être LUE. S'en servir pour retrouver
+     * quel critère a bloqué revient à analyser de la prose : c'est ce que
+     * faisait NoResultsAnalyzer, par expression régulière, et une simple
+     * reformulation suffisait à lui faire perdre le critère — l'utilisateur
+     * apprenait alors qu'une contrainte l'avait bloqué, sans qu'on puisse
+     * lui proposer de l'assouplir.
+     */
+    violatedCriterionIds?: string[];
   }[];
 
   // Metadata

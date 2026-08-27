@@ -372,7 +372,15 @@ export class DeduplicationEngine {
         });
 
       if (dataPoints.length <= 1) {
-        // Only one source — keep as-is
+        // Une seule source connaît ce champ. Il faut tout de même le reporter :
+        // partir de `best.characteristics` et passer son chemin faisait
+        // disparaître en silence toute donnée détenue par une offre autre que
+        // `best` — un EAN, un SKU, une destination de livraison, un type de
+        // page. « Connu par une seule source » n'est pas « inconnu ».
+        if (!(key in mergedCharacteristics) && dataPoints.length === 1) {
+          const { sourceId: _s, sourceName: _n, ...dp } = dataPoints[0];
+          mergedCharacteristics[key] = dp as DataPoint<unknown>;
+        }
         continue;
       }
 
@@ -463,6 +471,20 @@ export class DeduplicationEngine {
    * another merchant's, and its provenance names only the sources that actually
    * reported THAT offer — never the union of the whole group.
    */
+  /**
+   * Caractéristiques qui décrivent LA PAGE de cette offre, et non le produit.
+   *
+   * Deux marchands vendant le même casque n'ont pas la même page : l'un publie
+   * une fiche offre complète, l'autre une page dont on ne sait rien. Fusionner
+   * ces champs au niveau produit revenait à attribuer à une offre la page
+   * d'une autre — exactement la confusion Product / Offer que le modèle
+   * interdit — et pouvait faire disparaître le type de page d'une offre au
+   * profit de celui d'une offre voisine.
+   */
+  private static readonly OWN_PAGE_FACTS = [
+    'pageType', 'pageTypeEvidence', 'url', 'requestedUrl', 'canonicalUrl', 'redirectChain',
+  ] as const;
+
   resolveOffers(group: DeduplicationGroup): Offer[] {
     if (group.offers.length === 0) return [];
 
@@ -485,6 +507,28 @@ export class DeduplicationEngine {
       offerBuckets.push(...this.splitByCondition(sameLocation));
     }
 
+    /** Reprend, depuis l'offre elle-même, ce qui décrit sa propre page. */
+    const ownPageFacts = (offer: Offer): Record<string, DataPoint<unknown>> => {
+      const own: Record<string, DataPoint<unknown>> = {};
+      for (const key of DeduplicationEngine.OWN_PAGE_FACTS) {
+        const dp = offer.characteristics[key];
+        if (dp !== undefined) own[key] = dp;
+      }
+      return own;
+    };
+
+    // Les faits de page sont RETIRÉS de la connaissance produit, pas seulement
+    // réécrasés ensuite. Les y laisser suffisait à contaminer : une URL
+    // canonique connue d'une seule offre remontait au niveau produit, puis
+    // redescendait sur toutes les autres, qui se voyaient alors attribuer une
+    // page qu'elles n'ont jamais eue.
+    const productCharacteristics: Record<string, DataPoint<unknown>> = {};
+    for (const [key, value] of Object.entries(mergedCharacteristics)) {
+      if (!(DeduplicationEngine.OWN_PAGE_FACTS as readonly string[]).includes(key)) {
+        productCharacteristics[key] = value;
+      }
+    }
+
     const resolved: Offer[] = [];
     for (const duplicates of offerBuckets) {
       // Same offer reported by several sources: pick the most complete row as
@@ -497,8 +541,9 @@ export class DeduplicationEngine {
 
       resolved.push({
         ...base,
-        // Product-level knowledge, shared by every offer of this product.
-        characteristics: mergedCharacteristics,
+        // Product-level knowledge, shared by every offer of this product —
+        // MAIS jamais les faits propres à la page de CETTE offre.
+        characteristics: { ...productCharacteristics, ...ownPageFacts(base) },
         provenance: {
           // Only the sources that reported THIS offer. A '+' here means "two
           // search sources found this same listing", never "several merchants".

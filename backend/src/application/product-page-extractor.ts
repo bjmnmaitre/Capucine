@@ -40,6 +40,9 @@ import { DataPoint } from '../domain/types';
 import { SUPPORTED_COUNTRIES, SupportedCountry } from './i18n';
 import { extractHtmlFields, toDataPoint } from './html-field-extractors';
 import { COUNTRY_NAMES } from './request-interpreter';
+import { PageReader, type PageSnapshot } from './page-reader';
+import { collectPageStructureEvidence as collectPageStructureEvidenceLocal } from './page-structure-evidence';
+import type { PageStructureEvidence } from './page-classification';
 
 // ============================================================================
 // TYPES
@@ -126,10 +129,50 @@ export interface ExtractedProductData {
    * confondre en aval.
    */
   extractionMethod: 'json_ld_product' | 'html_fields';
+  /**
+   * Ce que la page déclare de sa propre STRUCTURE — liste, pagination,
+   * balisage produit, contrôles de tri. Relevé ici parce que le document est
+   * déjà téléchargé et analysé : le second étage de la classification de page
+   * (page-classification.ts) n'a pas d'autre occasion de voir le HTML.
+   *
+   * Absent quand la page n'a pas pu être lue. Ne décrit jamais le produit —
+   * uniquement la nature du document qui le porte.
+   */
+  structure?: PageStructureEvidence;
+}
+
+/**
+ * Ce qu'une récupération a réellement produit.
+ *
+ * Les URL sont tenues distinctes parce qu'elles répondent à des questions
+ * différentes, et les confondre revient à affirmer ce qu'on n'a pas observé :
+ *
+ *   requestedUrl — ce qu'on a DEMANDÉ (vient du fournisseur de recherche) ;
+ *   finalUrl     — ce qui a été SERVI, après redirections ;
+ *   redirectChain— le chemin parcouru, conservé pour la provenance.
+ *
+ * L'URL canonique, elle, est déclarée par la page et relevée ailleurs
+ * (page-reader.ts) : c'est une affirmation du site, pas une observation
+ * réseau.
+ */
+export interface FetchedPage {
+  html: string;
+  requestedUrl: string;
+  /** Identique à `requestedUrl` quand aucune redirection n'a eu lieu. */
+  finalUrl: string;
+  /** Sauts effectivement suivis, dans l'ordre. Vide sans redirection. */
+  redirectChain: string[];
 }
 
 export interface PageFetcher {
   fetch(url: string, timeoutMs?: number): Promise<string | null>;
+  /**
+   * Récupération rapportant l'URL finale. Optionnelle : un récupérateur de
+   * test qui n'implémente que `fetch()` reste valide, et l'appelant sait
+   * alors qu'il n'a PAS observé d'URL finale — plutôt que de supposer
+   * qu'elle vaut l'URL demandée.
+   */
+  fetchPage?(url: string, timeoutMs?: number): Promise<FetchedPage | null>;
 }
 
 // ============================================================================
@@ -212,31 +255,107 @@ export class HttpPageFetcher implements PageFetcher {
    */
   private static readonly MAX_RESPONSE_BYTES = 3 * 1024 * 1024; // 3 MB
 
-  async fetch(url: string, timeoutMs = 8000): Promise<string | null> {
-    // Refused before any network call is made.
-    if (!isFetchableUrl(url, this.allowPrivateHosts)) return null;
+  /**
+   * Nombre maximal de redirections suivies.
+   *
+   * Au-delà, la page est abandonnée. Une chaîne plus longue relève soit d'une
+   * boucle, soit d'un site qu'il ne sert à rien de poursuivre.
+   */
+  private static readonly MAX_REDIRECTS = 5;
 
+  async fetch(url: string, timeoutMs = 8000): Promise<string | null> {
+    return (await this.fetchPage(url, timeoutMs))?.html ?? null;
+  }
+
+  async fetchPage(url: string, timeoutMs = 8000): Promise<FetchedPage | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, {
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'CapucineBot/0.1 (+shopping research agent; respects robots.txt)',
-          Accept: 'text/html',
-        },
-      });
+      const hop = await this.followRedirects(url, controller.signal);
+      if (hop === null) return null;
+
+      const { res, finalUrl, redirectChain } = hop;
       if (!res.ok) return null;
       const contentType = res.headers.get('content-type') ?? '';
       if (!contentType.includes('text/html')) return null;
-      return await this.readBounded(res);
+
+      return {
+        html: await this.readBounded(res),
+        requestedUrl: url,
+        finalUrl,
+        redirectChain,
+      };
     } catch {
       // Network error, abort/timeout, or any other failure — never throw.
       return null;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Suit les redirections À LA MAIN, en revalidant CHAQUE saut.
+   *
+   * Auparavant : `redirect: 'follow'`, avec la garde SSRF appliquée à la seule
+   * URL de départ. Une page distante — donc non fiable, puisque son adresse
+   * vient d'un moteur de recherche — n'avait qu'à répondre
+   * `302 Location: http://169.254.169.254/…` ou `http://127.0.0.1:…` pour que
+   * le processus aille chercher lui-même une ressource interne. La garde était
+   * intégralement contournable par une redirection.
+   *
+   * Chaque saut est désormais soumis à `isFetchableUrl` avant d'être suivi,
+   * les boucles sont détectées, et le nombre de sauts est borné.
+   */
+  private async followRedirects(
+    startUrl: string,
+    signal: AbortSignal
+  ): Promise<{ res: Response; finalUrl: string; redirectChain: string[] } | null> {
+    let current = startUrl;
+    const redirectChain: string[] = [];
+    const visited = new Set<string>([startUrl]);
+
+    for (let hop = 0; hop <= HttpPageFetcher.MAX_REDIRECTS; hop++) {
+      // Revalidé à CHAQUE saut, y compris le premier.
+      if (!isFetchableUrl(current, this.allowPrivateHosts)) return null;
+
+      const res = await fetch(current, {
+        signal,
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'CapucineBot/0.1 (+shopping research agent; respects robots.txt)',
+          Accept: 'text/html',
+        },
+      });
+
+      // Seul un 3xx EXPLICITE est une redirection. Formulé en positif à
+      // dessein : la forme inverse traitait un statut absent ou illisible
+      // comme une redirection, et poursuivait alors une `Location` qui n'en
+      // était pas une.
+      const isRedirect = typeof res.status === 'number' && res.status >= 300 && res.status < 400;
+      if (!isRedirect) {
+        return { res, finalUrl: current, redirectChain };
+      }
+
+      const location = res.headers.get('location');
+      if (!location) return null; // 3xx sans destination exploitable
+
+      let next: string;
+      try {
+        // Résolue par rapport au saut courant : une `Location` relative est
+        // légitime, et la reconstruire à partir de l'URL de départ produirait
+        // une adresse fausse.
+        next = new URL(location, current).toString();
+      } catch {
+        return null; // destination illisible
+      }
+
+      if (visited.has(next)) return null; // boucle de redirection
+      visited.add(next);
+      redirectChain.push(next);
+      current = next;
+    }
+
+    return null; // trop de redirections
   }
 
   /**
@@ -741,7 +860,44 @@ function extractFromHtmlOnly(html: string, sourceUrl: string): ExtractedProductD
   } as ExtractedProductData;
 }
 
+/**
+ * Relève les données produit ET la nature structurelle du document.
+ *
+ * Le relevé de structure est attaché ici, à l'unique endroit où le HTML est
+ * disponible : l'enrichissement ne repasse jamais sur la page. Il est joint
+ * même quand aucune donnée produit n'a pu être extraite, car « cette page est
+ * une rubrique » est une information utile précisément dans ce cas.
+ */
+/**
+ * Extrait les données produit et y joint le constat de structure déjà établi.
+ *
+ * Le constat n'est PAS recalculé ici : il vient du lecteur de page, qui l'a
+ * produit que l'extraction réussisse ou non. C'est tout l'objet du découplage.
+ */
+function extractProductFromHtml(
+  html: string,
+  sourceUrl: string,
+  snapshot: PageSnapshot
+): ExtractedProductData | null {
+  const data = extractProductData(html, sourceUrl);
+  if (data === null) return null;
+  return { ...data, structure: snapshot.signals };
+}
+
+/**
+ * Voie directe HTML → données produit, sans réseau.
+ *
+ * Le constat de structure y est recalculé sur place, faute de lecteur de page
+ * en amont. Les appelants qui disposent d'un `PageSnapshot` doivent préférer
+ * `ProductPageExtractor.read()`, qui ne l'analyse qu'une fois.
+ */
 export function extractJsonLdProduct(html: string, sourceUrl: string): ExtractedProductData | null {
+  const data = extractProductData(html, sourceUrl);
+  if (data === null) return null;
+  return { ...data, structure: collectPageStructureEvidenceLocal(html) };
+}
+
+function extractProductData(html: string, sourceUrl: string): ExtractedProductData | null {
   const blocks = extractJsonLdBlocks(html);
   for (const block of blocks) {
     const product = findProductNode(block);
@@ -757,18 +913,63 @@ export function extractJsonLdProduct(html: string, sourceUrl: string): Extracted
 // PUBLIC ENTRY POINT (fetch + extract)
 // ============================================================================
 
+/**
+ * Résultat complet d'une visite de page : ce qu'elle EST, et ce qu'elle
+ * VEND — les deux séparément, parce qu'ils s'obtiennent séparément.
+ */
+export interface PageReading {
+  /**
+   * Ce que la page déclare d'elle-même. TOUJOURS présent dès lors que la page
+   * a été récupérée, y compris quand aucun produit n'y est lisible.
+   */
+  snapshot: PageSnapshot;
+  /**
+   * Données produit, quand la page en publie. `null` sur 44 % des pages
+   * réellement lues du corpus — une proportion qui rend intolérable de faire
+   * dépendre la lecture de la page de ce succès-là.
+   */
+  product: ExtractedProductData | null;
+}
+
 export class ProductPageExtractor {
-  constructor(private readonly fetcher: PageFetcher = new HttpPageFetcher()) {}
+  private readonly reader: PageReader;
+
+  constructor(private readonly fetcher: PageFetcher = new HttpPageFetcher()) {
+    // L'extracteur est un CONSOMMATEUR du lecteur, jamais l'inverse : lire une
+    // page ne doit rien devoir à la capacité d'y trouver un produit.
+    this.reader = new PageReader(fetcher);
+  }
+
+  /**
+   * Visite une page et rend les deux lectures indépendantes.
+   *
+   * @returns `null` UNIQUEMENT si la page n'a pas pu être récupérée. Une page
+   *   obtenue rend toujours un `snapshot`; `product` vaut `null` quand elle
+   *   ne publie rien d'exploitable. Confondre ces deux `null` — page
+   *   inaccessible et page sans produit — était le défaut corrigé ici.
+   */
+  async read(url: string, timeoutMs = 8000): Promise<PageReading | null> {
+    const page = await this.reader.read(url, timeoutMs);
+    if (page === null) return null;
+    return {
+      snapshot: page.snapshot,
+      // Une seule récupération réseau : l'extraction travaille sur le document
+      // déjà en main, jamais sur un second téléchargement.
+      product: extractProductFromHtml(page.html, url, page.snapshot),
+    };
+  }
 
   /**
    * Fetches `url` and extracts structured Product/Offer data if present.
    * Returns null on ANY failure (network, timeout, no JSON-LD, no Product
    * node) — callers must treat null as "could not enrich", never as an error
    * to propagate, and must never fall back to inventing a value.
+   *
+   * Conservée pour les appelants qui ne s'intéressent qu'au produit. Ceux qui
+   * ont besoin de savoir ce qu'EST la page doivent passer par `read()`, seul
+   * capable de le dire quand aucun produit n'est lisible.
    */
   async extract(url: string, timeoutMs = 8000): Promise<ExtractedProductData | null> {
-    const html = await this.fetcher.fetch(url, timeoutMs);
-    if (html === null) return null;
-    return extractJsonLdProduct(html, url);
+    return (await this.read(url, timeoutMs))?.product ?? null;
   }
 }

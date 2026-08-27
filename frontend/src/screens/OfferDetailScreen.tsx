@@ -3,6 +3,7 @@ import {
   ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { prepareCart } from '../api';
+import { shippingValueLabel, isShippingKnown } from '../presentation';
 import { ApiError, PrepareCartResponse, RankedOffer } from '../types';
 import { CERTAINTY_LABEL, displayText, formatMoney, formatScore, theme } from '../theme';
 
@@ -10,15 +11,6 @@ interface Props {
   offer: RankedOffer;
   sessionId: string | null;
   onBack: () => void;
-}
-
-/** An unknown delivery cost is not a free delivery. */
-function shippingLabel(offer: RankedOffer): string {
-  const s = offer.shipping;
-  if (!s) return 'inconnue';
-  if (s.status === 'unknown' || s.amount === null) return 'inconnue';
-  if (s.amount === 0) return 'offerte';
-  return formatMoney(s.amount, s.currency);
 }
 
 const CRITERION_STATUS: Record<string, string> = {
@@ -104,8 +96,8 @@ export function OfferDetailScreen({ offer, sessionId, onBack }: Props) {
         />
         <Row
           label="Livraison"
-          value={shippingLabel(offer)}
-          muted={offer.shipping ? offer.shipping.status === 'unknown' : true}
+          value={shippingValueLabel(offer)}
+          muted={!isShippingKnown(offer)}
         />
         <Row
           label={isTotalKnown ? 'Coût total' : 'Coût total connu à ce jour'}

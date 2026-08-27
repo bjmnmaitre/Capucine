@@ -1053,6 +1053,18 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
    * constraint, not a hint. characteristics.screen_size is normalized to a plain
    * number of inches by NormalizationEngine before admissibility runs, so a small
    * tolerance absorbs rounding (13.9" listed as "14 pouces" by a merchant, etc.).
+   *
+   * unknownPolicy: 'pass' — MESURÉ SUR LE WEB RÉEL. Une campagne de 12
+   * recherches Serper a montré qu'aucune des 18 pages marchandes trouvées
+   * pour « MacBook Air M2 13 pouces » ne publie cette spec sous une forme
+   * extractible : les 18 offres étaient rejetées et la recherche renvoyait
+   * ZÉRO résultat pour une requête pourtant parfaitement légitime.
+   *
+   * Rejeter une offre parce que la spec est INCONNUE, c'est traiter UNKNOWN
+   * comme BAD — l'invariant que ce projet interdit. 'pass' ne relâche PAS la
+   * contrainte : une offre qui publie une valeur CONTRADICTOIRE avec la
+   * demande reste rejetée. Seules les offres dont la spec est réellement
+   * inconnue passent, signalées par un avertissement.
    * Returns the matched substring (for span-stripping), or null.
    */
   private extractScreenSize(text: string, interpretation: InterpretedRequest): string | null {
@@ -1072,7 +1084,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
             id: 'screen_size',
             name: "Taille d'écran",
             level: 'required',
-            parameters: { exactValue: value, tolerance: 0.5, unit: 'pouces' },
+            parameters: { exactValue: value, tolerance: 0.5, unit: 'pouces', unknownPolicy: 'pass' },
           });
         }
         return match[0];
@@ -1115,7 +1127,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
             id: 'ram',
             name: 'Mémoire RAM',
             level: 'required',
-            parameters: { minValue: value, unit: 'GB' },
+            parameters: { minValue: value, unit: 'GB', unknownPolicy: 'pass' }, // voir la note sur screen_size : UNKNOWN != BAD, mesuré sur le Web réel
           });
         }
         return match[0];
@@ -1195,7 +1207,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
             id: 'storage',
             name: 'Stockage',
             level: 'required',
-            parameters: { minValue: value, unit: 'GB' },
+            parameters: { minValue: value, unit: 'GB', unknownPolicy: 'pass' }, // voir la note sur screen_size : UNKNOWN != BAD, mesuré sur le Web réel
           });
         }
         return match[0];

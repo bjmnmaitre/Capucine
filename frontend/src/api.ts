@@ -30,7 +30,14 @@ function resolveBaseUrl(): string {
 
 export const API_BASE_URL = resolveBaseUrl();
 
-const REQUEST_TIMEOUT_MS = 20000;
+/**
+ * Une recherche réelle enchaîne plusieurs requêtes au moteur PUIS la lecture
+ * de plusieurs pages marchandes. Mesuré : médiane ~4 s, mais un site lent
+ * pousse au-delà de 10 s. Le délai doit laisser aboutir ce qui aboutit —
+ * abandonner trop tôt afficherait « service injoignable » alors que le
+ * service travaille.
+ */
+const REQUEST_TIMEOUT_MS = 45000;
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const controller = new AbortController();
@@ -109,7 +116,17 @@ async function request<T>(method: 'GET' | 'PUT' | 'DELETE', path: string, body?:
   }
 
   const raw = await response.text();
-  const parsed = raw.length > 0 ? JSON.parse(raw) : null;
+  // Analysé sous garde, comme dans postJson : une réponse illisible (page
+  // d'erreur d'un proxy, HTML d'un portail Wi-Fi) faisait remonter une
+  // SyntaxError brute jusqu'à l'écran, au lieu d'un message compréhensible.
+  let parsed: unknown = null;
+  if (raw.length > 0) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new ApiError('server', 'Réponse illisible du service.', raw.slice(0, 200));
+    }
+  }
   if (!response.ok) {
     const payload = parsed as { message?: string; error?: string } | null;
     throw new ApiError(

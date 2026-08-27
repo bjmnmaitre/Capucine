@@ -152,7 +152,7 @@ describe('20 parcours produit de bout en bout', () => {
     const cart = await prepare(a, res.body.session.sessionId, offer.offerId);
     // Le manque est ANNONCÉ, et la redirection reste possible.
     expect(cart.body.status).toBe('partial');
-    expect(cart.body.nextAction.toLowerCase()).toContain('delivery cost');
+    expect(cart.body.nextAction.toLowerCase()).toContain('livraison');
   });
 
   it('7. coût partiellement connu : jamais présenté comme un total', async () => {

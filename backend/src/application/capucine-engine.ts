@@ -394,7 +394,16 @@ export class CapucineEngine {
         // price heuristic. Independently toggleable via enablePageEnrichment.
         const enrichPages = options.enablePageEnrichment ?? true;
         const pageExtractor = enrichPages ? new ProductPageExtractor() : undefined;
-        const webStrategy = new RealWebDiscoveryStrategy(this.toolRegistry, pageExtractor);
+        const webStrategy = new RealWebDiscoveryStrategy(this.toolRegistry, pageExtractor, {
+          // Réglable sans recompilation, pour que le compromis « requêtes
+          // sortantes vs pages caractérisées » reste mesurable en conditions
+          // réelles. Une valeur illisible est ignorée plutôt que de faire
+          // tomber la recherche.
+          maxPagesRead: (() => {
+            const raw = Number(process.env.CAPUCINE_MAX_PAGES_READ);
+            return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
+          })(),
+        });
         this.discoveryOrchestrator.registerStrategy(webStrategy, true);
       }
     }
@@ -647,6 +656,13 @@ export class CapucineEngine {
     const rejectedForRanking = admissibility.rejectedOffers.map((r: RejectedOffer) => ({
       offer: r.offer,
       reason: r.primaryViolation,
+      // Portés jusqu'au diagnostic. Sans eux, NoResultsAnalyzer retrouvait le
+      // critère bloquant en analysant `primaryViolation` à l'expression
+      // régulière : il en tirait « Livrable » là où le critère s'appelle
+      // `deliversTo`, ne le retrouvait pas dans la liste, et ne proposait donc
+      // AUCUNE façon de s'en sortir. L'utilisateur apprenait qu'un critère
+      // l'avait bloqué, sans jamais pouvoir l'assouplir.
+      violatedCriterionIds: [...new Set(r.violations.map(v => v.criterionId))],
     }));
 
     // ── Stage 8: Ranking (PriorityEngine) ─────────────────────────────────────
@@ -863,6 +879,13 @@ export class CapucineEngine {
     const rejectedForRanking = admissibility.rejectedOffers.map((r: RejectedOffer) => ({
       offer: r.offer,
       reason: r.primaryViolation,
+      // Portés jusqu'au diagnostic. Sans eux, NoResultsAnalyzer retrouvait le
+      // critère bloquant en analysant `primaryViolation` à l'expression
+      // régulière : il en tirait « Livrable » là où le critère s'appelle
+      // `deliversTo`, ne le retrouvait pas dans la liste, et ne proposait donc
+      // AUCUNE façon de s'en sortir. L'utilisateur apprenait qu'un critère
+      // l'avait bloqué, sans jamais pouvoir l'assouplir.
+      violatedCriterionIds: [...new Set(r.violations.map(v => v.criterionId))],
     }));
 
     // ── Stage 7bis: Purchase readiness + real cost + data quality ────────────
