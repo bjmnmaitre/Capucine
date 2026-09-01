@@ -31,6 +31,7 @@ import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator } from '../application/ai-providers';
 import { FileProfileStore } from '../application/profile-store';
+import { merchantExclusionsFromProfile } from '../domain/profile';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
@@ -475,7 +476,23 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
       );
 
       // ── Serialize ─────────────────────────────────────────────────────────
-      const payload = serializeResult(result, sessionId);
+      // Permanent "never buy from X" preferences apply from the FIRST search,
+      // not only after a session "sans X" follow-up. Same presentation-time
+      // filter, so their effect is visible and reportable.
+      const profileMerchantExclusions = merchantExclusionsFromProfile(profile);
+      const payload = serializeResult(
+        result,
+        sessionId,
+        undefined,
+        profileMerchantExclusions.length > 0
+          ? {
+              rankingPreference: DEFAULT_RANKING_PREFERENCE,
+              targetCountries: [DEFAULT_COUNTRY],
+              destinationCountry: DEFAULT_COUNTRY,
+              excludedMerchantNames: profileMerchantExclusions,
+            }
+          : undefined
+      );
       logSearchDiagnostics(query.trim(), payload);
       return res.json(payload);
 
@@ -1162,7 +1179,10 @@ function serializeResult(
   // "exclue Amazon" — filtered at presentation time (free-text merchant
   // name, not a catalog id — see extractMerchantExclusion()). Applied AFTER
   // ranking, never re-runs discovery/admissibility for fewer candidates.
+  // Source is either a session follow-up ("sans Amazon") OR a permanent
+  // profile preference — both land here.
   const excludedNames = sessionState?.excludedMerchantNames ?? [];
+  let merchantExclusions: { requested: string[]; hiddenOfferCount: number; hiddenMerchants: string[] } | null = null;
   if (excludedNames.length > 0) {
     const excludedOffers = preferenceResult.offers.filter(ro =>
       excludedNames.some(name => ro.offer.merchant.name.toLowerCase().includes(name.toLowerCase()))
@@ -1170,6 +1190,11 @@ function serializeResult(
     preferenceResult = {
       ...preferenceResult,
       offers: preferenceResult.offers.filter(ro => !excludedOffers.includes(ro)),
+    };
+    merchantExclusions = {
+      requested: excludedNames,
+      hiddenOfferCount: excludedOffers.length,
+      hiddenMerchants: [...new Set(excludedOffers.map(ro => ro.offer.merchant.name))],
     };
   }
 
@@ -1212,6 +1237,12 @@ function serializeResult(
     // e.g. BEST_VALUE — so the order silently stayed BEST_MATCH; never
     // claim a preference was honored when it wasn't).
     rankingPreference: { preference: preferenceResult.preference, applied: preferenceResult.applied },
+
+    // Merchant exclusions actually applied to THIS list (session "sans X" or a
+    // permanent profile preference). null when nothing was excluded. Lets a
+    // client say honestly "3 offres de Amazon masquées (votre préférence)"
+    // instead of the list just being silently shorter.
+    merchantExclusions,
 
     // destination: where the user would receive the product (FR by default)
     // vs. which countries Capucine actually searched IN this turn — kept

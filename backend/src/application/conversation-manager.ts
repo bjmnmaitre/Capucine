@@ -27,6 +27,7 @@
  */
 
 import { UserProfile, PreferenceCriterion, UsageContext } from '../domain/types';
+import { merchantExclusionsFromProfile } from '../domain/profile';
 import { mergeUsageContexts } from '../domain/usage-context-mapping';
 import { ClarificationItem } from './clarification-engine';
 import type { SearchEngineResult } from './capucine-engine';
@@ -330,7 +331,10 @@ export class ConversationManager {
       destinationCountry: DEFAULT_COUNTRY,
       targetCountries: [DEFAULT_COUNTRY],
       rankingPreference: DEFAULT_RANKING_PREFERENCE,
-      excludedMerchantNames: [],
+      // Permanent "never buy from X" preferences carry into the session so a
+      // later "et le moins cher" follow-up keeps excluding them. Additive with
+      // any session "sans Y" the user adds afterwards.
+      excludedMerchantNames: merchantExclusionsFromProfile(profile),
       excludedOfferIds: [],
       seenMerchantNames: SeenOffers.merchantNamesOf(result),
       seenProductIds: SeenOffers.productIdsOf(result),

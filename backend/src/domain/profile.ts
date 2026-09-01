@@ -110,6 +110,59 @@ export interface ConflictResolution {
 }
 
 // ============================================================================
+// PERSISTENT MERCHANT EXCLUSIONS
+// ============================================================================
+
+/**
+ * A permanent "never buy from this merchant" preference.
+ *
+ * Represented as a normal PreferenceCriterion (so it persists, round-trips
+ * and is edited through the exact same /profile plumbing as any other
+ * preference) following a convention the discovery layer already uses
+ * (capucine-engine.ts reads `forbidden` + id starting with `merchant-`):
+ *
+ *   { id: 'merchant-exclude-<slug>', level: 'forbidden',
+ *     name: 'Ne pas acheter chez <Name>',
+ *     parameters: { merchantName: '<name as typed>' } }
+ *
+ * The exclusion is applied at PRESENTATION time (serializeResult) — the same
+ * substring match on the merchant name that a session "sans Amazon" uses —
+ * so it is honest and reportable ("N offres masquées"), not a silent
+ * discovery filter whose effect the user cannot see.
+ */
+export const MERCHANT_EXCLUSION_ID_PREFIX = 'merchant-exclude-';
+
+export function isMerchantExclusionCriterion(c: PreferenceCriterion): boolean {
+  return c.level === 'forbidden' && c.id.startsWith(MERCHANT_EXCLUSION_ID_PREFIX);
+}
+
+/** The merchant name a given exclusion criterion targets, or null if the
+ *  criterion is not a well-formed exclusion. */
+export function merchantNameOfExclusion(c: PreferenceCriterion): string | null {
+  if (!isMerchantExclusionCriterion(c)) return null;
+  const fromParams = c.parameters?.['merchantName'];
+  if (typeof fromParams === 'string' && fromParams.trim().length > 0) {
+    return fromParams.trim();
+  }
+  // Fall back to the slug in the id (dashes → spaces) so an exclusion saved
+  // without parameters still works.
+  const slug = c.id.slice(MERCHANT_EXCLUSION_ID_PREFIX.length).replace(/-+/g, ' ').trim();
+  return slug.length > 0 ? slug : null;
+}
+
+/**
+ * Every merchant name the profile permanently excludes, lowercased and
+ * de-duplicated. Empty when the profile excludes nothing. Pure.
+ */
+export function merchantExclusionsFromProfile(profile: UserProfile): string[] {
+  const names = profile.preferences.criteria
+    .map(merchantNameOfExclusion)
+    .filter((n): n is string => n !== null)
+    .map((n) => n.toLowerCase());
+  return [...new Set(names)];
+}
+
+// ============================================================================
 // PROFILE ENGINE
 // ============================================================================
 
