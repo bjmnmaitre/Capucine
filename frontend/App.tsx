@@ -17,7 +17,11 @@ import { theme } from './src/theme';
  * what /prepare-cart needs, so it is threaded through rather than re-derived.
  */
 type Step =
-  | { name: 'search' }
+  // `prefillQuery` lives on the step itself, not as separate App state: it
+  // is naturally exactly as long-lived as this visit to the search screen —
+  // any transition away and back through a different path starts blank
+  // again, with no leftover state to remember to clear.
+  | { name: 'search'; prefillQuery?: string }
   | { name: 'results'; query: string; response: SearchResponse }
   | { name: 'detail'; query: string; response: SearchResponse; offer: RankedOffer }
   // Side-by-side comparison of 2–3 offers the user picked from the results.
@@ -37,12 +41,6 @@ export default function App() {
   // the list stays visible and interactive while a follow-up is being applied.
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
-
-  // Pre-fills the search box when the user comes back to reformulate — e.g.
-  // from a 0-result screen's "Reformuler la recherche" action. Consumed once
-  // by SearchScreen's initial state; cleared right after so a later, unrelated
-  // visit to the search screen starts blank again.
-  const [prefillQuery, setPrefillQuery] = useState('');
 
   // The UNTOUCHED response from the very first /search of the current
   // journey — never overwritten by a refine. "Repartir de la recherche
@@ -148,9 +146,8 @@ export default function App() {
    *  the query that found nothing pre-filled so the user edits it rather
    *  than starts from a blank field. */
   function onReformulate(query: string) {
-    setPrefillQuery(query);
     setRefineError(null);
-    setStep({ name: 'search' });
+    setStep({ name: 'search', prefillQuery: query });
   }
 
   return (
@@ -164,8 +161,8 @@ export default function App() {
           health={health}
           checkingHealth={checkingHealth}
           onRecheckHealth={recheckHealth}
-          initialQuery={prefillQuery}
-          onSearch={(q) => { setPrefillQuery(''); void onSearch(q); }}
+          initialQuery={step.prefillQuery}
+          onSearch={onSearch}
           onOpenProfile={() => setStep({ name: 'profile' })}
         />
       ) : step.name === 'profile' ? (
