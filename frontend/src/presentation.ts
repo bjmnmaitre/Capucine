@@ -111,6 +111,32 @@ export function resultsSummary(count: number, merchants: number): string {
   return `${count} ${o} · ${merchants} ${m}`;
 }
 
+/**
+ * Index de l'offre au coût total connu le plus bas parmi celles fournies —
+ * ou `null` quand la comparaison ne peut pas être faite honnêtement : une
+ * des offres a un coût inconnu, ou les devises diffèrent. Sert à mettre en
+ * gras la cellule gagnante de l'écran de comparaison, jamais à reclasser.
+ */
+export function lowestKnownCostIndex(
+  offers: Array<Pick<RankedOffer, 'cost'>>
+): number | null {
+  if (offers.length === 0) return null;
+  const costs = offers.map((o) =>
+    o.cost && o.cost.certainty !== 'unknown'
+      && typeof o.cost.totalKnown === 'number' && Number.isFinite(o.cost.totalKnown)
+      ? { amount: o.cost.totalKnown, currency: o.cost.currency || 'EUR' }
+      : null
+  );
+  if (costs.some((c) => c === null)) return null;
+  const known = costs as Array<{ amount: number; currency: string }>;
+  if (new Set(known.map((c) => c.currency)).size > 1) return null;
+  let bestIdx = 0;
+  for (let i = 1; i < known.length; i++) {
+    if (known[i].amount < known[bestIdx].amount) bestIdx = i;
+  }
+  return bestIdx;
+}
+
 // ============================================================================
 // EXPLICATION DU CLASSEMENT — pourquoi cette offre est là où elle est
 // ============================================================================

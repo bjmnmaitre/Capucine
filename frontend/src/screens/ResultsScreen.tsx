@@ -14,8 +14,11 @@ interface Props {
   onRefine: (answer: string) => void;
   onResetRefinements: () => void;
   onSelect: (offer: RankedOffer) => void;
+  onCompare: (offers: RankedOffer[]) => void;
   onBack: () => void;
 }
+
+const MAX_COMPARE = 3;
 
 /** Ready-made refinements — the phrasings the backend's follow-up interpreter
  *  reliably understands, offered as one tap instead of forcing the user to
@@ -35,11 +38,13 @@ function certaintyStyle(certainty: string) {
 }
 
 function OfferRow({
-  offer, allOffers, ranking, onPress,
+  offer, allOffers, ranking, compareMode, selected, onPress,
 }: {
   offer: RankedOffer;
   allOffers: RankedOffer[];
   ranking: SearchResponse['rankingPreference'];
+  compareMode: boolean;
+  selected: boolean;
   onPress: () => void;
 }) {
   // `price` is null when the backend could not extract one. 'prix inconnu'
@@ -58,29 +63,44 @@ function OfferRow({
 
   // One spoken sentence per offer, now including WHY it sits here: a
   // screen-reader user gets the recommendation reasoning without opening the card.
-  const a11yLabel =
-    `Offre numéro ${offer.rank}${recommended ? ', recommandée' : ''}. ` +
-    `${displayText(offer.merchant?.name, 'Marchand inconnu')}. ` +
-    `Prix ${price}, ${shipping}. ` +
-    `${CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}, ${totalLabel}. ` +
-    why.join(' ');
+  const a11yLabel = compareMode
+    ? `${selected ? 'Sélectionnée pour comparaison' : 'Non sélectionnée'}. `
+      + `Offre numéro ${offer.rank}, ${displayText(offer.merchant?.name, 'Marchand inconnu')}, `
+      + `prix ${price}, ${shipping}.`
+    : `Offre numéro ${offer.rank}${recommended ? ', recommandée' : ''}. `
+      + `${displayText(offer.merchant?.name, 'Marchand inconnu')}. `
+      + `Prix ${price}, ${shipping}. `
+      + `${CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}, ${totalLabel}. `
+      + why.join(' ');
 
   return (
     <Pressable
       onPress={onPress}
-      accessibilityRole="button"
+      accessibilityRole={compareMode ? 'checkbox' : 'button'}
+      accessibilityState={compareMode ? { checked: selected } : undefined}
       accessibilityLabel={a11yLabel}
-      accessibilityHint="Ouvre le détail complet de cette offre"
+      accessibilityHint={
+        compareMode ? 'Touchez pour ajouter ou retirer de la comparaison' : 'Ouvre le détail complet de cette offre'
+      }
       style={({ pressed }) => [
-        styles.card, recommended && styles.cardRecommended, pressed && styles.cardPressed,
+        styles.card,
+        recommended && !compareMode && styles.cardRecommended,
+        selected && styles.cardSelected,
+        pressed && styles.cardPressed,
       ]}
     >
       <View style={styles.cardHead}>
-        <Text style={styles.rank}>#{offer.rank}</Text>
+        {compareMode ? (
+          <Text style={[styles.checkbox, selected && styles.checkboxOn]}>
+            {selected ? '☑' : '☐'}
+          </Text>
+        ) : (
+          <Text style={styles.rank}>#{offer.rank}</Text>
+        )}
         <Text style={styles.merchant} numberOfLines={1}>
           {displayText(offer.merchant?.name, 'Marchand inconnu')}
         </Text>
-        {recommended ? <Text style={styles.recommendedTag}>✓ Recommandée</Text> : null}
+        {recommended && !compareMode ? <Text style={styles.recommendedTag}>✓ Recommandée</Text> : null}
       </View>
 
       <Text style={styles.price}>{price}</Text>
@@ -225,30 +245,68 @@ function RefinementBar({
 }
 
 export function ResultsScreen({
-  query, response, refining, refineError, onRefine, onResetRefinements, onSelect, onBack,
+  query, response, refining, refineError, onRefine, onResetRefinements, onSelect, onCompare, onBack,
 }: Props) {
   const results = response.results ?? [];
   const productIds = new Set(results.map((r) => r.productId));
   const merchantIds = new Set(results.map((r) => r.merchant?.id).filter(Boolean));
 
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectedOffers = results.filter((r) => selectedIds.includes(r.offerId));
+
+  function toggleCompareMode() {
+    setCompareMode((on) => !on);
+    setSelectedIds([]);
+  }
+
+  function toggleSelected(offerId: string) {
+    setSelectedIds((cur) => {
+      if (cur.includes(offerId)) return cur.filter((id) => id !== offerId);
+      if (cur.length >= MAX_COMPARE) return cur; // silently capped
+      return [...cur, offerId];
+    });
+  }
+
+  const canCompare = results.length >= 2;
+
   return (
     <View style={styles.flex}>
       <View style={styles.header}>
-        <Pressable
-          onPress={onBack}
-          accessibilityRole="button"
-          accessibilityLabel="Revenir à la recherche"
-          style={({ pressed }) => [styles.back, pressed && styles.cardPressed]}
-        >
-          <Text style={styles.backText}>‹ Recherche</Text>
-        </Pressable>
+        <View style={styles.headerTop}>
+          <Pressable
+            onPress={onBack}
+            accessibilityRole="button"
+            accessibilityLabel="Revenir à la recherche"
+            style={({ pressed }) => [styles.back, pressed && styles.cardPressed]}
+          >
+            <Text style={styles.backText}>‹ Recherche</Text>
+          </Pressable>
+          {canCompare ? (
+            <Pressable
+              onPress={toggleCompareMode}
+              accessibilityRole="button"
+              accessibilityLabel={compareMode ? 'Quitter le mode comparaison' : 'Comparer des offres'}
+              accessibilityState={{ selected: compareMode }}
+              style={({ pressed }) => [styles.compareToggle, compareMode && styles.compareToggleOn, pressed && styles.cardPressed]}
+            >
+              <Text style={[styles.compareToggleText, compareMode && styles.compareToggleTextOn]}>
+                {compareMode ? 'Annuler' : '⇄ Comparer'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
         <Text style={styles.query} numberOfLines={2} accessibilityRole="header">{query}</Text>
         <Text style={styles.counts}>
           {results.length} offre{results.length > 1 ? 's' : ''} · {merchantIds.size} marchand
           {merchantIds.size > 1 ? 's' : ''} · {productIds.size} produit
           {productIds.size > 1 ? 's' : ''}
         </Text>
-        {response.summary?.resultSummary ? (
+        {compareMode ? (
+          <Text style={styles.summary} accessibilityLiveRegion="polite">
+            Choisissez 2 ou 3 offres à comparer ({selectedIds.length}/{MAX_COMPARE}).
+          </Text>
+        ) : response.summary?.resultSummary ? (
           <Text style={styles.summary}>{response.summary.resultSummary}</Text>
         ) : null}
       </View>
@@ -300,7 +358,9 @@ export function ResultsScreen({
               offer={item}
               allOffers={results}
               ranking={response.rankingPreference}
-              onPress={() => onSelect(item)}
+              compareMode={compareMode}
+              selected={selectedIds.includes(item.offerId)}
+              onPress={() => (compareMode ? toggleSelected(item.offerId) : onSelect(item))}
             />
           )}
           ListFooterComponent={
@@ -310,6 +370,19 @@ export function ResultsScreen({
           }
         />
       )}
+
+      {compareMode && selectedOffers.length >= 2 ? (
+        <View style={styles.compareBar}>
+          <Pressable
+            onPress={() => onCompare(selectedOffers)}
+            accessibilityRole="button"
+            accessibilityLabel={`Comparer les ${selectedOffers.length} offres sélectionnées`}
+            style={({ pressed }) => [styles.compareGo, pressed && styles.cardPressed]}
+          >
+            <Text style={styles.compareGoText}>Comparer ({selectedOffers.length})</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -320,8 +393,16 @@ const styles = StyleSheet.create({
     padding: theme.space(2), backgroundColor: theme.color.surface,
     borderBottomWidth: 1, borderBottomColor: theme.color.border,
   },
+  headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   back: { minHeight: theme.minTouch, justifyContent: 'center' },
   backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
+  compareToggle: {
+    minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
+    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.accent,
+  },
+  compareToggleOn: { backgroundColor: theme.color.accent },
+  compareToggleText: { color: theme.color.accent, fontSize: theme.font.small, fontWeight: '700' },
+  compareToggleTextOn: { color: theme.color.accentText },
   query: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text },
   counts: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
@@ -377,6 +458,9 @@ const styles = StyleSheet.create({
     minHeight: theme.minTouch,
   },
   cardPressed: { opacity: 0.75 },
+  cardSelected: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#EAF0FE' },
+  checkbox: { fontSize: 20, color: theme.color.textMuted },
+  checkboxOn: { color: theme.color.accent },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1) },
   rank: {
     fontSize: theme.font.small, fontWeight: '700', color: theme.color.accentText,
@@ -423,4 +507,14 @@ const styles = StyleSheet.create({
     fontSize: 12, color: theme.color.textMuted,
     textAlign: 'center', marginTop: theme.space(1),
   },
+  compareBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    padding: theme.space(2), backgroundColor: theme.color.surface,
+    borderTopWidth: 1, borderTopColor: theme.color.border,
+  },
+  compareGo: {
+    minHeight: theme.minTouch + 4, borderRadius: theme.radius,
+    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
+  },
+  compareGoText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
 });

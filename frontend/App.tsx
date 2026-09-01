@@ -7,6 +7,7 @@ import { SearchScreen } from './src/screens/SearchScreen';
 import { ResultsScreen } from './src/screens/ResultsScreen';
 import { OfferDetailScreen } from './src/screens/OfferDetailScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
+import { CompareScreen } from './src/screens/CompareScreen';
 import { theme } from './src/theme';
 
 /**
@@ -19,6 +20,8 @@ type Step =
   | { name: 'search' }
   | { name: 'results'; query: string; response: SearchResponse }
   | { name: 'detail'; query: string; response: SearchResponse; offer: RankedOffer }
+  // Side-by-side comparison of 2–3 offers the user picked from the results.
+  | { name: 'compare'; query: string; response: SearchResponse; offers: RankedOffer[] }
   // Permanent preferences live outside the search flow on purpose: entering
   // them must never carry search state, and leaving them must not disturb it.
   | { name: 'profile' };
@@ -117,7 +120,13 @@ export default function App() {
           onRefine={onRefine}
           onResetRefinements={onResetRefinements}
           onSelect={(offer) => setStep({ ...step, name: 'detail', offer })}
+          onCompare={(offers) => setStep({ ...step, name: 'compare', offers })}
           onBack={() => { setRefineError(null); setStep({ name: 'search' }); }}
+        />
+      ) : step.name === 'compare' ? (
+        <CompareScreen
+          offers={step.offers}
+          onBack={() => setStep({ name: 'results', query: step.query, response: step.response })}
         />
       ) : (
         <OfferDetailScreen

@@ -4,9 +4,9 @@
  * inconnue pourrait devenir une affirmation sur l'écran de l'utilisateur.
  */
 import {
-  costLabel, explainOfferRanking, merchantLabel, offerAccessibilityLabel, offerUrlLabel,
-  priceLabel, rankingPreferenceLabel, resultsSummary, shippingLabel,
-  shippingValueLabel, isShippingKnown,
+  costLabel, explainOfferRanking, lowestKnownCostIndex, merchantLabel,
+  offerAccessibilityLabel, offerUrlLabel, priceLabel, rankingPreferenceLabel,
+  resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
 } from './presentation';
 import { formatMoney } from './theme';
 
@@ -301,5 +301,26 @@ describe('explainOfferRanking — situer une offre, jamais inventer', () => {
 
   it('toujours au moins un point (la position)', () => {
     expect(explainOfferRanking(offer({}), []).length).toBeGreaterThan(0);
+  });
+});
+
+describe('lowestKnownCostIndex — n’élit un gagnant que si la comparaison est licite', () => {
+  const c = (totalKnown: number | null, certainty: string, currency = 'EUR') =>
+    ({ cost: { totalKnown, certainty, currency, unknownComponents: [] } } as never);
+
+  it('renvoie l’index du coût connu le plus bas', () => {
+    expect(lowestKnownCostIndex([c(90, 'known'), c(79, 'known'), c(120, 'partially_known')])).toBe(1);
+  });
+
+  it('null si une offre a un coût inconnu', () => {
+    expect(lowestKnownCostIndex([c(90, 'known'), c(null, 'unknown')])).toBeNull();
+  });
+
+  it('null si les devises diffèrent', () => {
+    expect(lowestKnownCostIndex([c(50, 'known', 'EUR'), c(40, 'known', 'USD')])).toBeNull();
+  });
+
+  it('null sur une liste vide', () => {
+    expect(lowestKnownCostIndex([])).toBeNull();
   });
 });
