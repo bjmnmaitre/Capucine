@@ -79,14 +79,24 @@ describe('sortByPreference', () => {
     expect(reasonCodeFor('PRICE_LOWEST', result.offers[0], 1)).toBe('RANKED_LOWEST_KNOWN_COST');
   });
 
-  // ---- BEST_VALUE/FASTEST_DELIVERY/BEST_RATED are prepared, NOT implemented ----
-  it('BEST_VALUE/FASTEST_DELIVERY/BEST_RATED are accepted but never reorder anything (honestly reported via applied:false — PRÉPARÉ, PAS BRANCHÉ)', () => {
+  // ---- BEST_VALUE/FASTEST_DELIVERY/BEST_RATED : acceptés mais INERTES ----
+  it('BEST_VALUE/FASTEST_DELIVERY/BEST_RATED ne réordonnent rien ET se déclarent non pris en charge (supported:false + raison)', () => {
     const ranked = [makeRanked('a', 1200, known(0), 95), makeRanked('b', 900, known(0), 60)];
     for (const pref of ['BEST_VALUE', 'FASTEST_DELIVERY', 'BEST_RATED'] as const) {
       const result = sortByPreference(ranked, pref);
-      expect(result.offers.map(o => o.offer.id)).toEqual(['a', 'b']); // PriorityEngine order preserved
+      expect(result.offers.map(o => o.offer.id)).toEqual(['a', 'b']); // ordre PriorityEngine préservé
       expect(result.applied).toBe(false);
+      // Nouveau : la préférence dit explicitement qu'elle est inerte, avec pourquoi.
+      expect(result.supported).toBe(false);
+      expect(result.unsupportedReasonCode).toBeDefined();
     }
+  });
+
+  it('BEST_MATCH et PRICE_LOWEST se déclarent pris en charge', () => {
+    const ranked = [makeRanked('a', 1200, known(0), 95)];
+    expect(sortByPreference(ranked, 'BEST_MATCH').supported).toBe(true);
+    expect(sortByPreference(ranked, 'PRICE_LOWEST').supported).toBe(true);
+    expect(sortByPreference(ranked, 'BEST_MATCH').unsupportedReasonCode).toBeUndefined();
   });
 
   it('never mutates the original RankedOffer array', () => {

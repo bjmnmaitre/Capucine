@@ -28,11 +28,17 @@ registerCatalog('fr', {
   RANKED_LOWEST_KNOWN_COST: 'Coût total le plus bas parmi les offres comparées (produit, livraison et frais connus inclus).',
   RANKED_LOWEST_PARTIAL_COST: 'Coût le plus bas parmi les composantes connues — certains frais (livraison, taxes ou douane) restent inconnus et pourraient changer ce classement.',
   RANKED_BEST_MATCH: 'Meilleure correspondance avec vos critères.',
+  RANKING_UNSUPPORTED_NO_DELIVERY_DATA: 'Aucune source ne fournit de délai de livraison fiable : Capucine ne peut pas trier par rapidité de livraison sans l’inventer.',
+  RANKING_UNSUPPORTED_NO_RATINGS_DATA: 'Aucune source ne fournit de note produit fiable : Capucine ne peut pas trier par avis.',
+  RANKING_UNSUPPORTED_BEST_VALUE: 'Le tri « meilleur rapport qualité-prix » demande une pondération que Capucine n’applique pas encore.',
 });
 registerCatalog('en', {
   RANKED_LOWEST_KNOWN_COST: 'Lowest total cost among the compared offers (product, shipping, and known fees included).',
   RANKED_LOWEST_PARTIAL_COST: 'Lowest cost among known components — some fees (shipping, taxes, or duties) remain unknown and could change this ranking.',
   RANKED_BEST_MATCH: 'Best match for your criteria.',
+  RANKING_UNSUPPORTED_NO_DELIVERY_DATA: 'No source provides a reliable delivery time: Capucine will not sort by delivery speed by inventing one.',
+  RANKING_UNSUPPORTED_NO_RATINGS_DATA: 'No source provides reliable product ratings: Capucine cannot sort by reviews.',
+  RANKING_UNSUPPORTED_BEST_VALUE: 'Sorting by "best value" needs a weighting Capucine does not apply yet.',
 });
 
 export type RankingPreference =
@@ -56,6 +62,30 @@ export function isRankingPreference(value: unknown): value is RankingPreference 
   return typeof value === 'string' && (RANKING_PREFERENCES as readonly string[]).includes(value);
 }
 
+/**
+ * Can a preference currently do ANYTHING, or is it accepted-but-inert?
+ *
+ * `FASTEST_DELIVERY` is inert because no discovery source yields a reliable
+ * delivery time. schema.org OfferShippingDetails.deliveryTime exists but is
+ * absent from the vast majority of real merchant pages, and Capucine will not
+ * turn a "livraison rapide" snippet into "livré demain" (INVARIANT 9). Rather
+ * than silently accept the preference and do nothing, the result says so.
+ */
+export const RANKING_PREFERENCE_SUPPORT: Record<
+  RankingPreference,
+  { supported: boolean; unsupportedReasonCode?: string }
+> = {
+  BEST_MATCH: { supported: true },
+  PRICE_LOWEST: { supported: true },
+  FASTEST_DELIVERY: { supported: false, unsupportedReasonCode: 'RANKING_UNSUPPORTED_NO_DELIVERY_DATA' },
+  BEST_RATED: { supported: false, unsupportedReasonCode: 'RANKING_UNSUPPORTED_NO_RATINGS_DATA' },
+  BEST_VALUE: { supported: false, unsupportedReasonCode: 'RANKING_UNSUPPORTED_BEST_VALUE' },
+};
+
+export function isRankingPreferenceSupported(preference: RankingPreference): boolean {
+  return RANKING_PREFERENCE_SUPPORT[preference].supported;
+}
+
 export interface RankedOfferWithCost extends RankedOffer {
   cost: CostBreakdown;
 }
@@ -69,6 +99,13 @@ export interface RankingPreferenceResult {
    *  implemented preference) — BEST_VALUE/FASTEST_DELIVERY/BEST_RATED
    *  always report false here since they don't reorder anything yet. */
   applied: boolean;
+  /** Whether the preference CAN do anything at all. `false` for
+   *  FASTEST_DELIVERY / BEST_RATED / BEST_VALUE — accepted but inert for lack
+   *  of a data source. Distinct from `applied` (which is also false when the
+   *  requested order simply matched the existing one). */
+  supported: boolean;
+  /** i18n code explaining WHY, when `supported` is false. */
+  unsupportedReasonCode?: string;
 }
 
 /**
@@ -103,15 +140,23 @@ export function sortByPreference(
     cost: costEngine.computeCost(ro.offer),
   }));
 
+  const support = RANKING_PREFERENCE_SUPPORT[preference];
+
   if (preference === 'PRICE_LOWEST') {
     const sorted = [...withCost].sort((a, b) => {
       if (a.cost.currency !== b.cost.currency) return 0; // never compare incompatible currencies — see CostEngine.compareCost
       return a.cost.totalKnown - b.cost.totalKnown;
     });
-    return { preference, offers: sorted, applied: true };
+    return { preference, offers: sorted, applied: true, supported: true };
   }
 
-  // BEST_MATCH and every not-yet-implemented preference: PriorityEngine's
-  // own order is preserved untouched.
-  return { preference, offers: withCost, applied: preference === 'BEST_MATCH' };
+  // BEST_MATCH and every not-yet-supported preference: PriorityEngine's own
+  // order is preserved untouched.
+  return {
+    preference,
+    offers: withCost,
+    applied: preference === 'BEST_MATCH',
+    supported: support.supported,
+    ...(support.unsupportedReasonCode ? { unsupportedReasonCode: support.unsupportedReasonCode } : {}),
+  };
 }

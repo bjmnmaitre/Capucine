@@ -550,7 +550,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
     const initial = await postSearch({ query: 'trouve-moi un ordinateur portable' });
     expect(initial.status).toBe(200);
     expect(initial.body.language).toBe('fr');
-    expect(initial.body.rankingPreference).toEqual({ preference: 'BEST_MATCH', applied: true });
+    expect(initial.body.rankingPreference).toEqual({ preference: 'BEST_MATCH', applied: true, supported: true });
     expect(initial.body.destination).toEqual({ destinationCountry: 'FR', targetCountries: ['FR'] });
     const sessionId = initial.body.session.sessionId;
 
@@ -565,7 +565,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
     // preference, and results reordered by real cost, not just relevance score.
     const step4 = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'finalement montre-moi les moins chers' });
     expect(step4.status).toBe(200);
-    expect(step4.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true });
+    expect(step4.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true, supported: true });
     const costs = (step4.body.results as Array<{ cost: { totalKnown: number } }>).map(r => r.cost.totalKnown);
     expect(costs).toEqual([...costs].sort((a, b) => a - b)); // ascending by real cost
     // category/ram/budget from earlier turns must still be there — a ranking
@@ -627,7 +627,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
 
     // Tour 6 : "montre-moi les moins chers" — real ranking, real cost order.
     const t6 = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'montre-moi les moins chers' });
-    expect(t6.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true });
+    expect(t6.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true, supported: true });
     const t6costs = (t6.body.results as Array<{ cost: { totalKnown: number } }>).map(r => r.cost.totalKnown);
     expect(t6costs).toEqual([...t6costs].sort((a, b) => a - b));
 
@@ -653,7 +653,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
 
     // Tour 9 : "classe-les du moins cher au plus cher" — re-affirms PRICE_LOWEST.
     const t9 = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'classe-les du moins cher au plus cher' });
-    expect(t9.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true });
+    expect(t9.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true, supported: true });
     const t9costs = (t9.body.results as Array<{ cost: { totalKnown: number } }>).map(r => r.cost.totalKnown);
     expect(t9costs).toEqual([...t9costs].sort((a, b) => a - b));
 
@@ -692,7 +692,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
     await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'montre-moi les moins chers' });
     const followUp = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'trouve une meilleure offre' });
     expect(followUp.status).toBe(200);
-    expect(followUp.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true }); // preserved, not reset
+    expect(followUp.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true, supported: true }); // preserved, not reset
     for (const r of followUp.body.results as Array<{ productId: string }>) {
       expect(seenProductIds.has(r.productId)).toBe(false);
     }
@@ -752,7 +752,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
     // Tour 4 : "classe-les du moins cher au plus cher"
     const t4 = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'classe-les du moins cher au plus cher' });
     expect(t4.status).toBe(200);
-    expect(t4.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true });
+    expect(t4.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true, supported: true });
     const t4costs = (t4.body.results as Array<{ cost: { totalKnown: number } }>).map(r => r.cost.totalKnown);
     expect(t4costs).toEqual([...t4costs].sort((a: number, b: number) => a - b));
 
@@ -802,7 +802,7 @@ describe('POST /clarify — conversational follow-up (FOLLOWUP_QUESTION_ID)', ()
     const step4 = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'show me the cheapest ones' });
     expect(step4.status).toBe(200);
     expect(step4.body.language).toBe('en'); // never silently switched to fr
-    expect(step4.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true });
+    expect(step4.body.rankingPreference).toEqual({ preference: 'PRICE_LOWEST', applied: true, supported: true });
 
     const step5 = await postClarify({ sessionId, questionId: FOLLOWUP_QUESTION_ID, answer: 'also search Germany' });
     expect(step5.status).toBe(200);
