@@ -3,7 +3,7 @@ import {
   ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { prepareCart } from '../api';
-import { explainOfferRanking, shippingValueLabel, isShippingKnown } from '../presentation';
+import { costLabel, explainOfferRanking, shippingValueLabel, isShippingKnown } from '../presentation';
 import { ApiError, PrepareCartResponse, RankedOffer, RankingPreferenceState } from '../types';
 import { CERTAINTY_LABEL, displayText, formatMoney, formatScore, theme } from '../theme';
 
@@ -97,7 +97,26 @@ export function OfferDetailScreen({ offer, allOffers, ranking, sessionId, onBack
       */}
       {offer.matchQuality ? <Text style={styles.match}>{offer.matchQuality}</Text> : null}
 
-      <Text style={styles.section} accessibilityRole="header">Coût</Text>
+      {/* Le coût total réellement comparable, en hero — la promesse de Capucine
+          est « le prix payé, pas le prix affiché ». */}
+      <View
+        style={styles.hero}
+        accessible
+        accessibilityLabel={
+          `${isTotalKnown ? 'Coût total' : 'Coût total connu à ce jour'} : `
+          + `${costLabel(offer)}. ${CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}.`
+        }
+      >
+        <Text style={styles.heroLabel}>
+          {isTotalKnown ? 'Coût total' : 'Coût total connu à ce jour'}
+        </Text>
+        <Text style={styles.heroValue}>{costLabel(offer)}</Text>
+        <Text style={styles.heroCertainty}>
+          {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}
+        </Text>
+      </View>
+
+      <Text style={styles.section} accessibilityRole="header">Détail du coût</Text>
       <View style={styles.card}>
         <Row
           label="Prix"
@@ -265,6 +284,15 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.75 },
   merchant: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
   match: { fontSize: theme.font.small, color: theme.color.known, marginTop: 2, fontWeight: '600' },
+  hero: {
+    marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radius,
+    backgroundColor: theme.color.surface, borderWidth: 1, borderColor: theme.color.accent,
+  },
+  heroLabel: { fontSize: theme.font.small, color: theme.color.textMuted },
+  heroValue: {
+    fontSize: theme.font.title + 4, fontWeight: '700', color: theme.color.text, marginTop: 2,
+  },
+  heroCertainty: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
   section: {
     fontSize: theme.font.heading, fontWeight: '700',
     color: theme.color.text, marginTop: theme.space(3), marginBottom: theme.space(1),

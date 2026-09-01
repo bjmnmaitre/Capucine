@@ -187,7 +187,7 @@ export function compareTakeaway(
 type ExplainableOffer = Pick<
   RankedOffer,
   'rank' | 'merchant' | 'price' | 'shipping' | 'cost' | 'matchQuality'
-  | 'rankingReasonCode' | 'readiness'
+  | 'rankingReasonCode' | 'readiness' | 'score' | 'offerId'
 >;
 
 const READINESS_PENDING_LABEL: Record<string, string> = {
@@ -233,6 +233,16 @@ export function explainOfferRanking(
 
   // ── 1. Pourquoi cette position ──────────────────────────────────────────
   const orderedByLowestCost = ranking?.applied && ranking.preference === 'PRICE_LOWEST';
+  // Un ex æquo (même score de correspondance qu'une autre offre) ne doit pas
+  // être présenté comme « la meilleure » : le rang n'est alors qu'un
+  // départage. On ne le dit que si un rival A un score comparable ET connu.
+  const rivalScores = others
+    .filter((o) => (o.offerId ? o.offerId !== offer.offerId : o !== offer))
+    .map((o) => o.score)
+    .filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
+  const tiedTop = typeof offer.score === 'number'
+    && rivalScores.some((s) => Math.abs(s - offer.score!) < 1);
+
   if (offer.rank === 1) {
     if (orderedByLowestCost) {
       points.push(
@@ -240,6 +250,8 @@ export function explainOfferRanking(
           ? 'Recommandée : coût total connu le plus bas des offres comparées.'
           : 'Recommandée : coût le plus bas parmi les composantes connues — certains frais restent inconnus et pourraient changer ce classement.'
       );
+    } else if (tiedTop) {
+      points.push('En tête, à égalité de correspondance avec l’offre suivante — comparez le coût et la disponibilité pour départager.');
     } else {
       points.push('Recommandée : meilleure correspondance avec votre recherche.');
     }

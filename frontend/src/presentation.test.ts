@@ -235,6 +235,21 @@ describe('explainOfferRanking — situer une offre, jamais inventer', () => {
     expect(out[0]).toMatch(/^Recommandée : meilleure correspondance/);
   });
 
+  it('rank 1 mais score identique à un rival → n’affirme pas « la meilleure »', () => {
+    const self = offer({ rank: 1, offerId: 'a', score: 53 });
+    const rival = offer({ rank: 2, offerId: 'b', score: 53 });
+    const out = explainOfferRanking(self, [self, rival], { preference: 'BEST_MATCH', applied: true });
+    expect(out[0]).toContain('à égalité de correspondance');
+    expect(out[0]).not.toMatch(/^Recommandée : meilleure/);
+  });
+
+  it('rank 1 avec un rival nettement en dessous → « Recommandée »', () => {
+    const self = offer({ rank: 1, offerId: 'a', score: 53 });
+    const rival = offer({ rank: 2, offerId: 'b', score: 40 });
+    const out = explainOfferRanking(self, [self, rival], { preference: 'BEST_MATCH', applied: true });
+    expect(out[0]).toMatch(/^Recommandée : meilleure correspondance/);
+  });
+
   it('rank 1 en PRICE_LOWEST → motif de coût, selon la certitude', () => {
     const known = explainOfferRanking(
       offer({ rank: 1, rankingReasonCode: 'RANKED_LOWEST_KNOWN_COST' }),

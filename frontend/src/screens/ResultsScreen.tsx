@@ -3,7 +3,7 @@ import {
   ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { RankedOffer, SearchResponse } from '../types';
-import { explainOfferRanking, rankingPreferenceLabel } from '../presentation';
+import { costLabel, explainOfferRanking, rankingPreferenceLabel } from '../presentation';
 import { CERTAINTY_LABEL, displayText, formatMoney, theme } from '../theme';
 
 interface Props {
@@ -51,10 +51,11 @@ function OfferRow({
   // `price` is null when the backend could not extract one. 'prix inconnu'
   // is the honest rendering — never 0, never a dash standing in for a number.
   const price = offer.price ? formatMoney(offer.price.amount, offer.price.currency) : 'prix inconnu';
-  const isTotal = offer.cost.certainty === 'known';
-  const totalLabel = isTotal
-    ? formatMoney(offer.cost.totalKnown, offer.cost.currency)
-    : `au moins ${formatMoney(offer.cost.totalKnown, offer.cost.currency)}`;
+  const isTotalKnown = offer.cost.certainty === 'known';
+  // Le COÛT TOTAL est ce que Capucine compare — mis en avant, pas le prix seul.
+  // costLabel : "X" si connu, "au moins X" si partiel, "coût inconnu" sinon.
+  const total = costLabel(offer);
+  const totalUnknown = offer.cost.certainty === 'unknown' || offer.cost.totalKnown == null;
 
   const shipping = shippingLabel(offer);
   // Deterministic, comparison-aware "why" — the headline plus the single most
@@ -64,14 +65,15 @@ function OfferRow({
 
   // One spoken sentence per offer, now including WHY it sits here: a
   // screen-reader user gets the recommendation reasoning without opening the card.
+  const certaintyText = CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty;
   const a11yLabel = compareMode
     ? `${selected ? 'Sélectionnée pour comparaison' : 'Non sélectionnée'}. `
       + `Offre numéro ${offer.rank}, ${displayText(offer.merchant?.name, 'Marchand inconnu')}, `
-      + `prix ${price}, ${shipping}.`
+      + `${totalUnknown ? 'coût total inconnu' : 'coût total ' + total}.`
     : `Offre numéro ${offer.rank}${recommended ? ', recommandée' : ''}. `
       + `${displayText(offer.merchant?.name, 'Marchand inconnu')}. `
+      + `${totalUnknown ? 'Coût total inconnu' : 'Coût total ' + total} — ${certaintyText}. `
       + `Prix ${price}, ${shipping}. `
-      + `${CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}, ${totalLabel}. `
       + why.join(' ');
 
   return (
@@ -108,14 +110,24 @@ function OfferRow({
         {recommended && !compareMode ? <Text style={styles.recommendedTag}>✓ Recommandée</Text> : null}
       </View>
 
-      <Text style={styles.price}>{price}</Text>
-      <Text style={styles.shipping}>{shipping}</Text>
+      {/* Le coût total, ce que Capucine compare réellement, est le chiffre
+          dominant — le prix seul n'est qu'une composante, montrée dessous. */}
+      <Text style={styles.totalLabel}>
+        {isTotalKnown ? 'Coût total' : totalUnknown ? 'Coût total' : 'Coût total connu à ce jour'}
+      </Text>
+      <Text style={[styles.total, totalUnknown && styles.totalUnknown]}>
+        {totalUnknown ? 'inconnu' : total}
+      </Text>
 
       <View style={[styles.badge, certaintyStyle(offer.cost.certainty)]}>
         <Text style={[styles.badgeText, certaintyStyle(offer.cost.certainty)]}>
-          {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty} · {totalLabel}
+          {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}
         </Text>
       </View>
+
+      <Text style={styles.breakdown}>
+        Prix {price} · {shipping}
+      </Text>
 
       {!compareMode && offer.cost.unknownComponents.length > 0 ? (
         <Text style={styles.unknownList}>
@@ -500,10 +512,11 @@ const styles = StyleSheet.create({
     paddingVertical: 2, borderRadius: 6, overflow: 'hidden',
   },
   merchant: { fontSize: theme.font.body, fontWeight: '600', color: theme.color.text, flexShrink: 1 },
-  price: {
-    fontSize: theme.font.title, fontWeight: '700',
-    color: theme.color.text, marginTop: theme.space(1),
+  totalLabel: {
+    fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(1),
   },
+  total: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text, marginTop: 1 },
+  totalUnknown: { color: theme.color.unknown },
   badge: {
     marginTop: theme.space(1), alignSelf: 'flex-start',
     paddingHorizontal: theme.space(1), paddingVertical: 4, borderRadius: 6,
@@ -511,7 +524,7 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: theme.font.small, fontWeight: '600', backgroundColor: 'transparent' },
   badgeKnown: { color: theme.color.known, backgroundColor: '#E7F4EC' },
   badgeUnknown: { color: theme.color.unknown, backgroundColor: '#FBF1DC' },
-  shipping: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
+  breakdown: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(1) },
   unknownList: {
     fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
   },
