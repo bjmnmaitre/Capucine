@@ -1010,6 +1010,41 @@ describe('Scenario K — AI provider unavailable → pipeline continues', () => 
     expect(result).toBeDefined();
     expect(result.searchPlan.query.primaryTerms.length).toBeGreaterThan(0);
   });
+
+  it('K3 — a SLOW AI enrichment is time-boxed, not awaited indefinitely', async () => {
+    // generateSearchTerms hangs well past the cap (simulates a slow local model)
+    const slowAI = {
+      generateSearchTerms: () => new Promise(() => { /* never resolves */ }),
+      identifyClarifications: async () => ({ questions: [], canProceed: true }),
+      parseInterpretationResponse: async () => ({ criteria: [] }),
+    };
+
+    const prev = process.env['AI_ENRICHMENT_TIMEOUT_MS'];
+    process.env['AI_ENRICHMENT_TIMEOUT_MS'] = '80';
+    try {
+      const engine = new CapucineEngine({
+        enableWebDiscovery: false,
+        aiOrchestrator: slowAI as any,
+      });
+
+      const started = Date.now();
+      const result = await engine.search({
+        queryText: 'casque Sony WH-1000XM5',
+        requestId: 'req-ai-slow',
+        profile: createEmptyProfile(),
+        skipAIInterpretation: true,
+        preInterpretedCriteria: [],
+      });
+
+      // Search returned in spite of the hung enrichment call.
+      expect(result).toBeDefined();
+      expect(result.searchPlan.query.primaryTerms.length).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(5000);
+    } finally {
+      if (prev === undefined) delete process.env['AI_ENRICHMENT_TIMEOUT_MS'];
+      else process.env['AI_ENRICHMENT_TIMEOUT_MS'] = prev;
+    }
+  });
 });
 
 // ============================================================================

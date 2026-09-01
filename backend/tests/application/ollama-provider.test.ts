@@ -14,7 +14,10 @@
 
 import { OllamaProvider, detectAvailableProviders } from '../../src/application/ai-providers';
 
-const ENV_KEYS = ['OLLAMA_MODEL', 'OLLAMA_HOST', 'OLLAMA_MODEL_REASONING', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
+const ENV_KEYS = [
+  'OLLAMA_MODEL', 'OLLAMA_HOST', 'OLLAMA_MODEL_REASONING', 'OLLAMA_TIMEOUT_MS',
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+];
 
 describe('OllamaProvider', () => {
   const saved: Record<string, string | undefined> = {};
@@ -127,6 +130,23 @@ describe('OllamaProvider', () => {
       fetchMock.mockResolvedValue({ ok: false, status: 404, text: async () => 'model not found' });
       await expect(new OllamaProvider().complete({ prompt: 'p', model: 'nope' }))
         .rejects.toThrow(/HTTP 404/);
+    });
+
+    it('passes an AbortSignal whose timeout honours OLLAMA_TIMEOUT_MS', async () => {
+      process.env['OLLAMA_MODEL'] = 'llama3.2';
+      process.env['OLLAMA_TIMEOUT_MS'] = '5000';
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ message: { content: 'x' } }) });
+      await new OllamaProvider().complete({ prompt: 'p', model: 'llama3.2' });
+      const init = fetchMock.mock.calls[0][1] as { signal?: AbortSignal };
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('an invalid OLLAMA_TIMEOUT_MS falls back to the default (no throw)', async () => {
+      process.env['OLLAMA_MODEL'] = 'llama3.2';
+      process.env['OLLAMA_TIMEOUT_MS'] = 'not-a-number';
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ message: { content: 'ok' } }) });
+      await expect(new OllamaProvider().complete({ prompt: 'p', model: 'llama3.2' }))
+        .resolves.toMatchObject({ content: 'ok' });
     });
   });
 

@@ -281,6 +281,16 @@ export class OllamaProvider implements AIProvider {
     return (process.env['OLLAMA_HOST'] ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
   }
 
+  /** Per-call ceiling. Local models vary wildly with the machine and whether
+   *  the model is already loaded; a cold first call is the slow one. Default
+   *  90 s; lower it (OLLAMA_TIMEOUT_MS) when Ollama sits on a latency-critical
+   *  path. The search path has its own, tighter cap (AI_ENRICHMENT_TIMEOUT_MS
+   *  in CapucineEngine) and does not wait this long. */
+  private get timeoutMs(): number {
+    const raw = Number(process.env['OLLAMA_TIMEOUT_MS']);
+    return Number.isFinite(raw) && raw > 0 ? raw : 90_000;
+  }
+
   async complete(request: AIRequest): Promise<AIResponse> {
     if (!process.env['OLLAMA_MODEL']) {
       throw new Error(
@@ -313,8 +323,7 @@ export class OllamaProvider implements AIProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        // Local models are slower than a hosted API and vary with the machine.
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
       // Ollama not running, wrong host, timeout — a provider error like any

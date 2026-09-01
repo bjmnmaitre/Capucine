@@ -575,7 +575,25 @@ export class CapucineEngine {
     if (this.aiOrchestrator && searchPlan.query.primaryTerms.length > 0) {
       try {
         const termDescription = searchPlan.query.primaryTerms.join(' ');
-        const enriched = await this.aiOrchestrator.generateSearchTerms(termDescription, 'fr');
+        // Term enrichment is a NICE-TO-HAVE, not a step the search depends on.
+        // Any provider (a local Ollama model in particular) can be slow; a
+        // hard cap here means a slow model degrades to "search without extra
+        // synonyms" instead of stalling the whole request. Tunable via
+        // AI_ENRICHMENT_TIMEOUT_MS; 0 disables the cap.
+        const capMs = Number(process.env['AI_ENRICHMENT_TIMEOUT_MS'] ?? 6000);
+        const enrichPromise = this.aiOrchestrator.generateSearchTerms(termDescription, 'fr');
+        let capTimer: ReturnType<typeof setTimeout> | undefined;
+        const enriched = capMs > 0
+          ? await Promise.race([
+              enrichPromise,
+              new Promise<never>((_, reject) => {
+                capTimer = setTimeout(
+                  () => reject(new Error(`AI term enrichment exceeded ${capMs}ms`)),
+                  capMs
+                );
+              }),
+            ]).finally(() => { if (capTimer) clearTimeout(capTimer); })
+          : await enrichPromise;
         aiSynonyms = enriched.synonyms;
         aiAltSpellings = enriched.alternativeSpellings;
         if (enriched.synonyms.length > 0 || enriched.alternativeSpellings.length > 0) {
