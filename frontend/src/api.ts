@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import {
   ApiError, PreferenceLevel, PrepareCartResponse, ProfileResponse, SearchResponse,
 } from './types';
+import { merchantExclusionCriterion, merchantExclusionId } from './profile';
 
 /**
  * Resolving the backend address.
@@ -212,4 +213,17 @@ export function deleteCriterion(userId: string, criterionId: string): Promise<un
     'DELETE',
     `/profile/${encodeURIComponent(userId)}/criterion/${encodeURIComponent(criterionId)}`
   );
+}
+
+/**
+ * Persistent "never buy from this merchant" preference. Stored as a normal
+ * criterion following the backend's convention (see src/profile.ts) — it
+ * survives restarts and is applied from the very first search after.
+ */
+export function excludeMerchant(userId: string, merchantName: string): Promise<unknown> {
+  return saveCriterion(userId, merchantExclusionCriterion(merchantName));
+}
+
+export function unexcludeMerchant(userId: string, merchantName: string): Promise<unknown> {
+  return deleteCriterion(userId, merchantExclusionId(merchantName));
 }

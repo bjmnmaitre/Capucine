@@ -25,3 +25,52 @@ export function criterionId(name: string): string {
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return slug.length > 0 ? slug : `pref-${djb2(name.trim())}`;
 }
+
+// ── Exclusions de marchand (préférence permanente) ──────────────────────────
+
+/**
+ * Une exclusion de marchand est un PreferenceCriterion suivant une convention
+ * que le backend reconnaît (domain/profile.ts) : id `merchant-exclude-<slug>`,
+ * niveau `forbidden`, `parameters.merchantName` = le nom tel que saisi.
+ * On la modèle ainsi plutôt qu'avec un nouveau type pour réutiliser la
+ * plomberie /profile existante (persistance, PUT/DELETE, GET).
+ */
+export const MERCHANT_EXCLUSION_ID_PREFIX = 'merchant-exclude-';
+
+export function merchantExclusionId(merchantName: string): string {
+  const slug = merchantName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return `${MERCHANT_EXCLUSION_ID_PREFIX}${slug.length > 0 ? slug : djb2(merchantName.trim())}`;
+}
+
+export interface ProfileCriterionLike {
+  id: string;
+  level?: string;
+  parameters?: Record<string, unknown> | null;
+}
+
+export function isMerchantExclusion(c: ProfileCriterionLike): boolean {
+  return c.level === 'forbidden' && c.id.startsWith(MERCHANT_EXCLUSION_ID_PREFIX);
+}
+
+/** Nom lisible du marchand ciblé par une exclusion (parameters d'abord,
+ *  sinon le slug de l'id). `null` si le critère n'est pas une exclusion. */
+export function merchantNameOf(c: ProfileCriterionLike): string | null {
+  if (!isMerchantExclusion(c)) return null;
+  const fromParams = c.parameters?.['merchantName'];
+  if (typeof fromParams === 'string' && fromParams.trim().length > 0) return fromParams.trim();
+  const slug = c.id.slice(MERCHANT_EXCLUSION_ID_PREFIX.length).replace(/-+/g, ' ').trim();
+  return slug.length > 0 ? slug : null;
+}
+
+/** Le corps à envoyer à PUT /profile/:userId/criterion pour exclure un marchand. */
+export function merchantExclusionCriterion(merchantName: string): {
+  id: string; name: string; level: 'forbidden'; parameters: { merchantName: string };
+} {
+  const trimmed = merchantName.trim();
+  return {
+    id: merchantExclusionId(trimmed),
+    name: `Ne pas acheter chez ${trimmed}`,
+    level: 'forbidden',
+    parameters: { merchantName: trimmed },
+  };
+}

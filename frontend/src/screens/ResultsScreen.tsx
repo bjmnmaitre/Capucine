@@ -323,6 +323,15 @@ export function ResultsScreen({
 
   const canCompare = results.length >= 2;
 
+  // Honnêteté : si des offres ont été masquées par une exclusion de marchand
+  // (affinage « sans X » OU préférence permanente), on le dit — la liste
+  // n'est pas juste plus courte en silence.
+  const mx = response.merchantExclusions;
+  const exclusionNote = mx && mx.hiddenOfferCount > 0
+    ? `${mx.hiddenOfferCount} offre${mx.hiddenOfferCount > 1 ? 's' : ''} masquée${mx.hiddenOfferCount > 1 ? 's' : ''}`
+      + ` (${mx.hiddenMerchants.join(', ')}) — marchand${mx.hiddenMerchants.length > 1 ? 's' : ''} que vous évitez.`
+    : null;
+
   return (
     <View style={styles.flex}>
       <View style={styles.header}>
@@ -364,6 +373,10 @@ export function ResultsScreen({
           </Text>
         ) : response.summary?.resultSummary ? (
           <Text style={styles.summary}>{response.summary.resultSummary}</Text>
+        ) : null}
+
+        {!compareMode && exclusionNote ? (
+          <Text style={styles.exclusionNote} accessibilityLabel={exclusionNote}>{exclusionNote}</Text>
         ) : null}
       </View>
 
@@ -484,6 +497,10 @@ const styles = StyleSheet.create({
   query: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text },
   counts: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
+  exclusionNote: {
+    fontSize: theme.font.small, color: theme.color.unknown, marginTop: theme.space(0.5),
+    lineHeight: 18,
+  },
   list: { padding: theme.space(2), paddingBottom: theme.space(5) },
   listWithBar: { paddingBottom: theme.space(12) },
   refine: {

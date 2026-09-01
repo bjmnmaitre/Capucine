@@ -157,6 +157,18 @@ export interface SearchResponse {
     remainingQuestions?: number;
   } | null;
   rankingPreference?: RankingPreferenceState;
+  /**
+   * Exclusions de marchand réellement appliquées à cette liste — soit un
+   * affinage de session (« sans Amazon »), soit une préférence permanente du
+   * profil. `null` quand rien n'a été exclu. Sert à dire honnêtement
+   * « 2 offres de Amazon masquées » plutôt que d'avoir une liste
+   * silencieusement plus courte.
+   */
+  merchantExclusions?: {
+    requested: string[];
+    hiddenOfferCount: number;
+    hiddenMerchants: string[];
+  } | null;
   results: RankedOffer[];
   summary?: SearchSummary;
   interpretation?: { productTerms?: string[]; [k: string]: unknown } | null;

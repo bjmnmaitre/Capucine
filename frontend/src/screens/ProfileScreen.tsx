@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
-import { deleteCriterion, loadProfile, saveCriterion } from '../api';
-import { criterionId } from '../profile';
+import {
+  deleteCriterion, excludeMerchant, loadProfile, saveCriterion, unexcludeMerchant,
+} from '../api';
+import { criterionId, isMerchantExclusion, merchantNameOf } from '../profile';
 import { ApiError, PREFERENCE_LEVELS, PreferenceLevel, ProfileCriterion } from '../types';
 import { theme } from '../theme';
 
@@ -44,6 +46,12 @@ export function ProfileScreen({ userId, onBack }: Props) {
 
   const [name, setName] = useState('');
   const [level, setLevel] = useState<PreferenceLevel>('important');
+  const [merchant, setMerchant] = useState('');
+
+  // Merchant exclusions are a distinct, first-class concept (they filter the
+  // list outright); the free-text preferences are best-effort attribute hints.
+  const merchantExclusions = criteria.filter(isMerchantExclusion);
+  const otherCriteria = criteria.filter((c) => !isMerchantExclusion(c));
 
   async function refresh() {
     setLoading(true);
@@ -91,6 +99,35 @@ export function ProfileScreen({ userId, onBack }: Props) {
     }
   }
 
+  async function onAddMerchant() {
+    const trimmed = merchant.trim();
+    if (trimmed.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await excludeMerchant(userId, trimmed);
+      setMerchant('');
+      await refresh();
+    } catch (err) {
+      setError((err as ApiError).message ?? "L'enregistrement a échoué.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRemoveMerchant(merchantName: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await unexcludeMerchant(userId, merchantName);
+      await refresh();
+    } catch (err) {
+      setError((err as ApiError).message ?? 'La suppression a échoué.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <Pressable
@@ -104,13 +141,69 @@ export function ProfileScreen({ userId, onBack }: Props) {
 
       <Text style={styles.title} accessibilityRole="header">Vos préférences</Text>
       <Text style={styles.subtitle}>
-        Ces préférences permanentes sont jointes à chaque recherche. Capucine les prend en
-        compte lorsqu’elle sait relier votre formulation à un critère du produit — sinon
-        elle les conserve sans pouvoir les appliquer. Une demande ponctuelle qui les
-        contredit reste prioritaire pour cette recherche-là.
+        Ces préférences permanentes sont jointes à chaque recherche. Une demande ponctuelle
+        qui les contredit reste prioritaire pour cette recherche-là.
       </Text>
 
+      {/* ── Marchands à éviter — effet CONCRET et immédiat sur les résultats ── */}
+      <Text style={styles.section} accessibilityRole="header">Marchands à éviter</Text>
+      <Text style={styles.sectionNote}>
+        Leurs offres sont masquées dès la prochaine recherche. Capucine vous indique
+        combien d’offres ont été retirées.
+      </Text>
+      <View style={styles.inlineRow}>
+        <TextInput
+          style={[styles.input, styles.inlineInput]}
+          value={merchant}
+          onChangeText={setMerchant}
+          placeholder="ex. Amazon"
+          placeholderTextColor={theme.color.textMuted}
+          editable={!busy}
+          onSubmitEditing={onAddMerchant}
+          returnKeyType="done"
+          accessibilityLabel="Nom du marchand à éviter"
+        />
+        <Pressable
+          onPress={onAddMerchant}
+          disabled={busy || merchant.trim().length === 0}
+          accessibilityRole="button"
+          accessibilityLabel="Ajouter ce marchand à éviter"
+          accessibilityState={{ disabled: busy || merchant.trim().length === 0, busy }}
+          style={({ pressed }) => [
+            styles.inlineBtn,
+            (pressed || busy || merchant.trim().length === 0) && styles.buttonMuted,
+          ]}
+        >
+          <Text style={styles.buttonText}>Éviter</Text>
+        </Pressable>
+      </View>
+      {merchantExclusions.length === 0 ? (
+        <Text style={styles.empty}>Aucun marchand exclu.</Text>
+      ) : (
+        merchantExclusions.map((c) => {
+          const mName = merchantNameOf(c) ?? c.name;
+          return (
+            <View key={c.id} style={styles.row}>
+              <Text style={styles.rowName}>{mName}</Text>
+              <Pressable
+                onPress={() => onRemoveMerchant(mName)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel={`Ne plus éviter ${mName}`}
+                style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
+              >
+                <Text style={styles.removeText}>Retirer</Text>
+              </Pressable>
+            </View>
+          );
+        })
+      )}
+
       <Text style={styles.section} accessibilityRole="header">Ajouter une préférence</Text>
+      <Text style={styles.sectionNote}>
+        Capucine les prend en compte lorsqu’elle sait relier votre formulation à un critère
+        du produit — sinon elle les conserve sans pouvoir les appliquer.
+      </Text>
       <View style={styles.suggestions}>
         {PREFERENCE_SUGGESTIONS.map((s) => (
           <Pressable
@@ -177,18 +270,18 @@ export function ProfileScreen({ userId, onBack }: Props) {
       ) : null}
 
       <Text style={styles.section} accessibilityRole="header">
-        Préférences enregistrées {loading ? '' : `(${criteria.length})`}
+        Préférences enregistrées {loading ? '' : `(${otherCriteria.length})`}
       </Text>
 
       {loading ? (
         <ActivityIndicator accessibilityLabel="Chargement du profil" />
-      ) : criteria.length === 0 ? (
+      ) : otherCriteria.length === 0 ? (
         <Text style={styles.empty}>
           Aucune préférence enregistrée. Capucine s’appuie alors uniquement sur ce que
           vous demandez à chaque recherche.
         </Text>
       ) : (
-        criteria.map((c) => (
+        otherCriteria.map((c) => (
           <View key={c.id} style={styles.row}>
             <View style={styles.rowText}>
               <Text style={styles.rowName}>{c.name}</Text>
@@ -222,7 +315,17 @@ const styles = StyleSheet.create({
   },
   section: {
     fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text,
-    marginTop: theme.space(3), marginBottom: theme.space(1),
+    marginTop: theme.space(3), marginBottom: theme.space(0.5),
+  },
+  sectionNote: {
+    fontSize: theme.font.small, color: theme.color.textMuted,
+    marginBottom: theme.space(1), lineHeight: 19,
+  },
+  inlineRow: { flexDirection: 'row', gap: theme.space(1), alignItems: 'stretch' },
+  inlineInput: { flex: 1, minHeight: theme.minTouch },
+  inlineBtn: {
+    minHeight: theme.minTouch, borderRadius: theme.radius, backgroundColor: theme.color.accent,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: theme.space(2),
   },
   label: {
     fontSize: theme.font.small, fontWeight: '600',
