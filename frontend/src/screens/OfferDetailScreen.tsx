@@ -3,12 +3,16 @@ import {
   ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { prepareCart } from '../api';
-import { shippingValueLabel, isShippingKnown } from '../presentation';
-import { ApiError, PrepareCartResponse, RankedOffer } from '../types';
+import { explainOfferRanking, shippingValueLabel, isShippingKnown } from '../presentation';
+import { ApiError, PrepareCartResponse, RankedOffer, RankingPreferenceState } from '../types';
 import { CERTAINTY_LABEL, displayText, formatMoney, formatScore, theme } from '../theme';
 
 interface Props {
   offer: RankedOffer;
+  /** Toutes les offres de la recherche courante — sert à situer le coût de
+   *  celle-ci dans l'explication du classement. */
+  allOffers: RankedOffer[];
+  ranking?: RankingPreferenceState | null;
   sessionId: string | null;
   onBack: () => void;
 }
@@ -42,7 +46,7 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
   );
 }
 
-export function OfferDetailScreen({ offer, sessionId, onBack }: Props) {
+export function OfferDetailScreen({ offer, allOffers, ranking, sessionId, onBack }: Props) {
   const [preparing, setPreparing] = useState(false);
   const [prep, setPrep] = useState<PrepareCartResponse | null>(null);
   const [prepError, setPrepError] = useState<string | null>(null);
@@ -125,9 +129,25 @@ export function OfferDetailScreen({ offer, sessionId, onBack }: Props) {
 
       <Text style={styles.section} accessibilityRole="header">Pourquoi ce classement</Text>
       <View style={styles.card}>
+        {/*
+          Explication déterministe, calculée en situant CETTE offre parmi
+          toutes celles affichées (coût, livraison, préparation d'achat,
+          correspondance). Aucune valeur n'est recalculée — seulement mise en
+          relation. Répond à « pourquoi Capucine me propose cette offre ? ».
+        */}
+        <View
+          style={styles.reasonList}
+          accessible
+          accessibilityLabel={`Pourquoi ce classement : ${explainOfferRanking(offer, allOffers, ranking).join(' ')}`}
+        >
+          {explainOfferRanking(offer, allOffers, ranking).map((line, i) => (
+            <Text key={i} style={i === 0 ? styles.reasonHead : styles.reasonLine}>
+              {i === 0 ? line : `· ${line}`}
+            </Text>
+          ))}
+        </View>
         <Row label="Rang" value={`#${offer.rank}`} />
         <Row label="Score" value={formatScore(offer.score)} />
-        {offer.explanation ? <Text style={styles.explanation}>{offer.explanation}</Text> : null}
         {(offer.criteria ?? []).slice(0, 8).map((c) => (
           <Row
             key={c.id}
@@ -266,9 +286,12 @@ const styles = StyleSheet.create({
     fontSize: theme.font.small, color: theme.color.textMuted,
     marginTop: theme.space(1), lineHeight: 20,
   },
-  explanation: {
-    fontSize: theme.font.small, color: theme.color.text,
-    marginTop: theme.space(0.5), marginBottom: theme.space(0.5),
+  reasonList: { marginBottom: theme.space(1) },
+  reasonHead: {
+    fontSize: theme.font.body, color: theme.color.text, fontWeight: '700', lineHeight: 22,
+  },
+  reasonLine: {
+    fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 3, lineHeight: 20,
   },
   url: { fontSize: theme.font.small, color: theme.color.accent },
   unknownNote: { fontSize: theme.font.body, color: theme.color.unknown, lineHeight: 22 },

@@ -3,7 +3,7 @@ import {
   ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { RankedOffer, SearchResponse } from '../types';
-import { rankingPreferenceLabel } from '../presentation';
+import { explainOfferRanking, rankingPreferenceLabel } from '../presentation';
 import { CERTAINTY_LABEL, displayText, formatMoney, theme } from '../theme';
 
 interface Props {
@@ -12,6 +12,7 @@ interface Props {
   refining: boolean;
   refineError: string | null;
   onRefine: (answer: string) => void;
+  onResetRefinements: () => void;
   onSelect: (offer: RankedOffer) => void;
   onBack: () => void;
 }
@@ -33,7 +34,14 @@ function certaintyStyle(certainty: string) {
   return certainty === 'known' ? styles.badgeKnown : styles.badgeUnknown;
 }
 
-function OfferRow({ offer, onPress }: { offer: RankedOffer; onPress: () => void }) {
+function OfferRow({
+  offer, allOffers, ranking, onPress,
+}: {
+  offer: RankedOffer;
+  allOffers: RankedOffer[];
+  ranking: SearchResponse['rankingPreference'];
+  onPress: () => void;
+}) {
   // `price` is null when the backend could not extract one. 'prix inconnu'
   // is the honest rendering — never 0, never a dash standing in for a number.
   const price = offer.price ? formatMoney(offer.price.amount, offer.price.currency) : 'prix inconnu';
@@ -42,27 +50,37 @@ function OfferRow({ offer, onPress }: { offer: RankedOffer; onPress: () => void 
     ? formatMoney(offer.cost.totalKnown, offer.cost.currency)
     : `au moins ${formatMoney(offer.cost.totalKnown, offer.cost.currency)}`;
 
-  // One spoken sentence per offer: rank, merchant, price, and how sure the
-  // total is. A screen-reader user should not have to explore the card.
   const shipping = shippingLabel(offer);
+  // Deterministic, comparison-aware "why" — the headline plus the single most
+  // useful supporting fact. Full reasoning lives on the detail screen.
+  const why = explainOfferRanking(offer, allOffers, ranking);
+  const recommended = offer.rank === 1;
+
+  // One spoken sentence per offer, now including WHY it sits here: a
+  // screen-reader user gets the recommendation reasoning without opening the card.
   const a11yLabel =
-    `Offre numéro ${offer.rank}. ${displayText(offer.merchant?.name, 'Marchand inconnu')}. ` +
+    `Offre numéro ${offer.rank}${recommended ? ', recommandée' : ''}. ` +
+    `${displayText(offer.merchant?.name, 'Marchand inconnu')}. ` +
     `Prix ${price}, ${shipping}. ` +
-    `${CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}, ${totalLabel}.`;
+    `${CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}, ${totalLabel}. ` +
+    why.join(' ');
 
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={a11yLabel}
-      accessibilityHint="Ouvre le détail de cette offre"
-      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+      accessibilityHint="Ouvre le détail complet de cette offre"
+      style={({ pressed }) => [
+        styles.card, recommended && styles.cardRecommended, pressed && styles.cardPressed,
+      ]}
     >
       <View style={styles.cardHead}>
         <Text style={styles.rank}>#{offer.rank}</Text>
         <Text style={styles.merchant} numberOfLines={1}>
           {displayText(offer.merchant?.name, 'Marchand inconnu')}
         </Text>
+        {recommended ? <Text style={styles.recommendedTag}>✓ Recommandée</Text> : null}
       </View>
 
       <Text style={styles.price}>{price}</Text>
@@ -80,9 +98,13 @@ function OfferRow({ offer, onPress }: { offer: RankedOffer; onPress: () => void 
         </Text>
       ) : null}
 
-      {offer.explanation ? (
-        <Text style={styles.explanation} numberOfLines={2}>{offer.explanation}</Text>
-      ) : null}
+      <View style={styles.whyBox} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        {why.slice(0, 2).map((line, i) => (
+          <Text key={i} style={i === 0 ? styles.whyHead : styles.whyLine}>
+            {i === 0 ? line : `· ${line}`}
+          </Text>
+        ))}
+      </View>
     </Pressable>
   );
 }
@@ -94,8 +116,8 @@ function OfferRow({ offer, onPress }: { offer: RankedOffer; onPress: () => void 
  * genuine re-search, never a client-side filter.
  */
 function RefinementBar({
-  response, refining, refineError, onRefine,
-}: Pick<Props, 'response' | 'refining' | 'refineError' | 'onRefine'>) {
+  response, refining, refineError, onRefine, onResetRefinements,
+}: Pick<Props, 'response' | 'refining' | 'refineError' | 'onRefine' | 'onResetRefinements'>) {
   const [text, setText] = useState('');
   const history = response.session?.answeredQuestions ?? [];
   const canRefine = Boolean(response.session?.sessionId);
@@ -121,14 +143,25 @@ function RefinementBar({
       ) : null}
 
       {history.length > 0 ? (
-        <View
-          style={styles.refineHistory}
-          accessible
-          accessibilityLabel={`Affinages appliqués : ${history.map((h) => h.answer).join(', ')}`}
-        >
-          {history.map((h, i) => (
-            <Text key={`${h.questionId}-${i}`} style={styles.refineHistoryItem}>• {h.answer}</Text>
-          ))}
+        <View style={styles.refineHistory}>
+          <View
+            accessible
+            accessibilityLabel={`Affinages appliqués : ${history.map((h) => h.answer).join(', ')}`}
+          >
+            {history.map((h, i) => (
+              <Text key={`${h.questionId}-${i}`} style={styles.refineHistoryItem}>• {h.answer}</Text>
+            ))}
+          </View>
+          <Pressable
+            onPress={() => { if (!refining) onResetRefinements(); }}
+            disabled={refining}
+            accessibilityRole="button"
+            accessibilityLabel="Repartir de la recherche initiale"
+            accessibilityHint="Annule tous les affinages et relance la recherche d’origine"
+            style={({ pressed }) => [styles.resetBtn, pressed && styles.cardPressed]}
+          >
+            <Text style={styles.resetBtnText}>↺ Repartir de la recherche initiale</Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -192,7 +225,7 @@ function RefinementBar({
 }
 
 export function ResultsScreen({
-  query, response, refining, refineError, onRefine, onSelect, onBack,
+  query, response, refining, refineError, onRefine, onResetRefinements, onSelect, onBack,
 }: Props) {
   const results = response.results ?? [];
   const productIds = new Set(results.map((r) => r.productId));
@@ -227,6 +260,7 @@ export function ResultsScreen({
             refining={refining}
             refineError={refineError}
             onRefine={onRefine}
+            onResetRefinements={onResetRefinements}
           />
           <View style={styles.empty} accessibilityLiveRegion="polite">
             <Text style={styles.emptyTitle}>Aucune offre trouvée</Text>
@@ -258,9 +292,17 @@ export function ResultsScreen({
               refining={refining}
               refineError={refineError}
               onRefine={onRefine}
+              onResetRefinements={onResetRefinements}
             />
           }
-          renderItem={({ item }) => <OfferRow offer={item} onPress={() => onSelect(item)} />}
+          renderItem={({ item }) => (
+            <OfferRow
+              offer={item}
+              allOffers={results}
+              ranking={response.rankingPreference}
+              onPress={() => onSelect(item)}
+            />
+          )}
           ListFooterComponent={
             <Text style={styles.footer}>
               Classement produit par le moteur de priorité de Capucine, pas par le prix seul.
@@ -299,6 +341,8 @@ const styles = StyleSheet.create({
   orderChipText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
   refineHistory: { marginBottom: theme.space(1) },
   refineHistoryItem: { fontSize: theme.font.small, color: theme.color.textMuted, lineHeight: 20 },
+  resetBtn: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: 2 },
+  resetBtnText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
   refineInputRow: { flexDirection: 'row', gap: theme.space(1), alignItems: 'stretch' },
   refineInput: {
     flex: 1, minHeight: theme.minTouch, borderWidth: 1, borderColor: theme.color.border,
@@ -355,7 +399,17 @@ const styles = StyleSheet.create({
   unknownList: {
     fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
   },
-  explanation: { fontSize: theme.font.small, color: theme.color.text, marginTop: theme.space(1) },
+  cardRecommended: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#F4F7FF' },
+  recommendedTag: {
+    fontSize: theme.font.small, fontWeight: '700', color: theme.color.accent,
+    marginLeft: 'auto',
+  },
+  whyBox: {
+    marginTop: theme.space(1), paddingTop: theme.space(1),
+    borderTopWidth: 1, borderTopColor: theme.color.border,
+  },
+  whyHead: { fontSize: theme.font.small, color: theme.color.text, fontWeight: '600', lineHeight: 19 },
+  whyLine: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, lineHeight: 19 },
   recovery: { marginTop: theme.space(1.5), paddingLeft: theme.space(1.5), borderLeftWidth: 3, borderLeftColor: theme.color.accent },
   recoveryText: { fontSize: theme.font.body, color: theme.color.text },
   recoveryImpact: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },

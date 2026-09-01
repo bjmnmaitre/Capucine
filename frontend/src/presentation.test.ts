@@ -4,10 +4,11 @@
  * inconnue pourrait devenir une affirmation sur l'écran de l'utilisateur.
  */
 import {
-  costLabel, merchantLabel, offerAccessibilityLabel, offerUrlLabel,
+  costLabel, explainOfferRanking, merchantLabel, offerAccessibilityLabel, offerUrlLabel,
   priceLabel, rankingPreferenceLabel, resultsSummary, shippingLabel,
   shippingValueLabel, isShippingKnown,
 } from './presentation';
+import { formatMoney } from './theme';
 
 const base = {
   rank: 1,
@@ -206,5 +207,99 @@ describe('Valeur de livraison — source unique, partagée par les écrans', () 
       const value = shippingValueLabel(withShipping(shipping));
       expect(shippingLabel(withShipping(shipping))).toContain(value);
     }
+  });
+});
+
+/**
+ * Explication du classement : elle SITUE une offre parmi celles affichées
+ * sans jamais recalculer une valeur ni inventer un motif. Points vérifiés :
+ * une offre sans prix ne se compare pas, « le moins cher » n'est dit que sur
+ * un coût réellement le plus bas, un écart de prix est chiffré à partir du
+ * coût connu, une livraison inconnue n'est jamais « offerte ».
+ */
+describe('explainOfferRanking — situer une offre, jamais inventer', () => {
+  const offer = (o: Record<string, unknown>) => ({
+    rank: 1,
+    merchant: { id: 'm', name: 'M' },
+    price: { amount: 100, currency: 'EUR', status: 'known' },
+    shipping: { amount: null, currency: 'EUR', status: 'unknown' },
+    cost: { totalKnown: 100, currency: 'EUR', certainty: 'partially_known', unknownComponents: ['shipping'] },
+    matchQuality: null,
+    rankingReasonCode: undefined,
+    readiness: undefined,
+    ...o,
+  } as never);
+
+  it('rank 1 en BEST_MATCH → « Recommandée : meilleure correspondance »', () => {
+    const out = explainOfferRanking(offer({ rank: 1 }), [], { preference: 'BEST_MATCH', applied: true });
+    expect(out[0]).toMatch(/^Recommandée : meilleure correspondance/);
+  });
+
+  it('rank 1 en PRICE_LOWEST → motif de coût, selon la certitude', () => {
+    const known = explainOfferRanking(
+      offer({ rank: 1, rankingReasonCode: 'RANKED_LOWEST_KNOWN_COST' }),
+      [], { preference: 'PRICE_LOWEST', applied: true }
+    );
+    expect(known[0]).toContain('coût total connu le plus bas');
+
+    const partial = explainOfferRanking(
+      offer({ rank: 1, rankingReasonCode: 'RANKED_LOWEST_PARTIAL_COST' }),
+      [], { preference: 'PRICE_LOWEST', applied: true }
+    );
+    expect(partial[0]).toContain('composantes connues');
+  });
+
+  it('offre sans prix → dit explicitement que le coût ne peut pas être comparé', () => {
+    const out = explainOfferRanking(
+      offer({ price: null, cost: { totalKnown: 0, currency: 'unknown', certainty: 'unknown', unknownComponents: ['productPrice'] } }),
+      [offer({})],
+    );
+    expect(out.some((l) => l.includes('Prix non communiqué'))).toBe(true);
+    expect(out.some((l) => /moins cher|le plus bas/.test(l))).toBe(false);
+  });
+
+  // Intl insère une espace fine insécable entre le nombre et € : on compare
+  // via formatMoney plutôt qu'un littéral, comme le fait l'implémentation.
+  const eur = (n: number) => formatMoney(n, 'EUR');
+
+  it('coût total connu ET le plus bas → « Coût total le plus bas »', () => {
+    const self = offer({ cost: { totalKnown: 79, currency: 'EUR', certainty: 'known', unknownComponents: [] } });
+    const rival = offer({ cost: { totalKnown: 90, currency: 'EUR', certainty: 'known', unknownComponents: [] } });
+    const out = explainOfferRanking(self, [self, rival]);
+    expect(out).toContain(`Coût total le plus bas : ${eur(79)}.`);
+  });
+
+  it('plus cher que la moins chère → écart chiffré', () => {
+    const cheap = offer({ cost: { totalKnown: 79, currency: 'EUR', certainty: 'known', unknownComponents: [] } });
+    const self = offer({ rank: 2, cost: { totalKnown: 85, currency: 'EUR', certainty: 'known', unknownComponents: [] } });
+    const out = explainOfferRanking(self, [cheap, self]);
+    expect(out.some((l) => l.startsWith(`${eur(6)} de plus que l’offre la moins chère`))).toBe(true);
+  });
+
+  it('ne compare jamais des devises différentes', () => {
+    const eurOffer = offer({ cost: { totalKnown: 50, currency: 'EUR', certainty: 'known', unknownComponents: [] } });
+    const usd = offer({ price: { amount: 40, currency: 'USD', status: 'known' }, cost: { totalKnown: 40, currency: 'USD', certainty: 'known', unknownComponents: [] } });
+    const out = explainOfferRanking(eurOffer, [eurOffer, usd]);
+    expect(out).toContain(`Coût total le plus bas : ${eur(50)}.`);
+  });
+
+  it('livraison inconnue → « non communiqué », jamais « offerte »', () => {
+    const out = explainOfferRanking(offer({ shipping: { amount: null, currency: 'EUR', status: 'unknown' } }), []);
+    expect(out.some((l) => l.includes('livraison non communiqué') || l.includes('Coût de livraison non communiqué'))).toBe(true);
+    expect(out.some((l) => /offerte/.test(l))).toBe(false);
+  });
+
+  it('readiness prête → une phrase claire ; sinon les points à confirmer', () => {
+    const ready = explainOfferRanking(offer({ readiness: { ready: true, pending: [], blocked: [] } }), []);
+    expect(ready.some((l) => l.startsWith('Achat prêt'))).toBe(true);
+
+    const pending = explainOfferRanking(
+      offer({ readiness: { ready: false, pending: ['deliverable'], blocked: [] } }), []
+    );
+    expect(pending.some((l) => l.includes('À confirmer') && l.includes('livraison'))).toBe(true);
+  });
+
+  it('toujours au moins un point (la position)', () => {
+    expect(explainOfferRanking(offer({}), []).length).toBeGreaterThan(0);
   });
 });

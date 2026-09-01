@@ -75,6 +75,26 @@ export default function App() {
     }
   }
 
+  /**
+   * "Repartir de la recherche initiale" — the session is append-only (a
+   * refinement cannot be individually undone), so a genuine reset is a fresh
+   * /search on the original query. Reuses the `refining` indicator so the
+   * current list stays visible during the round-trip.
+   */
+  async function onResetRefinements() {
+    if (step.name !== 'results') return;
+    setRefining(true);
+    setRefineError(null);
+    try {
+      const response = await search(step.query, USER_ID);
+      setStep({ name: 'results', query: step.query, response });
+    } catch (err) {
+      setRefineError((err as ApiError).message ?? 'La réinitialisation a échoué.');
+    } finally {
+      setRefining(false);
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" />
@@ -95,12 +115,15 @@ export default function App() {
           refining={refining}
           refineError={refineError}
           onRefine={onRefine}
+          onResetRefinements={onResetRefinements}
           onSelect={(offer) => setStep({ ...step, name: 'detail', offer })}
           onBack={() => { setRefineError(null); setStep({ name: 'search' }); }}
         />
       ) : (
         <OfferDetailScreen
           offer={step.offer}
+          allOffers={step.response.results ?? []}
+          ranking={step.response.rankingPreference}
           sessionId={step.response.session?.sessionId ?? null}
           onBack={() =>
             setStep({ name: 'results', query: step.query, response: step.response })
