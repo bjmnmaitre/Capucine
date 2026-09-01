@@ -84,7 +84,12 @@ export function OfferDetailScreen({ offer, sessionId, onBack }: Props) {
       <Text style={styles.merchant} accessibilityRole="header">
         {displayText(offer.merchant?.name, 'Marchand inconnu')}
       </Text>
-      <Text style={styles.product}>Produit : {offer.productId}</Text>
+      {/*
+        Le productId du backend est un identifiant interne
+        ("product-web-www.amazon.com.be"), pas un nom de produit : l'afficher
+        n'apprenait rien à l'utilisateur. Ce qui le renseigne réellement sur
+        l'adéquation de l'offre, c'est matchQuality ("Correspondance exacte").
+      */}
       {offer.matchQuality ? <Text style={styles.match}>{offer.matchQuality}</Text> : null}
 
       <Text style={styles.section} accessibilityRole="header">Coût</Text>
@@ -238,7 +243,6 @@ const styles = StyleSheet.create({
   backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
   pressed: { opacity: 0.75 },
   merchant: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
-  product: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
   match: { fontSize: theme.font.small, color: theme.color.known, marginTop: 2, fontWeight: '600' },
   section: {
     fontSize: theme.font.heading, fontWeight: '700',

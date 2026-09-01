@@ -10,7 +10,7 @@
  * classement viennent du backend et ne sont jamais recalculés ici.
  */
 import { displayText, formatMoney } from './theme';
-import type { RankedOffer } from './types';
+import type { RankedOffer, RankingPreferenceState } from './types';
 
 /** Libellé de livraison. « inconnue » et « offerte » ne se confondent jamais. */
 /**
@@ -78,6 +78,29 @@ export function offerAccessibilityLabel(
 ): string {
   return `Offre numéro ${offer.rank}. ${merchantLabel(offer)}. `
     + `Prix ${priceLabel(offer)}, ${shippingLabel(offer)}. ${costLabel(offer)}.`;
+}
+
+/**
+ * Ce que l'écran dit de l'ordre courant de la liste.
+ *
+ * `null` quand il n'y a rien d'utile à afficher : ordre par défaut
+ * (BEST_MATCH), ou préférence comprise mais SANS effet réel (`applied: false`
+ * pour BEST_VALUE / FASTEST_DELIVERY / BEST_RATED). Ne jamais prétendre que
+ * la liste est triée d'une façon dont elle ne l'est pas.
+ */
+const RANKING_PREFERENCE_LABEL: Record<string, string> = {
+  PRICE_LOWEST: 'Trié par coût total le plus bas',
+  BEST_VALUE: 'Meilleur rapport qualité-prix demandé',
+  FASTEST_DELIVERY: 'Livraison la plus rapide demandée',
+  BEST_RATED: 'Mieux notés demandés',
+};
+
+export function rankingPreferenceLabel(
+  state: RankingPreferenceState | null | undefined
+): string | null {
+  if (!state || state.preference === 'BEST_MATCH') return null;
+  if (!state.applied) return null;
+  return RANKING_PREFERENCE_LABEL[state.preference] ?? null;
 }
 
 /** Message d'état de la liste de résultats. */

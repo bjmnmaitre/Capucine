@@ -1,14 +1,25 @@
-import React from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import {
+  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+} from 'react-native';
 import { RankedOffer, SearchResponse } from '../types';
+import { rankingPreferenceLabel } from '../presentation';
 import { CERTAINTY_LABEL, displayText, formatMoney, theme } from '../theme';
 
 interface Props {
   query: string;
   response: SearchResponse;
+  refining: boolean;
+  refineError: string | null;
+  onRefine: (answer: string) => void;
   onSelect: (offer: RankedOffer) => void;
   onBack: () => void;
 }
+
+/** Ready-made refinements — the phrasings the backend's follow-up interpreter
+ *  reliably understands, offered as one tap instead of forcing the user to
+ *  guess what it accepts. */
+const REFINEMENTS = ['le moins cher', 'livraison rapide', 'sans Amazon', 'uniquement du neuf'];
 
 /** An unknown delivery cost is not a free delivery: the two never collapse. */
 function shippingLabel(offer: RankedOffer): string {
@@ -76,10 +87,116 @@ function OfferRow({ offer, onPress }: { offer: RankedOffer; onPress: () => void 
   );
 }
 
-export function ResultsScreen({ query, response, onSelect, onBack }: Props) {
+/**
+ * Conversational refinement of the current search. Sends free text to
+ * POST /clarify — the backend re-runs the real pipeline with the refinement
+ * merged into the session, so the whole list (and its order) is replaced by a
+ * genuine re-search, never a client-side filter.
+ */
+function RefinementBar({
+  response, refining, refineError, onRefine,
+}: Pick<Props, 'response' | 'refining' | 'refineError' | 'onRefine'>) {
+  const [text, setText] = useState('');
+  const history = response.session?.answeredQuestions ?? [];
+  const canRefine = Boolean(response.session?.sessionId);
+  const orderLabel = rankingPreferenceLabel(response.rankingPreference);
+
+  function submit(value: string) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || refining) return;
+    setText('');
+    onRefine(trimmed);
+  }
+
+  if (!canRefine) return null;
+
+  return (
+    <View style={styles.refine}>
+      <Text style={styles.refineTitle} accessibilityRole="header">Affiner la recherche</Text>
+
+      {orderLabel ? (
+        <View style={styles.orderChip} accessible accessibilityLabel={`Ordre actuel : ${orderLabel}`}>
+          <Text style={styles.orderChipText}>{orderLabel}</Text>
+        </View>
+      ) : null}
+
+      {history.length > 0 ? (
+        <View
+          style={styles.refineHistory}
+          accessible
+          accessibilityLabel={`Affinages appliqués : ${history.map((h) => h.answer).join(', ')}`}
+        >
+          {history.map((h, i) => (
+            <Text key={`${h.questionId}-${i}`} style={styles.refineHistoryItem}>• {h.answer}</Text>
+          ))}
+        </View>
+      ) : null}
+
+      <View style={styles.refineInputRow}>
+        <TextInput
+          style={styles.refineInput}
+          value={text}
+          onChangeText={setText}
+          placeholder="ex. le moins cher, livraison rapide…"
+          placeholderTextColor={theme.color.textMuted}
+          onSubmitEditing={() => submit(text)}
+          returnKeyType="send"
+          editable={!refining}
+          accessibilityLabel="Affiner la recherche"
+          accessibilityHint="Décrivez ce qui doit changer, puis validez"
+        />
+        <Pressable
+          onPress={() => submit(text)}
+          disabled={refining || text.trim().length === 0}
+          accessibilityRole="button"
+          accessibilityLabel="Appliquer l’affinage"
+          accessibilityState={{ disabled: refining || text.trim().length === 0, busy: refining }}
+          style={({ pressed }) => [
+            styles.refineSend,
+            (pressed || refining || text.trim().length === 0) && styles.refineSendMuted,
+          ]}
+        >
+          {refining
+            ? <ActivityIndicator color={theme.color.accentText} />
+            : <Text style={styles.refineSendText}>OK</Text>}
+        </Pressable>
+      </View>
+
+      <View style={styles.refineChips}>
+        {REFINEMENTS.map((r) => (
+          <Pressable
+            key={r}
+            onPress={() => submit(r)}
+            disabled={refining}
+            accessibilityRole="button"
+            accessibilityLabel={`Affiner : ${r}`}
+            style={({ pressed }) => [styles.refineChip, pressed && styles.cardPressed]}
+          >
+            <Text style={styles.refineChipText}>{r}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {refining ? (
+        <Text style={styles.refineNote} accessibilityLiveRegion="polite">
+          Capucine relance la recherche avec cette précision…
+        </Text>
+      ) : null}
+      {refineError ? (
+        <View style={styles.refineErrorBox} accessibilityLiveRegion="assertive">
+          <Text style={styles.refineErrorText}>{refineError}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+export function ResultsScreen({
+  query, response, refining, refineError, onRefine, onSelect, onBack,
+}: Props) {
   const results = response.results ?? [];
   const productIds = new Set(results.map((r) => r.productId));
-  const merchantIds = new Set(results.map((r) => r.merchant.id));
+  const merchantIds = new Set(results.map((r) => r.merchant?.id).filter(Boolean));
 
   return (
     <View style={styles.flex}>
@@ -104,28 +221,45 @@ export function ResultsScreen({ query, response, onSelect, onBack }: Props) {
       </View>
 
       {results.length === 0 ? (
-        <View style={styles.empty} accessibilityLiveRegion="polite">
-          <Text style={styles.emptyTitle}>Aucune offre trouvée</Text>
-          <Text style={styles.emptyBody}>
-            {response.noResultsDiagnosis?.message ??
-              "Capucine n’a trouvé aucune offre correspondant à cette demande."}
-          </Text>
-          {/*
-            Ce que l'utilisateur peut faire pour élargir. Chaque option demande
-            sa confirmation : Capucine ne relâche jamais un critère toute seule.
-          */}
-          {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) => (
-            <View key={option.id} style={styles.recovery}>
-              <Text style={styles.recoveryText}>{option.description}</Text>
-              {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
-            </View>
-          ))}
-        </View>
+        <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
+          <RefinementBar
+            response={response}
+            refining={refining}
+            refineError={refineError}
+            onRefine={onRefine}
+          />
+          <View style={styles.empty} accessibilityLiveRegion="polite">
+            <Text style={styles.emptyTitle}>Aucune offre trouvée</Text>
+            <Text style={styles.emptyBody}>
+              {response.noResultsDiagnosis?.message ??
+                "Capucine n’a trouvé aucune offre correspondant à cette demande."}
+            </Text>
+            {/*
+              Ce que l'utilisateur peut faire pour élargir. Chaque option demande
+              sa confirmation : Capucine ne relâche jamais un critère toute seule.
+            */}
+            {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) => (
+              <View key={option.id} style={styles.recovery}>
+                <Text style={styles.recoveryText}>{option.description}</Text>
+                {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
       ) : (
         <FlatList
           data={results}
           keyExtractor={(item) => item.offerId}
           contentContainerStyle={styles.list}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            <RefinementBar
+              response={response}
+              refining={refining}
+              refineError={refineError}
+              onRefine={onRefine}
+            />
+          }
           renderItem={({ item }) => <OfferRow offer={item} onPress={() => onSelect(item)} />}
           ListFooterComponent={
             <Text style={styles.footer}>
@@ -150,6 +284,49 @@ const styles = StyleSheet.create({
   counts: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   list: { padding: theme.space(2), paddingBottom: theme.space(5) },
+  refine: {
+    backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
+    borderColor: theme.color.border, padding: theme.space(1.5), marginBottom: theme.space(1.5),
+  },
+  refineTitle: {
+    fontSize: theme.font.small, fontWeight: '700', color: theme.color.text,
+    marginBottom: theme.space(1),
+  },
+  orderChip: {
+    alignSelf: 'flex-start', backgroundColor: '#EAF0FE', borderRadius: 6,
+    paddingHorizontal: theme.space(1), paddingVertical: 4, marginBottom: theme.space(1),
+  },
+  orderChipText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
+  refineHistory: { marginBottom: theme.space(1) },
+  refineHistoryItem: { fontSize: theme.font.small, color: theme.color.textMuted, lineHeight: 20 },
+  refineInputRow: { flexDirection: 'row', gap: theme.space(1), alignItems: 'stretch' },
+  refineInput: {
+    flex: 1, minHeight: theme.minTouch, borderWidth: 1, borderColor: theme.color.border,
+    borderRadius: theme.radius, paddingHorizontal: theme.space(1.5),
+    fontSize: theme.font.body, color: theme.color.text, backgroundColor: theme.color.background,
+  },
+  refineSend: {
+    minWidth: theme.minTouch + 8, minHeight: theme.minTouch, borderRadius: theme.radius,
+    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: theme.space(1.5),
+  },
+  refineSendMuted: { opacity: 0.5 },
+  refineSendText: { color: theme.color.accentText, fontWeight: '700', fontSize: theme.font.body },
+  refineChips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginTop: theme.space(1) },
+  refineChip: {
+    minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
+    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
+    backgroundColor: theme.color.background,
+  },
+  refineChipText: { fontSize: theme.font.small, color: theme.color.text },
+  refineNote: {
+    marginTop: theme.space(1), fontSize: theme.font.small, color: theme.color.textMuted,
+  },
+  refineErrorBox: {
+    marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radius,
+    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
+  },
+  refineErrorText: { color: theme.color.danger, fontSize: theme.font.small, fontWeight: '600' },
   card: {
     backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
     borderColor: theme.color.border, padding: theme.space(2), marginBottom: theme.space(1.5),

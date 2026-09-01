@@ -5,7 +5,8 @@
  */
 import {
   costLabel, merchantLabel, offerAccessibilityLabel, offerUrlLabel,
-  priceLabel, resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
+  priceLabel, rankingPreferenceLabel, resultsSummary, shippingLabel,
+  shippingValueLabel, isShippingKnown,
 } from './presentation';
 
 const base = {
@@ -131,6 +132,35 @@ describe('Résumé de la liste', () => {
     [4, 3, '4 offres · 3 marchands'],
   ])('%i offres / %i marchands', (c, m, expected) => {
     expect(resultsSummary(c, m)).toBe(expected);
+  });
+});
+
+/**
+ * Ordre courant de la liste : l'écran ne doit annoncer un tri QUE lorsqu'il a
+ * réellement eu lieu. BEST_VALUE / FASTEST_DELIVERY / BEST_RATED sont compris
+ * mais ne réordonnent rien encore (backend ranking-preference.ts) : dire le
+ * contraire serait présenter une inconnue comme un fait.
+ */
+describe('rankingPreferenceLabel — n’annonce que ce qui est réellement appliqué', () => {
+  it('ordre par défaut → aucun libellé', () => {
+    expect(rankingPreferenceLabel({ preference: 'BEST_MATCH', applied: true })).toBeNull();
+    expect(rankingPreferenceLabel(null)).toBeNull();
+    expect(rankingPreferenceLabel(undefined)).toBeNull();
+  });
+
+  it('PRICE_LOWEST appliqué → libellé de coût', () => {
+    expect(rankingPreferenceLabel({ preference: 'PRICE_LOWEST', applied: true }))
+      .toBe('Trié par coût total le plus bas');
+  });
+
+  it('préférence comprise mais SANS effet → aucun libellé', () => {
+    expect(rankingPreferenceLabel({ preference: 'PRICE_LOWEST', applied: false })).toBeNull();
+    expect(rankingPreferenceLabel({ preference: 'BEST_VALUE', applied: false })).toBeNull();
+    expect(rankingPreferenceLabel({ preference: 'FASTEST_DELIVERY', applied: false })).toBeNull();
+  });
+
+  it('préférence inconnue → aucun libellé plutôt qu’un code brut', () => {
+    expect(rankingPreferenceLabel({ preference: 'SOMETHING_NEW', applied: true })).toBeNull();
   });
 });
 

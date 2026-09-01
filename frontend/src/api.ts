@@ -90,6 +90,27 @@ export function search(query: string, userId: string): Promise<SearchResponse> {
   return postJson<SearchResponse>('/search', { query, userId });
 }
 
+/**
+ * Continue a search conversationally. `answer` is free text — "le moins cher",
+ * "livraison rapide", "sans Amazon", "élargis à 400 €", "montre-moi les 3
+ * meilleures". The backend re-runs the REAL pipeline with the refinement
+ * merged into the session (never a fabricated delta) and returns the same
+ * shape as /search, with the order and `rankingPreference` updated.
+ *
+ * `FOLLOWUP_QUESTION_ID` is the sentinel that tells /clarify this is a
+ * free-form refinement of the current search, not an answer to a specific
+ * pending question. It is always required by the backend, never inferred.
+ */
+export const FOLLOWUP_QUESTION_ID = '__followup__';
+
+export function refine(sessionId: string, answer: string): Promise<SearchResponse> {
+  return postJson<SearchResponse>('/clarify', {
+    sessionId,
+    questionId: FOLLOWUP_QUESTION_ID,
+    answer,
+  });
+}
+
 export function prepareCart(
   sessionId: string,
   offerId: string,

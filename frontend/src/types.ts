@@ -119,10 +119,44 @@ export interface SearchSummary {
   resultSummary?: string;
 }
 
+/**
+ * How the shown list is ordered. `applied: false` means the preference was
+ * understood and accepted but does not reorder anything yet (BEST_VALUE /
+ * FASTEST_DELIVERY / BEST_RATED — see backend ranking-preference.ts): the UI
+ * must then NOT claim the list is sorted that way.
+ */
+export type RankingPreferenceCode =
+  | 'BEST_MATCH' | 'PRICE_LOWEST' | 'BEST_VALUE' | 'FASTEST_DELIVERY' | 'BEST_RATED' | string;
+
+export interface RankingPreferenceState {
+  preference: RankingPreferenceCode;
+  applied: boolean;
+}
+
+/** One refinement the user has spoken in this conversation, as the backend
+ *  recorded it (POST /clarify → session.answeredQuestions). */
+export interface AnsweredQuestion {
+  questionId: string;
+  question: string;
+  answer: string;
+}
+
 export interface SearchResponse {
   requestId: string;
   language?: string;
-  session?: { sessionId: string } | null;
+  /**
+   * Continuable session. Present on EVERY completed search now: `sessionId`
+   * is what POST /prepare-cart and POST /clarify both need. `turn` and
+   * `answeredQuestions` grow as the user refines the search conversationally.
+   */
+  session?: {
+    sessionId: string;
+    turn?: number;
+    originalQuery?: string;
+    answeredQuestions?: AnsweredQuestion[];
+    remainingQuestions?: number;
+  } | null;
+  rankingPreference?: RankingPreferenceState;
   results: RankedOffer[];
   summary?: SearchSummary;
   interpretation?: { productTerms?: string[]; [k: string]: unknown } | null;
