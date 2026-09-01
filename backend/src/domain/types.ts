@@ -820,6 +820,15 @@ export interface RankingRequest {
    */
   usageContext?: UsageContext;
 
+  /**
+   * The user opted into "prioritise immediate availability" (a permanent
+   * profile preference). Raises the CONFIRMED-availability bonus cap — same
+   * bonus-only, bounded mechanism, just worth more. Never subtracts for
+   * unknown availability, never overturns a clearly better match. Absent /
+   * false → identical scoring to before.
+   */
+  prioritizeAvailability?: boolean;
+
   // Metadata
   requestId: string;
   timestamp: Date;

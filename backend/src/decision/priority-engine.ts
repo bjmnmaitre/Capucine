@@ -691,7 +691,9 @@ export function rankOffers(
       // Readiness adds points for CONFIRMED availability facts only — never
       // subtracts for unknown ones, exactly like the contextual bonus.
       const readiness = readinessByOfferId?.get(offer.id);
-      const readinessScore = readiness ? scoreReadiness(readiness) : undefined;
+      const readinessScore = readiness
+        ? scoreReadiness(readiness, { emphasis: request.prioritizeAvailability === true })
+        : undefined;
 
       const bonus = (contextualRelevance?.bonus ?? 0) + (readinessScore?.bonus ?? 0);
       const finalScore = bonus > 0

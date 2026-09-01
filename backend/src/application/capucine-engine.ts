@@ -32,7 +32,7 @@
 
 import { UserProfile, PreferenceCriterion, RankingResult, Offer, UsageContext } from '../domain/types';
 import { AdmissibilityEngine, AdmissibilityBatch, RejectedOffer } from '../domain/admissibility';
-import { ProfileEngine, ProfileOverride } from '../domain/profile';
+import { ProfileEngine, ProfileOverride, availabilityPreferenceFromProfile } from '../domain/profile';
 import { rankOffers } from '../decision/priority-engine';
 import { assessPurchaseReadiness, OfferReadiness } from '../domain/purchase-readiness';
 import { CostEngine, CostBreakdown, defaultCostEngine } from './cost-engine';
@@ -139,6 +139,15 @@ export interface SearchRequest {
    * "ne confonds jamais langue de réponse et langues de recherche").
    */
   additionalSearchLanguages?: SupportedLanguage[];
+
+  /**
+   * The user opted into "prioritise immediate availability". Explicit override;
+   * when omitted the engine derives it from `profile` itself
+   * (availabilityPreferenceFromProfile), so a follow-up search that just
+   * replays `session.profile` keeps the preference without the caller
+   * re-stating it. Threaded into RankingRequest.prioritizeAvailability.
+   */
+  prioritizeAvailability?: boolean;
 }
 
 /**
@@ -724,6 +733,11 @@ export class CapucineEngine {
         // contextual signal can add points to an ELIGIBLE offer, it can
         // never make an ineligible one rankable — see priority-engine.ts.
         usageContext: effectiveCriteriaSet.usageContext,
+        // Explicit request flag wins; otherwise read the permanent profile
+        // preference directly, so a follow-up search replaying `profile`
+        // keeps "prioritise availability" without re-stating it.
+        prioritizeAvailability:
+          request.prioritizeAvailability ?? availabilityPreferenceFromProfile(request.profile),
         requestId: request.requestId,
         timestamp: new Date(),
       },
@@ -934,6 +948,8 @@ export class CapucineEngine {
         offers: eligibleOffers,
         effectiveCriteria,
         usageContext: effectiveCriteriaSet.usageContext,
+        prioritizeAvailability:
+          request.prioritizeAvailability ?? availabilityPreferenceFromProfile(request.profile),
         requestId: request.requestId,
         timestamp: new Date(),
       },

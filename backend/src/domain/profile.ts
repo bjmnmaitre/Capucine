@@ -187,6 +187,26 @@ export function rankingPreferenceFromProfile(profile: UserProfile): string | nul
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
+// ── Availability preference ────────────────────────────────────────────────
+
+/**
+ * "Privilégier la disponibilité immédiate." An INDEPENDENT axis from the
+ * ranking preference (they compose: a user can want both "cheapest" and
+ * "prefer what's in stock"). Stored as a single criterion; its presence is
+ * the switch. A malformed value is treated as OFF, never an error.
+ *
+ *   { id: 'availability-preference', level: 'preference',
+ *     parameters: { prioritizeAvailability: true } }
+ */
+export const AVAILABILITY_PREFERENCE_CRITERION_ID = 'availability-preference';
+
+export function availabilityPreferenceFromProfile(profile: UserProfile): boolean {
+  const c = profile.preferences.criteria.find(
+    (x) => x.id === AVAILABILITY_PREFERENCE_CRITERION_ID
+  );
+  return c?.parameters?.['prioritizeAvailability'] === true;
+}
+
 // ============================================================================
 // PROFILE ENGINE
 // ============================================================================

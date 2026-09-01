@@ -7,10 +7,12 @@
 import {
   MERCHANT_EXCLUSION_ID_PREFIX,
   RANKING_PREFERENCE_CRITERION_ID,
+  AVAILABILITY_PREFERENCE_CRITERION_ID,
   isMerchantExclusionCriterion,
   merchantNameOfExclusion,
   merchantExclusionsFromProfile,
   rankingPreferenceFromProfile,
+  availabilityPreferenceFromProfile,
 } from '../../src/domain/profile';
 import { isRankingPreference } from '../../src/application/ranking-preference';
 import { createEmptyProfile } from '../../src/application/profile-store';
@@ -85,5 +87,23 @@ describe('rankingPreferenceFromProfile / isRankingPreference', () => {
     expect(isRankingPreference('CHEAPEST_EVER')).toBe(false);
     expect(isRankingPreference(42)).toBe(false);
     expect(isRankingPreference(null)).toBe(false);
+  });
+});
+
+describe('availabilityPreferenceFromProfile', () => {
+  const withAvail = (params: unknown) => profileWith([
+    { id: AVAILABILITY_PREFERENCE_CRITERION_ID, name: '…', level: 'preference',
+      parameters: params as Record<string, unknown> },
+  ]);
+
+  it('true seulement si prioritizeAvailability === true', () => {
+    expect(availabilityPreferenceFromProfile(withAvail({ prioritizeAvailability: true }))).toBe(true);
+  });
+
+  it('false pour toute autre valeur, jamais d\'erreur', () => {
+    expect(availabilityPreferenceFromProfile(withAvail({ prioritizeAvailability: false }))).toBe(false);
+    expect(availabilityPreferenceFromProfile(withAvail({ prioritizeAvailability: 'yes' }))).toBe(false);
+    expect(availabilityPreferenceFromProfile(withAvail({}))).toBe(false);
+    expect(availabilityPreferenceFromProfile(createEmptyProfile('u'))).toBe(false);
   });
 });

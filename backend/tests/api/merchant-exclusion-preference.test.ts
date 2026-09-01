@@ -175,3 +175,62 @@ describe('Préférence permanente « toujours trier par coût total le plus bas 
     expect(body.rankingPreference.preference).toBe('BEST_MATCH');
   });
 });
+
+describe('Préférence permanente « privilégier la disponibilité immédiate »', () => {
+  let dir: string;
+  let app: Application;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'capucine-avail-'));
+    app = buildApp({ profileStoreDir: dir, webAdapters: [fixtureAdapter()], enablePageEnrichment: false });
+  });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  async function search(userId: string) {
+    const { default: supertest } = await import('supertest');
+    const res = await supertest(app).post('/search').send({ query: QUERY, userId });
+    expect(res.status).toBe(200);
+    return res.body;
+  }
+  async function setAvailabilityPref(userId: string, value: unknown) {
+    const { default: supertest } = await import('supertest');
+    const res = await supertest(app).put(`/profile/${userId}/criterion`).send({
+      id: 'availability-preference', name: 'Privilégier la disponibilité immédiate',
+      level: 'preference', parameters: { prioritizeAvailability: value },
+    });
+    expect(res.status).toBeLessThan(400);
+  }
+
+  it('sans préférence : availabilityEmphasis = false', async () => {
+    expect((await search('av-off')).availabilityEmphasis).toBe(false);
+  });
+
+  it('avec la préférence : availabilityEmphasis = true dès la 1re recherche', async () => {
+    await setAvailabilityPref('av-on', true);
+    expect((await search('av-on')).availabilityEmphasis).toBe(true);
+  });
+
+  it('la préférence survit à un affinage de session', async () => {
+    await setAvailabilityPref('av-refine', true);
+    const first = await search('av-refine');
+    const { default: supertest } = await import('supertest');
+    const res = await supertest(app).post('/clarify').send({
+      sessionId: first.session.sessionId, questionId: '__followup__', answer: 'le moins cher',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.availabilityEmphasis).toBe(true);
+  });
+
+  it('une valeur non booléenne est traitée comme OFF, jamais d\'erreur', async () => {
+    await setAvailabilityPref('av-bad', 'oui');
+    expect((await search('av-bad')).availabilityEmphasis).toBe(false);
+  });
+
+  it('retrait de la préférence → availabilityEmphasis repasse à false', async () => {
+    await setAvailabilityPref('av-toggle', true);
+    expect((await search('av-toggle')).availabilityEmphasis).toBe(true);
+    const { default: supertest } = await import('supertest');
+    await supertest(app).delete('/profile/av-toggle/criterion/availability-preference');
+    expect((await search('av-toggle')).availabilityEmphasis).toBe(false);
+  });
+});

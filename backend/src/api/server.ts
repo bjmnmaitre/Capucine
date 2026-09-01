@@ -31,7 +31,7 @@ import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator } from '../application/ai-providers';
 import { FileProfileStore } from '../application/profile-store';
-import { merchantExclusionsFromProfile, rankingPreferenceFromProfile } from '../domain/profile';
+import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, availabilityPreferenceFromProfile } from '../domain/profile';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
@@ -486,8 +486,11 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
       const profileRankingPreference = isRankingPreference(storedRankingPref)
         ? storedRankingPref
         : DEFAULT_RANKING_PREFERENCE;
+      const profileAvailabilityEmphasis = availabilityPreferenceFromProfile(profile);
       const needsSessionState =
-        profileMerchantExclusions.length > 0 || profileRankingPreference !== DEFAULT_RANKING_PREFERENCE;
+        profileMerchantExclusions.length > 0
+        || profileRankingPreference !== DEFAULT_RANKING_PREFERENCE
+        || profileAvailabilityEmphasis;
       const payload = serializeResult(
         result,
         sessionId,
@@ -498,6 +501,7 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
               targetCountries: [DEFAULT_COUNTRY],
               destinationCountry: DEFAULT_COUNTRY,
               excludedMerchantNames: profileMerchantExclusions,
+              availabilityEmphasis: profileAvailabilityEmphasis,
             }
           : undefined
       );
@@ -636,6 +640,9 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           resultLimit: updatedSession.resultLimit,
           excludedMerchantNames: updatedSession.excludedMerchantNames,
           excludedOfferIds: updatedSession.excludedOfferIds,
+          // Permanent preference — read from the session's profile snapshot,
+          // survives every follow-up turn.
+          availabilityEmphasis: availabilityPreferenceFromProfile(session.profile),
         }));
       }
 
@@ -674,6 +681,12 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           answer: aq.answer,
         })),
         remainingQuestions: applyResult.updatedSession.unansweredQuestions.length,
+      }, {
+        rankingPreference: applyResult.updatedSession.rankingPreference,
+        targetCountries: applyResult.updatedSession.targetCountries,
+        destinationCountry: applyResult.updatedSession.destinationCountry,
+        excludedMerchantNames: applyResult.updatedSession.excludedMerchantNames,
+        availabilityEmphasis: availabilityPreferenceFromProfile(session.profile),
       }));
 
     } catch (err) {
@@ -1174,6 +1187,10 @@ function serializeResult(
     resultLimit?: number;
     excludedMerchantNames?: string[];
     excludedOfferIds?: string[];
+    /** The user's permanent "prioritise availability" preference was active
+     *  for this search — it raised the confirmed-availability ranking bonus.
+     *  Informational: lets the client explain why ready offers rank higher. */
+    availabilityEmphasis?: boolean;
   }
 ): object {
   // "montre-moi les moins chers" reorders PriorityEngine's already-ranked
@@ -1244,13 +1261,28 @@ function serializeResult(
     // is false for a preference that's accepted but not yet implemented —
     // e.g. BEST_VALUE — so the order silently stayed BEST_MATCH; never
     // claim a preference was honored when it wasn't).
-    rankingPreference: { preference: preferenceResult.preference, applied: preferenceResult.applied },
+    rankingPreference: {
+      preference: preferenceResult.preference,
+      applied: preferenceResult.applied,
+      // `false` for FASTEST_DELIVERY / BEST_RATED / BEST_VALUE — accepted but
+      // inert for lack of a data source. `reason` is the localized explanation.
+      supported: preferenceResult.supported,
+      ...(preferenceResult.unsupportedReasonCode
+        ? { reason: translate(preferenceResult.unsupportedReasonCode, result.language) }
+        : {}),
+    },
 
     // Merchant exclusions actually applied to THIS list (session "sans X" or a
     // permanent profile preference). null when nothing was excluded. Lets a
     // client say honestly "3 offres de Amazon masquées (votre préférence)"
     // instead of the list just being silently shorter.
     merchantExclusions,
+
+    // The user's permanent "prioritise immediate availability" preference was
+    // active for this search (it raised the confirmed-availability ranking
+    // bonus). Lets a client explain why an in-stock offer outranks a slightly
+    // better match. `false` when the preference is off.
+    availabilityEmphasis: sessionState?.availabilityEmphasis === true,
 
     // destination: where the user would receive the product (FR by default)
     // vs. which countries Capucine actually searched IN this turn — kept

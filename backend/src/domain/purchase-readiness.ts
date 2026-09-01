@@ -237,8 +237,15 @@ function buildSummary(
  * it would have scored if readiness did not exist (INVARIANT 2). Small on
  * purpose — availability is a tie-breaker, never a reason to overturn what the
  * user actually asked for.
+ *
+ * READINESS_BONUS_EMPHASIS is what the OPT-IN user preference "privilégier la
+ * disponibilité immédiate" raises the cap to. Still bonus-only, still bounded,
+ * still can't lift a genuinely poor match over a strong one (a weak 30-point
+ * match + 20 stays below a solid 55-point match). It only decides close calls
+ * in favour of the offer you can actually buy right now.
  */
 export const READINESS_BONUS_MAX = 5;
+export const READINESS_BONUS_EMPHASIS = 20;
 
 export interface ReadinessScore {
   bonus: number;
@@ -246,7 +253,17 @@ export interface ReadinessScore {
   awarded: Array<{ dimension: ReadinessDimension; points: number; reason: string }>;
 }
 
-export function scoreReadiness(readiness: OfferReadiness): ReadinessScore {
+export interface ScoreReadinessOptions {
+  /** The user opted into "prioritise immediate availability" — raise the cap
+   *  from READINESS_BONUS_MAX to READINESS_BONUS_EMPHASIS. Unknown dimensions
+   *  still earn nothing; this only changes how much a CONFIRMED fact is worth. */
+  emphasis?: boolean;
+}
+
+export function scoreReadiness(
+  readiness: OfferReadiness,
+  options: ScoreReadinessOptions = {}
+): ReadinessScore {
   // Only the two dimensions that describe the WORLD (is it in stock, does it
   // ship here) are scored. 'verified' and 'purchasable' describe how well
   // CAPUCINE managed to read the page — rewarding those would rank merchants
@@ -257,7 +274,8 @@ export function scoreReadiness(readiness: OfferReadiness): ReadinessScore {
     ['deliverable', readiness.deliverable],
   ];
 
-  const share = READINESS_BONUS_MAX / scored.length;
+  const maxBonus = options.emphasis ? READINESS_BONUS_EMPHASIS : READINESS_BONUS_MAX;
+  const share = maxBonus / scored.length;
   const awarded: ReadinessScore['awarded'] = [];
   let bonus = 0;
 
@@ -268,5 +286,5 @@ export function scoreReadiness(readiness: OfferReadiness): ReadinessScore {
     bonus += points;
   }
 
-  return { bonus: Math.round(bonus * 10) / 10, maxBonus: READINESS_BONUS_MAX, awarded };
+  return { bonus: Math.round(bonus * 10) / 10, maxBonus, awarded };
 }
