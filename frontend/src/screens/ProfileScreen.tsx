@@ -3,6 +3,7 @@ import {
   ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { deleteCriterion, loadProfile, saveCriterion } from '../api';
+import { criterionId } from '../profile';
 import { ApiError, PREFERENCE_LEVELS, PreferenceLevel, ProfileCriterion } from '../types';
 import { theme } from '../theme';
 
@@ -10,6 +11,11 @@ interface Props {
   userId: string;
   onBack: () => void;
 }
+
+/** Formulations que le backend relie couramment à un critère produit
+ *  (livraison / neuf-occasion / budget). Un point de départ fiable ; le champ
+ *  libre reste possible pour le reste. */
+const PREFERENCE_SUGGESTIONS = ['Livraison en France', 'Produit neuf', 'Budget serré'];
 
 const LEVEL_LABEL: Record<PreferenceLevel, string> = {
   required: 'obligatoire',
@@ -62,10 +68,7 @@ export function ProfileScreen({ userId, onBack }: Props) {
     setBusy(true);
     setError(null);
     try {
-      // A stable, readable id derived from the name — the backend keys on it,
-      // so re-adding the same preference updates it instead of duplicating.
-      const id = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      await saveCriterion(userId, { id, name: trimmed, level });
+      await saveCriterion(userId, { id: criterionId(trimmed), name: trimmed, level });
       setName('');
       await refresh();
     } catch (err) {
@@ -101,11 +104,27 @@ export function ProfileScreen({ userId, onBack }: Props) {
 
       <Text style={styles.title} accessibilityRole="header">Vos préférences</Text>
       <Text style={styles.subtitle}>
-        Ces préférences sont permanentes : Capucine les applique à toutes vos recherches.
-        Une demande ponctuelle qui les contredit reste prioritaire pour cette recherche-là.
+        Ces préférences permanentes sont jointes à chaque recherche. Capucine les prend en
+        compte lorsqu’elle sait relier votre formulation à un critère du produit — sinon
+        elle les conserve sans pouvoir les appliquer. Une demande ponctuelle qui les
+        contredit reste prioritaire pour cette recherche-là.
       </Text>
 
       <Text style={styles.section} accessibilityRole="header">Ajouter une préférence</Text>
+      <View style={styles.suggestions}>
+        {PREFERENCE_SUGGESTIONS.map((s) => (
+          <Pressable
+            key={s}
+            onPress={() => setName(s)}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel={`Pré-remplir : ${s}`}
+            style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}
+          >
+            <Text style={styles.suggestionText}>{s}</Text>
+          </Pressable>
+        ))}
+      </View>
       <TextInput
         style={styles.input}
         value={name}
@@ -214,6 +233,13 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius, paddingHorizontal: theme.space(2),
     fontSize: theme.font.body, color: theme.color.text, backgroundColor: theme.color.surface,
   },
+  suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginBottom: theme.space(1) },
+  suggestion: {
+    minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
+    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
+    backgroundColor: theme.color.background,
+  },
+  suggestionText: { fontSize: theme.font.small, color: theme.color.text },
   levels: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1) },
   level: {
     minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
