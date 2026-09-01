@@ -3,9 +3,10 @@ import {
   ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import {
-  deleteCriterion, excludeMerchant, loadProfile, saveCriterion, unexcludeMerchant,
+  clearRankingPreference, deleteCriterion, excludeMerchant, loadProfile,
+  saveCriterion, setRankingPreference, unexcludeMerchant,
 } from '../api';
-import { criterionId, isMerchantExclusion, merchantNameOf } from '../profile';
+import { criterionId, isMerchantExclusion, merchantNameOf, rankingPreferenceOf } from '../profile';
 import { ApiError, PREFERENCE_LEVELS, PreferenceLevel, ProfileCriterion } from '../types';
 import { theme } from '../theme';
 
@@ -48,10 +49,14 @@ export function ProfileScreen({ userId, onBack }: Props) {
   const [level, setLevel] = useState<PreferenceLevel>('important');
   const [merchant, setMerchant] = useState('');
 
-  // Merchant exclusions are a distinct, first-class concept (they filter the
-  // list outright); the free-text preferences are best-effort attribute hints.
+  // Merchant exclusions and the ranking preference are distinct, first-class
+  // concepts with a real, immediate effect; the free-text preferences are
+  // best-effort attribute hints.
   const merchantExclusions = criteria.filter(isMerchantExclusion);
-  const otherCriteria = criteria.filter((c) => !isMerchantExclusion(c));
+  const cheapestFirst = rankingPreferenceOf(criteria) === 'PRICE_LOWEST';
+  const otherCriteria = criteria.filter(
+    (c) => !isMerchantExclusion(c) && c.id !== 'ranking-preference'
+  );
 
   async function refresh() {
     setLoading(true);
@@ -128,6 +133,20 @@ export function ProfileScreen({ userId, onBack }: Props) {
     }
   }
 
+  async function onToggleCheapestFirst() {
+    setBusy(true);
+    setError(null);
+    try {
+      if (cheapestFirst) await clearRankingPreference(userId);
+      else await setRankingPreference(userId, 'PRICE_LOWEST');
+      await refresh();
+    } catch (err) {
+      setError((err as ApiError).message ?? "L'enregistrement a échoué.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <Pressable
@@ -198,6 +217,29 @@ export function ProfileScreen({ userId, onBack }: Props) {
           );
         })
       )}
+
+      {/* ── Ordre par défaut — effet immédiat et vérifiable ── */}
+      <Text style={styles.section} accessibilityRole="header">Ordre des résultats</Text>
+      <Pressable
+        onPress={onToggleCheapestFirst}
+        disabled={busy}
+        accessibilityRole="switch"
+        accessibilityLabel="Toujours trier par coût total le plus bas"
+        accessibilityState={{ checked: cheapestFirst, disabled: busy }}
+        style={({ pressed }) => [styles.toggleRow, pressed && styles.pressed]}
+      >
+        <View style={styles.rowText}>
+          <Text style={styles.rowName}>Toujours trier par coût total le plus bas</Text>
+          <Text style={styles.rowLevel}>
+            {cheapestFirst
+              ? 'Activé — appliqué dès la prochaine recherche'
+              : 'Désactivé — Capucine classe par correspondance'}
+          </Text>
+        </View>
+        <Text style={[styles.toggleState, cheapestFirst && styles.toggleStateOn]}>
+          {cheapestFirst ? 'ON' : 'OFF'}
+        </Text>
+      </Pressable>
 
       <Text style={styles.section} accessibilityRole="header">Ajouter une préférence</Text>
       <Text style={styles.sectionNote}>
@@ -326,6 +368,19 @@ const styles = StyleSheet.create({
   inlineBtn: {
     minHeight: theme.minTouch, borderRadius: theme.radius, backgroundColor: theme.color.accent,
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: theme.space(2),
+  },
+  toggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.space(1), minHeight: theme.minTouch + 6,
+    backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
+    borderColor: theme.color.border, padding: theme.space(1.5),
+  },
+  toggleState: {
+    fontSize: theme.font.small, fontWeight: '700', color: theme.color.textMuted,
+    borderWidth: 1, borderColor: theme.color.border, borderRadius: 6,
+    paddingHorizontal: theme.space(1), paddingVertical: 2, overflow: 'hidden',
+  },
+  toggleStateOn: {
+    color: theme.color.accentText, backgroundColor: theme.color.accent, borderColor: theme.color.accent,
   },
   label: {
     fontSize: theme.font.small, fontWeight: '600',

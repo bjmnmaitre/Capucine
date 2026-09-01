@@ -124,3 +124,54 @@ describe('Préférence permanente « marchand exclu »', () => {
     expect(after.merchantExclusions).toBeNull();
   });
 });
+
+describe('Préférence permanente « toujours trier par coût total le plus bas »', () => {
+  let dir: string;
+  let app: Application;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'capucine-rankpref-'));
+    app = buildApp({ profileStoreDir: dir, webAdapters: [fixtureAdapter()], enablePageEnrichment: false });
+  });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  async function search(userId: string) {
+    const { default: supertest } = await import('supertest');
+    const res = await supertest(app).post('/search').send({ query: QUERY, userId });
+    expect(res.status).toBe(200);
+    return res.body;
+  }
+
+  it('sans préférence : ordre BEST_MATCH', async () => {
+    expect((await search('rp-neutre')).rankingPreference.preference).toBe('BEST_MATCH');
+  });
+
+  it('avec la préférence : PRICE_LOWEST dès la 1re recherche, offres triées par coût', async () => {
+    const { default: supertest } = await import('supertest');
+    const put = await supertest(app).put('/profile/rp-cheap/criterion').send({
+      id: 'ranking-preference', name: 'Toujours le moins cher', level: 'preference',
+      parameters: { rankingPreference: 'PRICE_LOWEST' },
+    });
+    expect(put.status).toBeLessThan(400);
+
+    const body = await search('rp-cheap');
+    expect(body.rankingPreference).toMatchObject({ preference: 'PRICE_LOWEST', applied: true });
+
+    // Les offres à coût connu sont en ordre croissant.
+    const knownCosts = body.results
+      .filter((o: { cost: { certainty: string; totalKnown: number } }) => o.cost.certainty !== 'unknown')
+      .map((o: { cost: { totalKnown: number } }) => o.cost.totalKnown);
+    const sorted = [...knownCosts].sort((a, b) => a - b);
+    expect(knownCosts).toEqual(sorted);
+  });
+
+  it('une valeur stockée invalide est ignorée (retour à BEST_MATCH), jamais d\'erreur', async () => {
+    const { default: supertest } = await import('supertest');
+    await supertest(app).put('/profile/rp-bad/criterion').send({
+      id: 'ranking-preference', name: 'x', level: 'preference',
+      parameters: { rankingPreference: 'NOT_A_REAL_PREFERENCE' },
+    });
+    const body = await search('rp-bad');
+    expect(body.rankingPreference.preference).toBe('BEST_MATCH');
+  });
+});

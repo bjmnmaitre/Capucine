@@ -31,11 +31,11 @@ import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator } from '../application/ai-providers';
 import { FileProfileStore } from '../application/profile-store';
-import { merchantExclusionsFromProfile } from '../domain/profile';
+import { merchantExclusionsFromProfile, rankingPreferenceFromProfile } from '../domain/profile';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
-import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE } from '../application/ranking-preference';
+import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE, isRankingPreference } from '../application/ranking-preference';
 import { createDefaultCartPreparationEngine } from '../application/cart-preparation-engine';
 import { CheckoutSessionService } from '../application/checkout-session-service';
 import { CostEngine } from '../application/cost-engine';
@@ -476,17 +476,25 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
       );
 
       // ── Serialize ─────────────────────────────────────────────────────────
-      // Permanent "never buy from X" preferences apply from the FIRST search,
-      // not only after a session "sans X" follow-up. Same presentation-time
-      // filter, so their effect is visible and reportable.
+      // Permanent profile preferences that shape the FIRST search's output,
+      // not only a later session follow-up:
+      //  - "never buy from X"  → same presentation-time merchant filter as "sans X"
+      //  - "always cheapest"   → same PRICE_LOWEST reorder as "le moins cher"
+      // Both are still overridable by an explicit session follow-up afterwards.
       const profileMerchantExclusions = merchantExclusionsFromProfile(profile);
+      const storedRankingPref = rankingPreferenceFromProfile(profile);
+      const profileRankingPreference = isRankingPreference(storedRankingPref)
+        ? storedRankingPref
+        : DEFAULT_RANKING_PREFERENCE;
+      const needsSessionState =
+        profileMerchantExclusions.length > 0 || profileRankingPreference !== DEFAULT_RANKING_PREFERENCE;
       const payload = serializeResult(
         result,
         sessionId,
         undefined,
-        profileMerchantExclusions.length > 0
+        needsSessionState
           ? {
-              rankingPreference: DEFAULT_RANKING_PREFERENCE,
+              rankingPreference: profileRankingPreference,
               targetCountries: [DEFAULT_COUNTRY],
               destinationCountry: DEFAULT_COUNTRY,
               excludedMerchantNames: profileMerchantExclusions,

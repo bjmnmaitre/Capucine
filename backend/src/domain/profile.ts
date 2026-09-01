@@ -162,6 +162,31 @@ export function merchantExclusionsFromProfile(profile: UserProfile): string[] {
   return [...new Set(names)];
 }
 
+// ── Persistent ranking preference ──────────────────────────────────────────
+
+/**
+ * A permanent "always order my results this way" preference — e.g. always
+ * put the lowest total cost first. Same convention idea as merchant
+ * exclusions: a single criterion carrying the choice in its parameters.
+ *
+ *   { id: 'ranking-preference', level: 'preference',
+ *     name: '…', parameters: { rankingPreference: 'PRICE_LOWEST' } }
+ *
+ * Only the string is read here; the application layer validates it against
+ * the real RankingPreference union (domain/ must not depend on application/).
+ * A session follow-up ("meilleure correspondance", "le moins cher") still
+ * overrides it for that conversation.
+ */
+export const RANKING_PREFERENCE_CRITERION_ID = 'ranking-preference';
+
+export function rankingPreferenceFromProfile(profile: UserProfile): string | null {
+  const c = profile.preferences.criteria.find(
+    (x) => x.id === RANKING_PREFERENCE_CRITERION_ID
+  );
+  const value = c?.parameters?.['rankingPreference'];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
 // ============================================================================
 // PROFILE ENGINE
 // ============================================================================

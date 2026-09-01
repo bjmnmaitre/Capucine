@@ -2,7 +2,10 @@ import Constants from 'expo-constants';
 import {
   ApiError, PreferenceLevel, PrepareCartResponse, ProfileResponse, SearchResponse,
 } from './types';
-import { merchantExclusionCriterion, merchantExclusionId } from './profile';
+import {
+  merchantExclusionCriterion, merchantExclusionId,
+  RANKING_PREFERENCE_CRITERION_ID, rankingPreferenceCriterion,
+} from './profile';
 
 /**
  * Resolving the backend address.
@@ -226,4 +229,14 @@ export function excludeMerchant(userId: string, merchantName: string): Promise<u
 
 export function unexcludeMerchant(userId: string, merchantName: string): Promise<unknown> {
   return deleteCriterion(userId, merchantExclusionId(merchantName));
+}
+
+/** Persistent default ordering — applied from the very first search after,
+ *  still overridable by an explicit session "meilleure correspondance". */
+export function setRankingPreference(userId: string, pref: string): Promise<unknown> {
+  return saveCriterion(userId, rankingPreferenceCriterion(pref));
+}
+
+export function clearRankingPreference(userId: string): Promise<unknown> {
+  return deleteCriterion(userId, RANKING_PREFERENCE_CRITERION_ID);
 }

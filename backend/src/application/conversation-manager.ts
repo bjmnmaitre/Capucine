@@ -27,12 +27,12 @@
  */
 
 import { UserProfile, PreferenceCriterion, UsageContext } from '../domain/types';
-import { merchantExclusionsFromProfile } from '../domain/profile';
+import { merchantExclusionsFromProfile, rankingPreferenceFromProfile } from '../domain/profile';
 import { mergeUsageContexts } from '../domain/usage-context-mapping';
 import { ClarificationItem } from './clarification-engine';
 import type { SearchEngineResult } from './capucine-engine';
 import { SupportedCountry, DEFAULT_COUNTRY, DEFAULT_BROADEN_COUNTRIES } from './i18n';
-import { RankingPreference, DEFAULT_RANKING_PREFERENCE } from './ranking-preference';
+import { RankingPreference, DEFAULT_RANKING_PREFERENCE, isRankingPreference } from './ranking-preference';
 import { InternationalIntent, RetryIntent } from './request-interpreter';
 
 /**
@@ -330,7 +330,13 @@ export class ConversationManager {
       searchText,
       destinationCountry: DEFAULT_COUNTRY,
       targetCountries: [DEFAULT_COUNTRY],
-      rankingPreference: DEFAULT_RANKING_PREFERENCE,
+      // A permanent "always cheapest" preference is the session's starting
+      // order; an explicit follow-up ("meilleure correspondance") still
+      // overrides it for this conversation.
+      rankingPreference: (() => {
+        const stored = rankingPreferenceFromProfile(profile);
+        return isRankingPreference(stored) ? stored : DEFAULT_RANKING_PREFERENCE;
+      })(),
       // Permanent "never buy from X" preferences carry into the session so a
       // later "et le moins cher" follow-up keeps excluding them. Additive with
       // any session "sans Y" the user adds afterwards.

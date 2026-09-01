@@ -44,6 +44,18 @@ export type RankingPreference =
 
 export const DEFAULT_RANKING_PREFERENCE: RankingPreference = 'BEST_MATCH';
 
+/** Every value the union accepts — the single source both the type and this
+ *  runtime guard stay in sync with. */
+export const RANKING_PREFERENCES: readonly RankingPreference[] = [
+  'BEST_MATCH', 'PRICE_LOWEST', 'BEST_VALUE', 'FASTEST_DELIVERY', 'BEST_RATED',
+] as const;
+
+/** Runtime check for a value that came from outside the type system
+ *  (a stored profile, an HTTP body). */
+export function isRankingPreference(value: unknown): value is RankingPreference {
+  return typeof value === 'string' && (RANKING_PREFERENCES as readonly string[]).includes(value);
+}
+
 export interface RankedOfferWithCost extends RankedOffer {
   cost: CostBreakdown;
 }

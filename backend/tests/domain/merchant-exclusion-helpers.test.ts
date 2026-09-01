@@ -6,10 +6,13 @@
  */
 import {
   MERCHANT_EXCLUSION_ID_PREFIX,
+  RANKING_PREFERENCE_CRITERION_ID,
   isMerchantExclusionCriterion,
   merchantNameOfExclusion,
   merchantExclusionsFromProfile,
+  rankingPreferenceFromProfile,
 } from '../../src/domain/profile';
+import { isRankingPreference } from '../../src/application/ranking-preference';
 import { createEmptyProfile } from '../../src/application/profile-store';
 import type { PreferenceCriterion, UserProfile } from '../../src/domain/types';
 
@@ -61,5 +64,26 @@ describe('merchantExclusionsFromProfile', () => {
 
   it('vide quand le profil n\'exclut rien', () => {
     expect(merchantExclusionsFromProfile(createEmptyProfile('u'))).toEqual([]);
+  });
+});
+
+describe('rankingPreferenceFromProfile / isRankingPreference', () => {
+  it('lit la préférence stockée', () => {
+    expect(rankingPreferenceFromProfile(profileWith([
+      { id: RANKING_PREFERENCE_CRITERION_ID, name: '…', level: 'preference',
+        parameters: { rankingPreference: 'PRICE_LOWEST' } },
+    ]))).toBe('PRICE_LOWEST');
+  });
+
+  it('null quand absente', () => {
+    expect(rankingPreferenceFromProfile(createEmptyProfile('u'))).toBeNull();
+  });
+
+  it('isRankingPreference rejette ce qui n\'est pas dans l\'union', () => {
+    expect(isRankingPreference('PRICE_LOWEST')).toBe(true);
+    expect(isRankingPreference('BEST_MATCH')).toBe(true);
+    expect(isRankingPreference('CHEAPEST_EVER')).toBe(false);
+    expect(isRankingPreference(42)).toBe(false);
+    expect(isRankingPreference(null)).toBe(false);
   });
 });

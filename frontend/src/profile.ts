@@ -74,3 +74,31 @@ export function merchantExclusionCriterion(merchantName: string): {
     parameters: { merchantName: trimmed },
   };
 }
+
+// ── Préférence de tri permanente ───────────────────────────────────────────
+
+/** Un seul critère porte la préférence de tri permanente (le ré-ajouter la
+ *  remplace). Convention reconnue par le backend (domain/profile.ts). */
+export const RANKING_PREFERENCE_CRITERION_ID = 'ranking-preference';
+
+export function rankingPreferenceOf(
+  criteria: ProfileCriterionLike[]
+): string | null {
+  const c = criteria.find((x) => x.id === RANKING_PREFERENCE_CRITERION_ID);
+  const value = c?.parameters?.['rankingPreference'];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+export function rankingPreferenceCriterion(pref: string): {
+  id: string; name: string; level: 'preference'; parameters: { rankingPreference: string };
+} {
+  const label = pref === 'PRICE_LOWEST'
+    ? 'Toujours trier par coût total le plus bas'
+    : `Ordre par défaut : ${pref}`;
+  return {
+    id: RANKING_PREFERENCE_CRITERION_ID,
+    name: label,
+    level: 'preference',
+    parameters: { rankingPreference: pref },
+  };
+}

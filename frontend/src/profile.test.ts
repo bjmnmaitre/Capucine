@@ -6,6 +6,7 @@
 import {
   criterionId, isMerchantExclusion, MERCHANT_EXCLUSION_ID_PREFIX,
   merchantExclusionCriterion, merchantExclusionId, merchantNameOf,
+  RANKING_PREFERENCE_CRITERION_ID, rankingPreferenceCriterion, rankingPreferenceOf,
 } from './profile';
 
 describe('criterionId', () => {
@@ -65,5 +66,22 @@ describe('exclusions de marchand', () => {
     expect(merchantNameOf({ id: `${MERCHANT_EXCLUSION_ID_PREFIX}back-market`, level: 'forbidden' }))
       .toBe('back market');
     expect(merchantNameOf({ id: 'price', level: 'required' })).toBeNull();
+  });
+});
+
+describe('préférence de tri permanente', () => {
+  it('rankingPreferenceCriterion : corps conforme, id fixe (donc remplace, ne duplique pas)', () => {
+    const body = rankingPreferenceCriterion('PRICE_LOWEST');
+    expect(body.id).toBe(RANKING_PREFERENCE_CRITERION_ID);
+    expect(body.level).toBe('preference');
+    expect(body.parameters).toEqual({ rankingPreference: 'PRICE_LOWEST' });
+  });
+
+  it('rankingPreferenceOf : lit la valeur ou null', () => {
+    expect(rankingPreferenceOf([
+      { id: RANKING_PREFERENCE_CRITERION_ID, parameters: { rankingPreference: 'PRICE_LOWEST' } },
+    ])).toBe('PRICE_LOWEST');
+    expect(rankingPreferenceOf([{ id: 'price', parameters: { maxBudget: 400 } }])).toBeNull();
+    expect(rankingPreferenceOf([])).toBeNull();
   });
 });
