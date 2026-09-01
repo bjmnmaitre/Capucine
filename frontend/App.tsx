@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { SafeAreaView, StatusBar, StyleSheet } from 'react-native';
-import { refine, search } from './src/api';
+import React, { useCallback, useEffect, useState } from 'react';
+import { BackHandler, SafeAreaView, StatusBar, StyleSheet } from 'react-native';
+import { checkHealth, HealthStatus, refine, search } from './src/api';
 import { recordSearch } from './src/history';
 import { ApiError, RankedOffer, SearchResponse } from './src/types';
 import { SearchScreen } from './src/screens/SearchScreen';
@@ -38,6 +38,38 @@ export default function App() {
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
 
+  // Backend reachability — checked once on launch and re-checkable from the
+  // search screen. `undefined` = not yet known (no banner shown).
+  const [health, setHealth] = useState<HealthStatus | undefined>(undefined);
+  const [checkingHealth, setCheckingHealth] = useState(false);
+
+  const recheckHealth = useCallback(async () => {
+    setCheckingHealth(true);
+    try {
+      setHealth(await checkHealth());
+    } finally {
+      setCheckingHealth(false);
+    }
+  }, []);
+
+  useEffect(() => { void recheckHealth(); }, [recheckHealth]);
+
+  // Android hardware back walks the journey backwards instead of leaving the
+  // app. iOS has no such button; this is a no-op there.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (step.name === 'search') return false; // let the OS handle it (exit)
+      if (step.name === 'detail' || step.name === 'compare') {
+        setStep({ name: 'results', query: step.query, response: step.response });
+      } else {
+        setRefineError(null);
+        setStep({ name: 'search' });
+      }
+      return true;
+    });
+    return () => sub.remove();
+  }, [step]);
+
   async function onSearch(query: string) {
     setLoading(true);
     setError(null);
@@ -48,6 +80,9 @@ export default function App() {
       // the results screen, which explains that nothing was found.
       setStep({ name: 'results', query, response });
       void recordSearch(query, response.results.length);
+      // A successful search proves the backend is reachable — clear any stale
+      // "unreachable" banner without a second round-trip.
+      setHealth((h) => (h && !h.reachable ? { ...h, reachable: true } : h));
     } catch (err) {
       const e = err as ApiError;
       setError(e.message ?? 'La recherche a échoué.');
@@ -106,6 +141,9 @@ export default function App() {
           loading={loading}
           error={error}
           errorDetail={errorDetail}
+          health={health}
+          checkingHealth={checkingHealth}
+          onRecheckHealth={recheckHealth}
           onSearch={onSearch}
           onOpenProfile={() => setStep({ name: 'profile' })}
         />

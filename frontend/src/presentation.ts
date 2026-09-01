@@ -137,6 +137,43 @@ export function lowestKnownCostIndex(
   return bestIdx;
 }
 
+/** Index de l'offre la mieux classée (rang le plus petit) parmi celles
+ *  fournies. `-1` si la liste est vide. */
+export function bestRankedIndex(offers: Array<Pick<RankedOffer, 'rank'>>): number {
+  if (offers.length === 0) return -1;
+  let best = 0;
+  for (let i = 1; i < offers.length; i++) {
+    if (offers[i].rank < offers[best].rank) best = i;
+  }
+  return best;
+}
+
+/**
+ * Une phrase de synthèse pour l'écran de comparaison, construite uniquement
+ * à partir de faits vérifiables : quelle offre Capucine classe en tête, et si
+ * elle est AUSSI la moins chère (coût connu) ou seulement mieux classée
+ * malgré un coût supérieur — le cas « moins cher ≠ meilleur choix ». Jamais
+ * d'affirmation que les données ne soutiennent pas.
+ */
+export function compareTakeaway(
+  offers: Array<Pick<RankedOffer, 'rank' | 'merchant' | 'cost'>>
+): string | null {
+  if (offers.length < 2) return null;
+  const topIdx = bestRankedIndex(offers);
+  if (topIdx < 0) return null;
+  const top = offers[topIdx];
+  const name = merchantLabel(top);
+  const cheapestIdx = lowestKnownCostIndex(offers);
+
+  if (cheapestIdx === null) {
+    return `Capucine classe ${name} en tête. Les coûts totaux ne sont pas tous connus : comparez les composantes affichées.`;
+  }
+  if (cheapestIdx === topIdx) {
+    return `Capucine classe ${name} en tête : c'est aussi le coût total connu le plus bas.`;
+  }
+  return `Capucine classe ${name} en tête bien qu'elle ne soit pas la moins chère — regardez la ligne « pourquoi » de chaque offre pour la raison.`;
+}
+
 // ============================================================================
 // EXPLICATION DU CLASSEMENT — pourquoi cette offre est là où elle est
 // ============================================================================

@@ -90,6 +90,42 @@ export function search(query: string, userId: string): Promise<SearchResponse> {
   return postJson<SearchResponse>('/search', { query, userId });
 }
 
+/** Ce que /health nous apprend, réduit à ce dont l'UI a besoin. */
+export interface HealthStatus {
+  reachable: boolean;
+  /** 'mock' = interprétation heuristique ; 'real' = un fournisseur IA est actif. */
+  aiStatus?: 'mock' | 'real' | string;
+  /** 'configured' = au moins une vraie source Web ; 'no_real_source' = catalogue local seul. */
+  webSearch?: 'configured' | 'no_real_source' | string;
+}
+
+/**
+ * Ping rapide du backend. Séparé de `search` : il doit répondre vite ou pas
+ * du tout, pour afficher un état de connexion sans faire attendre 45 s. Ne
+ * lève jamais — un backend injoignable est une réponse (`reachable: false`),
+ * pas une exception à gérer partout.
+ */
+export async function checkHealth(timeoutMs = 4000): Promise<HealthStatus> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
+    if (!res.ok) return { reachable: false };
+    const body = (await res.json()) as {
+      capabilities?: { aiProviders?: { status?: string }; webSearch?: { status?: string } };
+    };
+    return {
+      reachable: true,
+      aiStatus: body.capabilities?.aiProviders?.status,
+      webSearch: body.capabilities?.webSearch?.status,
+    };
+  } catch {
+    return { reachable: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Continue a search conversationally. `answer` is free text — "le moins cher",
  * "livraison rapide", "sans Amazon", "élargis à 400 €", "montre-moi les 3

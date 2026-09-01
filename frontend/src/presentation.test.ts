@@ -4,8 +4,8 @@
  * inconnue pourrait devenir une affirmation sur l'écran de l'utilisateur.
  */
 import {
-  costLabel, explainOfferRanking, lowestKnownCostIndex, merchantLabel,
-  offerAccessibilityLabel, offerUrlLabel, priceLabel, rankingPreferenceLabel,
+  bestRankedIndex, compareTakeaway, costLabel, explainOfferRanking, lowestKnownCostIndex,
+  merchantLabel, offerAccessibilityLabel, offerUrlLabel, priceLabel, rankingPreferenceLabel,
   resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
 } from './presentation';
 import { formatMoney } from './theme';
@@ -322,5 +322,37 @@ describe('lowestKnownCostIndex — n’élit un gagnant que si la comparaison es
 
   it('null sur une liste vide', () => {
     expect(lowestKnownCostIndex([])).toBeNull();
+  });
+});
+
+describe('bestRankedIndex / compareTakeaway — synthèse honnête de la comparaison', () => {
+  const o = (rank: number, name: string, totalKnown: number | null, certainty = 'known') =>
+    ({ rank, merchant: { id: name, name }, cost: { totalKnown, certainty, currency: 'EUR', unknownComponents: [] } } as never);
+
+  it('bestRankedIndex renvoie l’offre au plus petit rang', () => {
+    expect(bestRankedIndex([o(3, 'a', 1), o(1, 'b', 1), o(2, 'c', 1)])).toBe(1);
+    expect(bestRankedIndex([])).toBe(-1);
+  });
+
+  it('mieux classée ET la moins chère → le dit', () => {
+    const t = compareTakeaway([o(1, 'Fnac', 79), o(2, 'Boulanger', 90)]);
+    expect(t).toContain('Fnac');
+    expect(t).toContain('le plus bas');
+  });
+
+  it('mieux classée MAIS pas la moins chère → « moins cher ≠ meilleur choix »', () => {
+    const t = compareTakeaway([o(1, 'Fnac', 90), o(2, 'Boulanger', 79)]) as string;
+    expect(t).toContain('Fnac');
+    expect(t).toMatch(/pas la moins chère|bien qu/);
+  });
+
+  it('coûts non tous connus → invite à comparer les composantes, sans trancher', () => {
+    const t = compareTakeaway([o(1, 'Fnac', null, 'unknown'), o(2, 'Boulanger', 79)]) as string;
+    expect(t).toContain('composantes');
+    expect(t).not.toContain('le plus bas');
+  });
+
+  it('moins de 2 offres → null', () => {
+    expect(compareTakeaway([o(1, 'Fnac', 79)])).toBeNull();
   });
 });

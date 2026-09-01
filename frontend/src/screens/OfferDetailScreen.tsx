@@ -53,6 +53,7 @@ export function OfferDetailScreen({ offer, allOffers, ranking, sessionId, onBack
 
   const currency = offer.cost.currency || offer.price?.currency || 'EUR';
   const isTotalKnown = offer.cost.certainty === 'known';
+  const reasons = explainOfferRanking(offer, allOffers, ranking);
 
   async function onPrepare() {
     if (!sessionId) {
@@ -138,9 +139,9 @@ export function OfferDetailScreen({ offer, allOffers, ranking, sessionId, onBack
         <View
           style={styles.reasonList}
           accessible
-          accessibilityLabel={`Pourquoi ce classement : ${explainOfferRanking(offer, allOffers, ranking).join(' ')}`}
+          accessibilityLabel={`Pourquoi ce classement : ${reasons.join(' ')}`}
         >
-          {explainOfferRanking(offer, allOffers, ranking).map((line, i) => (
+          {reasons.map((line, i) => (
             <Text key={i} style={i === 0 ? styles.reasonHead : styles.reasonLine}>
               {i === 0 ? line : `· ${line}`}
             </Text>

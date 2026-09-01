@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
@@ -117,19 +117,23 @@ function OfferRow({
         </Text>
       </View>
 
-      {offer.cost.unknownComponents.length > 0 ? (
+      {!compareMode && offer.cost.unknownComponents.length > 0 ? (
         <Text style={styles.unknownList}>
           Non connu : {offer.cost.unknownComponents.join(', ')} — non estimé, non ignoré.
         </Text>
       ) : null}
 
-      <View style={styles.whyBox} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        {why.slice(0, 2).map((line, i) => (
-          <Text key={i} style={i === 0 ? styles.whyHead : styles.whyLine}>
-            {i === 0 ? line : `· ${line}`}
-          </Text>
-        ))}
-      </View>
+      {/* En mode comparaison la carte est un simple sélecteur : l'explication
+          détaillée reste sur le tableau de comparaison et l'écran de détail. */}
+      {!compareMode ? (
+        <View style={styles.whyBox} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          {why.slice(0, 2).map((line, i) => (
+            <Text key={i} style={i === 0 ? styles.whyHead : styles.whyLine}>
+              {i === 0 ? line : `· ${line}`}
+            </Text>
+          ))}
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -258,14 +262,29 @@ export function ResultsScreen({
 
   const [compareMode, setCompareMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectionShrank, setSelectionShrank] = useState(false);
+
+  // A refinement replaces the whole list. A previously-picked offer may no
+  // longer be present — drop it from the selection (never compare an offer the
+  // user can't see) and tell them once.
+  useEffect(() => {
+    setSelectedIds((cur) => {
+      const kept = cur.filter((id) => results.some((r) => r.offerId === id));
+      if (kept.length !== cur.length) setSelectionShrank(true);
+      return kept.length === cur.length ? cur : kept;
+    });
+  }, [results]);
+
   const selectedOffers = results.filter((r) => selectedIds.includes(r.offerId));
 
   function toggleCompareMode() {
     setCompareMode((on) => !on);
     setSelectedIds([]);
+    setSelectionShrank(false);
   }
 
   function toggleSelected(offerId: string) {
+    setSelectionShrank(false);
     setSelectedIds((cur) => {
       if (cur.includes(offerId)) return cur.filter((id) => id !== offerId);
       if (cur.length >= MAX_COMPARE) return cur; // silently capped
@@ -287,7 +306,7 @@ export function ResultsScreen({
           >
             <Text style={styles.backText}>‹ Recherche</Text>
           </Pressable>
-          {canCompare ? (
+          {compareMode || canCompare ? (
             <Pressable
               onPress={toggleCompareMode}
               accessibilityRole="button"
@@ -309,7 +328,10 @@ export function ResultsScreen({
         </Text>
         {compareMode ? (
           <Text style={styles.summary} accessibilityLiveRegion="polite">
-            Choisissez 2 ou 3 offres à comparer ({selectedIds.length}/{MAX_COMPARE}).
+            {selectionShrank
+              ? 'Une offre sélectionnée a disparu après l’affinage — sélection ajustée. '
+              : ''}
+            Choisissez 2 ou 3 offres à comparer ({selectedOffers.length}/{MAX_COMPARE}).
           </Text>
         ) : response.summary?.resultSummary ? (
           <Text style={styles.summary}>{response.summary.resultSummary}</Text>
@@ -347,7 +369,10 @@ export function ResultsScreen({
         <FlatList
           data={results}
           keyExtractor={(item) => item.offerId}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[
+            styles.list,
+            compareMode && selectedOffers.length >= 2 && styles.listWithBar,
+          ]}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             <RefinementBar
@@ -413,6 +438,7 @@ const styles = StyleSheet.create({
   counts: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   list: { padding: theme.space(2), paddingBottom: theme.space(5) },
+  listWithBar: { paddingBottom: theme.space(12) },
   refine: {
     backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
     borderColor: theme.color.border, padding: theme.space(1.5), marginBottom: theme.space(1.5),

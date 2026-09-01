@@ -2,7 +2,8 @@ import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { RankedOffer } from '../types';
 import {
-  costLabel, lowestKnownCostIndex, priceLabel, shippingValueLabel,
+  bestRankedIndex, compareTakeaway, costLabel, lowestKnownCostIndex,
+  priceLabel, shippingValueLabel,
 } from '../presentation';
 import { CERTAINTY_LABEL, displayText, theme } from '../theme';
 
@@ -59,6 +60,9 @@ const ROWS: RowSpec[] = [
 ];
 
 export function CompareScreen({ offers, onBack }: Props) {
+  const topIdx = bestRankedIndex(offers);
+  const takeaway = compareTakeaway(offers);
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Pressable
@@ -73,6 +77,13 @@ export function CompareScreen({ offers, onBack }: Props) {
       <Text style={styles.title} accessibilityRole="header">
         Comparer {offers.length} offres
       </Text>
+
+      {takeaway ? (
+        <View style={styles.takeaway} accessible accessibilityLabel={takeaway}>
+          <Text style={styles.takeawayText}>{takeaway}</Text>
+        </View>
+      ) : null}
+
       <Text style={styles.note}>
         Les valeurs viennent du classement de Capucine ; rien n’est recalculé ici.
         Une donnée inconnue reste affichée comme inconnue.
@@ -87,15 +98,18 @@ export function CompareScreen({ offers, onBack }: Props) {
           accessible
           accessibilityRole="header"
           accessibilityLabel={
-            `Offres comparées : ${offers.map((o) => displayText(o.merchant?.name, 'marchand inconnu')).join(', ')}`
+            `Offres comparées : ${offers.map((o, i) =>
+              displayText(o.merchant?.name, 'marchand inconnu') + (i === topIdx ? ', recommandée par Capucine' : '')
+            ).join(', ')}`
           }
         >
           <View style={styles.labelCell} />
-          {offers.map((o) => (
+          {offers.map((o, i) => (
             <View key={o.offerId} style={styles.headCell}>
               <Text style={styles.merchant} numberOfLines={2}>
                 {displayText(o.merchant?.name, 'Marchand inconnu')}
               </Text>
+              {i === topIdx ? <Text style={styles.headBadge}>★ Recommandée</Text> : null}
             </View>
           ))}
         </View>
@@ -137,9 +151,17 @@ const styles = StyleSheet.create({
   backPressed: { opacity: 0.7 },
   backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
   title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
+  takeaway: {
+    marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radius,
+    backgroundColor: '#F4F7FF', borderWidth: 1, borderColor: theme.color.accent,
+  },
+  takeawayText: { fontSize: theme.font.small, color: theme.color.text, lineHeight: 20 },
   note: {
     fontSize: theme.font.small, color: theme.color.textMuted,
-    marginTop: theme.space(0.5), marginBottom: theme.space(2), lineHeight: 20,
+    marginTop: theme.space(1), marginBottom: theme.space(2), lineHeight: 20,
+  },
+  headBadge: {
+    fontSize: 11, color: theme.color.accent, fontWeight: '700', marginTop: 2,
   },
   grid: {
     borderWidth: 1, borderColor: theme.color.border, borderRadius: theme.radius,

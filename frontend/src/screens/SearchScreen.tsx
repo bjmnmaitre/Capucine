@@ -4,7 +4,7 @@ import {
   StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { theme } from '../theme';
-import { API_BASE_URL } from '../api';
+import { API_BASE_URL, HealthStatus } from '../api';
 import {
   clearHistory, loadHistory, relativeTime, removeSearch, SearchHistoryEntry,
 } from '../history';
@@ -15,11 +15,16 @@ interface Props {
   loading: boolean;
   error: string | null;
   errorDetail?: string | null;
+  health?: HealthStatus;
+  checkingHealth?: boolean;
+  onRecheckHealth?: () => void;
   onSearch: (query: string) => void;
   onOpenProfile: () => void;
 }
 
-export function SearchScreen({ loading, error, errorDetail, onSearch, onOpenProfile }: Props) {
+export function SearchScreen({
+  loading, error, errorDetail, health, checkingHealth, onRecheckHealth, onSearch, onOpenProfile,
+}: Props) {
   const [query, setQuery] = useState('');
   const [touched, setTouched] = useState(false);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
@@ -61,6 +66,29 @@ export function SearchScreen({ loading, error, errorDetail, onSearch, onOpenProf
           Dites ce que vous cherchez. Capucine compare les offres réelles et leur coût total,
           en distinguant ce qui est connu de ce qui ne l’est pas.
         </Text>
+
+        {health && !health.reachable ? (
+          <View style={styles.offlineBox} accessibilityLiveRegion="polite">
+            <Text style={styles.offlineTitle}>Service Capucine injoignable</Text>
+            <Text style={styles.offlineBody}>
+              Adresse essayée : {API_BASE_URL}
+              {'\n'}Vérifiez que le service est démarré et que ce téléphone est sur le même
+              réseau que le Mac.
+            </Text>
+            <Pressable
+              onPress={onRecheckHealth}
+              disabled={checkingHealth}
+              accessibilityRole="button"
+              accessibilityLabel="Réessayer la connexion au service"
+              accessibilityState={{ disabled: !!checkingHealth, busy: !!checkingHealth }}
+              style={({ pressed }) => [styles.retryBtn, (pressed || checkingHealth) && styles.buttonPressed]}
+            >
+              {checkingHealth
+                ? <ActivityIndicator color={theme.color.accentText} />
+                : <Text style={styles.retryBtnText}>Réessayer</Text>}
+            </Pressable>
+          </View>
+        ) : null}
 
         <Text style={styles.label} nativeID="search-label">Votre recherche</Text>
         <TextInput
@@ -181,7 +209,12 @@ export function SearchScreen({ loading, error, errorDetail, onSearch, onOpenProf
           <Text style={styles.profileLinkText}>Vos préférences permanentes ›</Text>
         </Pressable>
 
-        <Text style={styles.apiNote}>Service : {API_BASE_URL}</Text>
+        <Text style={styles.apiNote}>
+          {health?.reachable
+            ? `Service connecté${health.webSearch === 'configured' ? ' · recherche Web active' : ''}`
+              + `${health.aiStatus === 'real' ? ' · IA activée' : ''}`
+            : `Service : ${API_BASE_URL}`}
+        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -216,6 +249,21 @@ const styles = StyleSheet.create({
   loadingNote: {
     marginTop: theme.space(2), fontSize: theme.font.small, color: theme.color.textMuted,
   },
+  offlineBox: {
+    marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radius,
+    borderWidth: 1, borderColor: theme.color.unknown, backgroundColor: '#FBF1DC',
+  },
+  offlineTitle: { color: theme.color.unknown, fontWeight: '700', fontSize: theme.font.body },
+  offlineBody: {
+    color: theme.color.text, fontSize: theme.font.small,
+    marginTop: theme.space(0.5), lineHeight: 19,
+  },
+  retryBtn: {
+    minHeight: theme.minTouch, borderRadius: theme.radius, backgroundColor: theme.color.accent,
+    alignItems: 'center', justifyContent: 'center', marginTop: theme.space(1.5),
+    paddingHorizontal: theme.space(2), alignSelf: 'flex-start',
+  },
+  retryBtnText: { color: theme.color.accentText, fontWeight: '700', fontSize: theme.font.small },
   errorBox: {
     marginTop: theme.space(3), padding: theme.space(2), borderRadius: theme.radius,
     borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
