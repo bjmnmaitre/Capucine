@@ -103,6 +103,24 @@ export function rankingPreferenceLabel(
   return RANKING_PREFERENCE_LABEL[state.preference] ?? null;
 }
 
+/**
+ * Ce que chaque statut de POST /prepare-cart veut RÉELLEMENT dire — aligné
+ * sur backend/cart-preparation-engine.ts, qui distingue soigneusement « page
+ * remise » de « panier créé ». Un web redirect ne crée PAS de panier chez le
+ * marchand : dire « panier préparé » sur un `partial` surévaluerait l'action.
+ */
+const PREP_STATUS_LABEL: Record<string, string> = {
+  success: 'Panier préparé chez le marchand',
+  partial: 'Page du marchand prête',
+  unavailable: 'Achat non préparable',
+  failed: 'La préparation a échoué',
+};
+
+export function prepStatusLabel(status: string | null | undefined): string {
+  if (!status) return 'Statut inconnu';
+  return PREP_STATUS_LABEL[status] ?? `Statut : ${status}`;
+}
+
 /** Message d'état de la liste de résultats. */
 export function resultsSummary(count: number, merchants: number): string {
   if (count === 0) return 'Aucune offre trouvée';

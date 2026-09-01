@@ -5,8 +5,8 @@
  */
 import {
   bestRankedIndex, compareTakeaway, costLabel, explainOfferRanking, lowestKnownCostIndex,
-  merchantLabel, offerAccessibilityLabel, offerUrlLabel, priceLabel, rankingPreferenceLabel,
-  resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
+  merchantLabel, offerAccessibilityLabel, offerUrlLabel, prepStatusLabel, priceLabel,
+  rankingPreferenceLabel, resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
 } from './presentation';
 import { formatMoney } from './theme';
 
@@ -369,5 +369,35 @@ describe('bestRankedIndex / compareTakeaway — synthèse honnête de la compara
 
   it('moins de 2 offres → null', () => {
     expect(compareTakeaway([o(1, 'Fnac', 79)])).toBeNull();
+  });
+});
+
+/**
+ * `partial` = une PAGE marchand remise, pas un panier créé. Le libellé ne
+ * doit pas dire « panier préparé » — c'est l'exact surclaim que
+ * cart-preparation-engine.ts évite côté backend.
+ */
+describe('prepStatusLabel — honnête sur ce que /prepare-cart a fait', () => {
+  it('partial ne prétend jamais qu’un panier a été créé', () => {
+    const l = prepStatusLabel('partial');
+    expect(l).toBe('Page du marchand prête');
+    expect(l.toLowerCase()).not.toContain('panier');
+  });
+
+  it('success = panier réellement préparé', () => {
+    expect(prepStatusLabel('success')).toContain('Panier préparé');
+  });
+
+  it.each([
+    ['unavailable', 'Achat non préparable'],
+    ['failed', 'La préparation a échoué'],
+  ])('%s → %s', (s, expected) => {
+    expect(prepStatusLabel(s)).toBe(expected);
+  });
+
+  it('statut absent ou inconnu → jamais « undefined », jamais un faux positif', () => {
+    expect(prepStatusLabel(null)).toBe('Statut inconnu');
+    expect(prepStatusLabel(undefined)).toBe('Statut inconnu');
+    expect(prepStatusLabel('weird')).toBe('Statut : weird');
   });
 });

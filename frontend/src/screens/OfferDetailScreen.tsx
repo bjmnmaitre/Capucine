@@ -3,7 +3,9 @@ import {
   ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { prepareCart } from '../api';
-import { costLabel, explainOfferRanking, shippingValueLabel, isShippingKnown } from '../presentation';
+import {
+  costLabel, explainOfferRanking, prepStatusLabel, shippingValueLabel, isShippingKnown,
+} from '../presentation';
 import { ApiError, PrepareCartResponse, RankedOffer, RankingPreferenceState } from '../types';
 import { CERTAINTY_LABEL, displayText, formatMoney, formatScore, theme } from '../theme';
 
@@ -36,6 +38,7 @@ const READINESS_STATE: Record<string, string> = {
   unknown: 'inconnu',
   blocked: 'bloqué',
 };
+
 
 function Row({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return (
@@ -252,11 +255,13 @@ export function OfferDetailScreen({ offer, allOffers, ranking, sessionId, onBack
 
       {prep ? (
         <View style={styles.prepBox} accessibilityLiveRegion="polite">
-          <Text style={styles.prepStatus}>
-            {prep.status === 'unavailable' || prep.status === 'failed'
-              ? 'Achat non préparable'
-              : 'Panier préparé'}
-          </Text>
+          <Text style={styles.prepStatus}>{prepStatusLabel(prep.status)}</Text>
+          {prep.status === 'partial' ? (
+            <Text style={styles.prepAction}>
+              Capucine vous amène à la bonne page ; le panier se crée chez le marchand,
+              où vous vérifiez le total avant de payer.
+            </Text>
+          ) : null}
           {prep.nextAction ? <Text style={styles.prepAction}>{prep.nextAction}</Text> : null}
           {canOpen ? (
             <Pressable
