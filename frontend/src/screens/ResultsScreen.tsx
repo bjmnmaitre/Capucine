@@ -15,8 +15,24 @@ interface Props {
   onResetRefinements: () => void;
   onSelect: (offer: RankedOffer) => void;
   onCompare: (offers: RankedOffer[]) => void;
+  /** Retour à l'écran de recherche, texte actuel pré-rempli — pour l'option
+   *  de récupération « reformuler la recherche », qui ne demande PAS de
+   *  retaper une requête vide. */
+  onReformulate: (query: string) => void;
   onBack: () => void;
 }
+
+/**
+ * Types de recoveryOptions que le backend peut suggérer sans exiger de
+ * valeur (pas de budget chiffré, pas de condition à deviner) — les seuls
+ * qu'on peut rendre RÉELLEMENT actionnables d'un tap. Les autres
+ * (relax_budget, accept_refurbished) restent du texte informatif : le
+ * backend ne comprend une relance que sous une forme précise ("élargis à
+ * 1100 €"), qu'on ne peut pas deviner ici sans risquer d'envoyer une phrase
+ * que l'interpréteur ne reconnaît pas, ou pire, sur-contraint (« reconditionné »
+ * seul devient un critère REQUIRED, pas une simple autorisation).
+ */
+const REFORMULATE_OPTION_TYPES = new Set(['expand_search_terms']);
 
 const MAX_COMPARE = 3;
 
@@ -266,7 +282,8 @@ function RefinementBar({
 }
 
 export function ResultsScreen({
-  query, response, refining, refineError, onRefine, onResetRefinements, onSelect, onCompare, onBack,
+  query, response, refining, refineError, onRefine, onResetRefinements,
+  onSelect, onCompare, onReformulate, onBack,
 }: Props) {
   const results = response.results ?? [];
   const productIds = new Set(results.map((r) => r.productId));
@@ -368,13 +385,31 @@ export function ResultsScreen({
             {/*
               Ce que l'utilisateur peut faire pour élargir. Chaque option demande
               sa confirmation : Capucine ne relâche jamais un critère toute seule.
+              Seule « reformuler » est un vrai bouton — les autres (budget,
+              reconditionné) demandent une valeur ou un mot précis que la
+              recherche libre ne peut pas deviner sans risquer de sur-contraindre
+              la prochaine recherche (voir REFORMULATE_OPTION_TYPES).
             */}
-            {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) => (
-              <View key={option.id} style={styles.recovery}>
-                <Text style={styles.recoveryText}>{option.description}</Text>
-                {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
-              </View>
-            ))}
+            {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) =>
+              REFORMULATE_OPTION_TYPES.has(option.type) ? (
+                <Pressable
+                  key={option.id}
+                  onPress={() => onReformulate(query)}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.description}
+                  accessibilityHint="Revenir à la recherche avec votre texte actuel, pour le modifier"
+                  style={({ pressed }) => [styles.recoveryAction, pressed && styles.cardPressed]}
+                >
+                  <Text style={styles.recoveryActionText}>{option.description} ›</Text>
+                  {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
+                </Pressable>
+              ) : (
+                <View key={option.id} style={styles.recovery}>
+                  <Text style={styles.recoveryText}>{option.description}</Text>
+                  {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
+                </View>
+              )
+            )}
           </View>
         </ScrollView>
       ) : (
@@ -542,6 +577,12 @@ const styles = StyleSheet.create({
   recovery: { marginTop: theme.space(1.5), paddingLeft: theme.space(1.5), borderLeftWidth: 3, borderLeftColor: theme.color.accent },
   recoveryText: { fontSize: theme.font.body, color: theme.color.text },
   recoveryImpact: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
+  recoveryAction: {
+    marginTop: theme.space(1.5), padding: theme.space(1.5), borderRadius: theme.radius,
+    borderWidth: 1, borderColor: theme.color.accent, backgroundColor: '#F4F7FF',
+    minHeight: theme.minTouch,
+  },
+  recoveryActionText: { fontSize: theme.font.body, color: theme.color.accent, fontWeight: '700' },
   empty: { padding: theme.space(3) },
   emptyTitle: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text },
   emptyBody: {

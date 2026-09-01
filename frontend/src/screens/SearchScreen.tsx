@@ -18,14 +18,18 @@ interface Props {
   health?: HealthStatus;
   checkingHealth?: boolean;
   onRecheckHealth?: () => void;
+  /** Pré-remplit le champ — utilisé quand on revient ici pour reformuler une
+   *  recherche qui n'a rien trouvé, plutôt que de repartir d'un champ vide. */
+  initialQuery?: string;
   onSearch: (query: string) => void;
   onOpenProfile: () => void;
 }
 
 export function SearchScreen({
-  loading, error, errorDetail, health, checkingHealth, onRecheckHealth, onSearch, onOpenProfile,
+  loading, error, errorDetail, health, checkingHealth, onRecheckHealth,
+  initialQuery, onSearch, onOpenProfile,
 }: Props) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   const [touched, setTouched] = useState(false);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
 

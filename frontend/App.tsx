@@ -38,6 +38,12 @@ export default function App() {
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
 
+  // Pre-fills the search box when the user comes back to reformulate — e.g.
+  // from a 0-result screen's "Reformuler la recherche" action. Consumed once
+  // by SearchScreen's initial state; cleared right after so a later, unrelated
+  // visit to the search screen starts blank again.
+  const [prefillQuery, setPrefillQuery] = useState('');
+
   // The UNTOUCHED response from the very first /search of the current
   // journey — never overwritten by a refine. "Repartir de la recherche
   // initiale" restores exactly this object, instantly, with no network
@@ -138,6 +144,15 @@ export default function App() {
     setStep({ name: 'results', query: step.query, response: originalResponse });
   }
 
+  /** "Reformuler la recherche" from a 0-result screen: back to search, with
+   *  the query that found nothing pre-filled so the user edits it rather
+   *  than starts from a blank field. */
+  function onReformulate(query: string) {
+    setPrefillQuery(query);
+    setRefineError(null);
+    setStep({ name: 'search' });
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" />
@@ -149,7 +164,8 @@ export default function App() {
           health={health}
           checkingHealth={checkingHealth}
           onRecheckHealth={recheckHealth}
-          onSearch={onSearch}
+          initialQuery={prefillQuery}
+          onSearch={(q) => { setPrefillQuery(''); void onSearch(q); }}
           onOpenProfile={() => setStep({ name: 'profile' })}
         />
       ) : step.name === 'profile' ? (
@@ -164,6 +180,7 @@ export default function App() {
           onResetRefinements={onResetRefinements}
           onSelect={(offer) => setStep({ ...step, name: 'detail', offer })}
           onCompare={(offers) => setStep({ ...step, name: 'compare', offers })}
+          onReformulate={onReformulate}
           onBack={() => { setRefineError(null); setStep({ name: 'search' }); }}
         />
       ) : step.name === 'compare' ? (
