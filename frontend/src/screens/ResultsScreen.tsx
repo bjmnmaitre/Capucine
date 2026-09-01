@@ -19,7 +19,7 @@ interface Props {
 /** Ready-made refinements — the phrasings the backend's follow-up interpreter
  *  reliably understands, offered as one tap instead of forcing the user to
  *  guess what it accepts. */
-const REFINEMENTS = ['le moins cher', 'livraison rapide', 'sans Amazon', 'uniquement du neuf'];
+const REFINEMENTS = ['le moins cher', 'sans Amazon', 'uniquement du neuf', 'livraison rapide'];
 
 /** An unknown delivery cost is not a free delivery: the two never collapse. */
 function shippingLabel(offer: RankedOffer): string {
