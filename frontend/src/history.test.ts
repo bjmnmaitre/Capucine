@@ -11,7 +11,9 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
 
-import { mergeEntry, parseHistory, relativeTime, SearchHistoryEntry } from './history';
+import {
+  mergeEntry, parseHistory, relativeTime, removeEntry, SearchHistoryEntry,
+} from './history';
 
 const entry = (query: string, at: number, resultCount = 3): SearchHistoryEntry =>
   ({ query, at, resultCount });
@@ -42,6 +44,23 @@ describe('mergeEntry — dédoublonnage, ordre récent, borne', () => {
     for (let i = 0; i < 30; i++) acc = mergeEntry(acc, entry(`q${i}`, i));
     expect(acc).toHaveLength(20);
     expect(acc[0].query).toBe('q29');
+  });
+});
+
+describe('removeEntry — suppression ciblée, casse/espaces ignorés', () => {
+  it('retire l’entrée demandée et garde les autres', () => {
+    const out = removeEntry([entry('a', 1), entry('b', 2), entry('c', 3)], 'b');
+    expect(out.map((e) => e.query)).toEqual(['a', 'c']);
+  });
+
+  it('retire même avec une casse ou des espaces différents', () => {
+    const out = removeEntry([entry('Casque  Sony', 1)], 'casque sony');
+    expect(out).toEqual([]);
+  });
+
+  it('ne fait rien si la requête est absente', () => {
+    const list = [entry('a', 1)];
+    expect(removeEntry(list, 'zzz')).toEqual(list);
   });
 });
 

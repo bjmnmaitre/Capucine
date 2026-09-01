@@ -5,7 +5,9 @@ import {
 } from 'react-native';
 import { theme } from '../theme';
 import { API_BASE_URL } from '../api';
-import { clearHistory, loadHistory, relativeTime, SearchHistoryEntry } from '../history';
+import {
+  clearHistory, loadHistory, relativeTime, removeSearch, SearchHistoryEntry,
+} from '../history';
 
 const EXAMPLES = ['casque Sony WH-1000XM5', 'MacBook Air M4 16 Go', 'chaussures de running homme'];
 
@@ -33,6 +35,10 @@ export function SearchScreen({ loading, error, errorDetail, onSearch, onOpenProf
   async function onClearHistory() {
     await clearHistory();
     setHistory([]);
+  }
+
+  async function onRemoveRecent(query: string) {
+    setHistory(await removeSearch(query));
   }
 
   const trimmed = query.trim();
@@ -119,21 +125,32 @@ export function SearchScreen({ loading, error, errorDetail, onSearch, onOpenProf
               </Pressable>
             </View>
             {history.map((h) => (
-              <Pressable
-                key={`${h.query}-${h.at}`}
-                onPress={() => { setTouched(false); onSearch(h.query); }}
-                disabled={loading}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  `Relancer : ${h.query}. ${h.resultCount} résultat${h.resultCount > 1 ? 's' : ''}, ${relativeTime(h.at)}`
-                }
-                style={({ pressed }) => [styles.example, pressed && styles.examplePressed]}
-              >
-                <Text style={styles.exampleText} numberOfLines={1}>{h.query}</Text>
-                <Text style={styles.recentMeta}>
-                  {h.resultCount} offre{h.resultCount > 1 ? 's' : ''} · {relativeTime(h.at)}
-                </Text>
-              </Pressable>
+              <View key={`${h.query}-${h.at}`} style={styles.recentRow}>
+                <Pressable
+                  onPress={() => { setTouched(false); onSearch(h.query); }}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    `Relancer : ${h.query}. ${h.resultCount} résultat${h.resultCount > 1 ? 's' : ''}, ${relativeTime(h.at)}`
+                  }
+                  style={({ pressed }) => [styles.example, styles.recentMain, pressed && styles.examplePressed]}
+                >
+                  <Text style={styles.exampleText} numberOfLines={1}>{h.query}</Text>
+                  <Text style={styles.recentMeta}>
+                    {h.resultCount} offre{h.resultCount > 1 ? 's' : ''} · {relativeTime(h.at)}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => onRemoveRecent(h.query)}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Retirer « ${h.query} » de l’historique`}
+                  hitSlop={8}
+                  style={({ pressed }) => [styles.recentDelete, pressed && styles.examplePressed]}
+                >
+                  <Text style={styles.recentDeleteText}>✕</Text>
+                </Pressable>
+              </View>
             ))}
           </View>
         ) : null}
@@ -215,6 +232,17 @@ const styles = StyleSheet.create({
   clearBtn: { minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1) },
   clearBtnText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
   recentMeta: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
+  recentRow: {
+    flexDirection: 'row', alignItems: 'stretch', gap: theme.space(1),
+    marginBottom: theme.space(1),
+  },
+  recentMain: { flex: 1, marginBottom: 0 },
+  recentDelete: {
+    width: theme.minTouch, minHeight: theme.minTouch, alignItems: 'center', justifyContent: 'center',
+    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
+    backgroundColor: theme.color.surface,
+  },
+  recentDeleteText: { fontSize: theme.font.body, color: theme.color.textMuted, fontWeight: '600' },
   example: {
     minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(2),
     paddingVertical: theme.space(1),

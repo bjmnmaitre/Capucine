@@ -33,6 +33,15 @@ function normalize(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+/** Retire une entrée (comparaison à la casse/espaces près). Pur, testable. */
+export function removeEntry(
+  existing: SearchHistoryEntry[],
+  query: string
+): SearchHistoryEntry[] {
+  const key = normalize(query);
+  return existing.filter((e) => normalize(e.query) !== key);
+}
+
 /** "à l'instant", "il y a 3 min", "hier", "il y a 4 j" — repère court pour
  *  l'historique, jamais une date/heure brute. */
 export function relativeTime(at: number, now: number = Date.now()): string {
@@ -93,6 +102,17 @@ export async function recordSearch(query: string, resultCount: number): Promise<
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
     // Un historique non écrit n'est pas une erreur visible par l'utilisateur.
+  }
+}
+
+/** Supprime UNE recherche de l'historique. Renvoie la liste restante. */
+export async function removeSearch(query: string): Promise<SearchHistoryEntry[]> {
+  try {
+    const next = removeEntry(parseHistory(await AsyncStorage.getItem(STORAGE_KEY)), query);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return [];
   }
 }
 
