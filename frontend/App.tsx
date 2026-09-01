@@ -38,6 +38,16 @@ export default function App() {
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
 
+  // The UNTOUCHED response from the very first /search of the current
+  // journey — never overwritten by a refine. "Repartir de la recherche
+  // initiale" restores exactly this object, instantly, with no network
+  // round-trip. This matters because the discovery backend is REAL, LIVE web
+  // search: re-running the same query a second time can legitimately return
+  // a different offer count (verified: 3 identical calls in a row returned
+  // 12/12/14 results) — re-fetching on "reset" would look like a bug where
+  // there isn't one. Keeping the original object sidesteps that entirely.
+  const [originalResponse, setOriginalResponse] = useState<SearchResponse | null>(null);
+
   // Backend reachability — checked once on launch and re-checkable from the
   // search screen. `undefined` = not yet known (no banner shown).
   const [health, setHealth] = useState<HealthStatus | undefined>(undefined);
@@ -79,6 +89,7 @@ export default function App() {
       // An empty result list is a legitimate answer, not an error: it moves to
       // the results screen, which explains that nothing was found.
       setStep({ name: 'results', query, response });
+      setOriginalResponse(response);
       void recordSearch(query, response.results.length);
       // A successful search proves the backend is reachable — clear any stale
       // "unreachable" banner without a second round-trip.
@@ -115,22 +126,16 @@ export default function App() {
 
   /**
    * "Repartir de la recherche initiale" — the session is append-only (a
-   * refinement cannot be individually undone), so a genuine reset is a fresh
-   * /search on the original query. Reuses the `refining` indicator so the
-   * current list stays visible during the round-trip.
+   * refinement cannot be individually undone), so this restores the ACTUAL
+   * first response object rather than re-searching. Instant, no network
+   * call, and — unlike a fresh /search — guaranteed to be the exact list the
+   * user started from (see `originalResponse`'s doc comment for why a
+   * re-fetch would not give that guarantee against a live Web backend).
    */
-  async function onResetRefinements() {
-    if (step.name !== 'results') return;
-    setRefining(true);
+  function onResetRefinements() {
+    if (step.name !== 'results' || !originalResponse) return;
     setRefineError(null);
-    try {
-      const response = await search(step.query, USER_ID);
-      setStep({ name: 'results', query: step.query, response });
-    } catch (err) {
-      setRefineError((err as ApiError).message ?? 'La réinitialisation a échoué.');
-    } finally {
-      setRefining(false);
-    }
+    setStep({ name: 'results', query: step.query, response: originalResponse });
   }
 
   return (
