@@ -79,9 +79,18 @@ export function CompareScreen({ offers, onBack }: Props) {
       </Text>
 
       <View style={styles.grid}>
-        {/* En-tête : marchands */}
-        <View style={styles.headRow}>
-          <View style={styles.labelCell}><Text style={styles.labelText} /></View>
+        {/* En-tête : marchands. Lu comme une seule annonce ; les lignes qui
+            suivent répètent chaque nom de marchand, donc on ne le détaille
+            pas cellule par cellule ici. */}
+        <View
+          style={styles.headRow}
+          accessible
+          accessibilityRole="header"
+          accessibilityLabel={
+            `Offres comparées : ${offers.map((o) => displayText(o.merchant?.name, 'marchand inconnu')).join(', ')}`
+          }
+        >
+          <View style={styles.labelCell} />
           {offers.map((o) => (
             <View key={o.offerId} style={styles.headCell}>
               <Text style={styles.merchant} numberOfLines={2}>

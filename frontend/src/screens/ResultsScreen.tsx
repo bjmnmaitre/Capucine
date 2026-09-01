@@ -38,13 +38,14 @@ function certaintyStyle(certainty: string) {
 }
 
 function OfferRow({
-  offer, allOffers, ranking, compareMode, selected, onPress,
+  offer, allOffers, ranking, compareMode, selected, atCapacity, onPress,
 }: {
   offer: RankedOffer;
   allOffers: RankedOffer[];
   ranking: SearchResponse['rankingPreference'];
   compareMode: boolean;
   selected: boolean;
+  atCapacity: boolean;
   onPress: () => void;
 }) {
   // `price` is null when the backend could not extract one. 'prix inconnu'
@@ -80,7 +81,11 @@ function OfferRow({
       accessibilityState={compareMode ? { checked: selected } : undefined}
       accessibilityLabel={a11yLabel}
       accessibilityHint={
-        compareMode ? 'Touchez pour ajouter ou retirer de la comparaison' : 'Ouvre le détail complet de cette offre'
+        compareMode
+          ? (atCapacity && !selected
+              ? 'Limite de 3 offres atteinte — retirez-en une pour ajouter celle-ci'
+              : 'Touchez pour ajouter ou retirer de la comparaison')
+          : 'Ouvre le détail complet de cette offre'
       }
       style={({ pressed }) => [
         styles.card,
@@ -360,6 +365,7 @@ export function ResultsScreen({
               ranking={response.rankingPreference}
               compareMode={compareMode}
               selected={selectedIds.includes(item.offerId)}
+              atCapacity={selectedIds.length >= MAX_COMPARE}
               onPress={() => (compareMode ? toggleSelected(item.offerId) : onSelect(item))}
             />
           )}
