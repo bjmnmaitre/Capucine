@@ -26,10 +26,32 @@ interface Props {
 type RowSpec = {
   label: string;
   value: (o: RankedOffer) => string;
-  /** index de l'offre la plus avantageuse sur cette ligne, ou null si on ne
-   *  peut pas trancher honnêtement. */
-  best?: (offers: RankedOffer[]) => number | null;
+  /** index(es) de la ou des offres les plus avantageuses sur cette ligne —
+   *  PLUSIEURS en cas d'égalité réelle, [] si on ne peut pas trancher
+   *  honnêtement. Jamais un gagnant unique choisi arbitrairement. */
+  best?: (offers: RankedOffer[]) => number[];
 };
+
+/** Toutes les offres dont `readiness.ready` est vrai — égalité assumée
+ *  plutôt qu'un seul gagnant arbitraire quand plusieurs le sont. */
+function readyIndexes(offers: RankedOffer[]): number[] {
+  return offers.reduce<number[]>((acc, o, i) => {
+    if (o.readiness?.ready) acc.push(i);
+    return acc;
+  }, []);
+}
+
+/** Fiabilité de la source (0–1) telle que rapportée par le backend —
+ *  jamais estimée ici. La ou les offres à la fiabilité connue la plus
+ *  haute gagnent la ligne ; une fiabilité inconnue ne gagne jamais. */
+function mostReliableIndexes(offers: RankedOffer[]): number[] {
+  const known = offers
+    .map((o, i) => ({ i, r: o.provenance?.reliability }))
+    .filter((x): x is { i: number; r: number } => typeof x.r === 'number' && Number.isFinite(x.r));
+  if (known.length === 0) return [];
+  const max = Math.max(...known.map((k) => k.r));
+  return known.filter((k) => Math.abs(k.r - max) < 0.005).map((k) => k.i);
+}
 
 const ROWS: RowSpec[] = [
   { label: 'Rang', value: (o) => `#${o.rank}` },
@@ -44,10 +66,15 @@ const ROWS: RowSpec[] = [
     label: 'Prêt à l’achat',
     value: (o) =>
       o.readiness?.ready ? 'oui' : o.readiness ? 'à confirmer' : 'inconnu',
-    best: (offers) => {
-      const idx = offers.findIndex((o) => o.readiness?.ready);
-      return offers.filter((o) => o.readiness?.ready).length === 1 ? idx : null;
-    },
+    best: readyIndexes,
+  },
+  {
+    label: 'Fiabilité de la source',
+    value: (o) =>
+      typeof o.provenance?.reliability === 'number'
+        ? `${Math.round(o.provenance.reliability * 100)} %`
+        : 'inconnue',
+    best: mostReliableIndexes,
   },
   {
     label: 'Correspondance',
@@ -115,9 +142,13 @@ export function CompareScreen({ offers, onBack }: Props) {
         </View>
 
         {ROWS.map((row) => {
-          const bestIdx = row.best ? row.best(offers) : null;
+          const bestIdxs = row.best ? row.best(offers) : [];
+          const tied = bestIdxs.length > 1;
           const spoken = `${row.label} : ` + offers
-            .map((o, i) => `${displayText(o.merchant?.name, 'offre ' + (i + 1))} ${row.value(o)}`)
+            .map((o, i) =>
+              `${displayText(o.merchant?.name, 'offre ' + (i + 1))} ${row.value(o)}`
+              + (bestIdxs.includes(i) ? (tied ? ', à égalité' : ', meilleure valeur') : '')
+            )
             .join(' ; ');
           return (
             <View
@@ -131,9 +162,9 @@ export function CompareScreen({ offers, onBack }: Props) {
               </View>
               {offers.map((o, i) => (
                 <View key={o.offerId} style={styles.cell}>
-                  <Text style={[styles.cellText, bestIdx === i && styles.cellBest]}>
+                  <Text style={[styles.cellText, bestIdxs.includes(i) && styles.cellBest]}>
                     {row.value(o)}
-                    {bestIdx === i ? '  ✓' : ''}
+                    {bestIdxs.includes(i) ? (tied ? '  ≈' : '  ✓') : ''}
                   </Text>
                 </View>
               ))}

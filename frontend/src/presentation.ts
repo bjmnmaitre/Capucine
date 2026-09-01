@@ -130,29 +130,35 @@ export function resultsSummary(count: number, merchants: number): string {
 }
 
 /**
- * Index de l'offre au coût total connu le plus bas parmi celles fournies —
- * ou `null` quand la comparaison ne peut pas être faite honnêtement : une
- * des offres a un coût inconnu, ou les devises diffèrent. Sert à mettre en
- * gras la cellule gagnante de l'écran de comparaison, jamais à reclasser.
+ * Index(es) de l'offre — ou des offres EX ÆQUO — au coût total connu le plus
+ * bas parmi celles fournies. Tableau vide quand la comparaison ne peut pas
+ * être faite honnêtement : une offre a un coût inconnu, ou les devises
+ * diffèrent. Peut renvoyer PLUSIEURS index (deux offres au même coût exact)
+ * — jamais un seul gagnant arbitraire là où les données n'en désignent pas.
+ * Sert à mettre en gras la ou les cellules gagnantes en comparaison, jamais
+ * à reclasser.
  */
 export function lowestKnownCostIndex(
   offers: Array<Pick<RankedOffer, 'cost'>>
-): number | null {
-  if (offers.length === 0) return null;
+): number[] {
+  if (offers.length === 0) return [];
   const costs = offers.map((o) =>
     o.cost && o.cost.certainty !== 'unknown'
       && typeof o.cost.totalKnown === 'number' && Number.isFinite(o.cost.totalKnown)
       ? { amount: o.cost.totalKnown, currency: o.cost.currency || 'EUR' }
       : null
   );
-  if (costs.some((c) => c === null)) return null;
+  if (costs.some((c) => c === null)) return [];
   const known = costs as Array<{ amount: number; currency: string }>;
-  if (new Set(known.map((c) => c.currency)).size > 1) return null;
-  let bestIdx = 0;
-  for (let i = 1; i < known.length; i++) {
-    if (known[i].amount < known[bestIdx].amount) bestIdx = i;
-  }
-  return bestIdx;
+  if (new Set(known.map((c) => c.currency)).size > 1) return [];
+  const min = Math.min(...known.map((c) => c.amount));
+  // Tolérance d'un centime : deux montants extraits de pages différentes qui
+  // s'écrivent tous deux "205,61 €" ne doivent pas diverger sur un résidu
+  // flottant et priver l'un des deux de son égalité méritée.
+  return known.reduce<number[]>((acc, c, i) => {
+    if (Math.abs(c.amount - min) < 0.005) acc.push(i);
+    return acc;
+  }, []);
 }
 
 /** Index de l'offre la mieux classée (rang le plus petit) parmi celles
@@ -181,12 +187,15 @@ export function compareTakeaway(
   if (topIdx < 0) return null;
   const top = offers[topIdx];
   const name = merchantLabel(top);
-  const cheapestIdx = lowestKnownCostIndex(offers);
+  const cheapestIdxs = lowestKnownCostIndex(offers);
 
-  if (cheapestIdx === null) {
+  if (cheapestIdxs.length === 0) {
     return `Capucine classe ${name} en tête. Les coûts totaux ne sont pas tous connus : comparez les composantes affichées.`;
   }
-  if (cheapestIdx === topIdx) {
+  if (cheapestIdxs.length > 1 && cheapestIdxs.includes(topIdx)) {
+    return `Capucine classe ${name} en tête : elle est à égalité du coût total connu le plus bas avec une autre offre comparée.`;
+  }
+  if (cheapestIdxs.includes(topIdx)) {
     return `Capucine classe ${name} en tête : c'est aussi le coût total connu le plus bas.`;
   }
   return `Capucine classe ${name} en tête bien qu'elle ne soit pas la moins chère — regardez la ligne « pourquoi » de chaque offre pour la raison.`;

@@ -324,19 +324,23 @@ describe('lowestKnownCostIndex — n’élit un gagnant que si la comparaison es
     ({ cost: { totalKnown, certainty, currency, unknownComponents: [] } } as never);
 
   it('renvoie l’index du coût connu le plus bas', () => {
-    expect(lowestKnownCostIndex([c(90, 'known'), c(79, 'known'), c(120, 'partially_known')])).toBe(1);
+    expect(lowestKnownCostIndex([c(90, 'known'), c(79, 'known'), c(120, 'partially_known')])).toEqual([1]);
   });
 
-  it('null si une offre a un coût inconnu', () => {
-    expect(lowestKnownCostIndex([c(90, 'known'), c(null, 'unknown')])).toBeNull();
+  it('deux offres au MÊME coût connu → toutes deux gagnantes, jamais une seule arbitraire', () => {
+    expect(lowestKnownCostIndex([c(79, 'known'), c(79, 'known'), c(90, 'known')])).toEqual([0, 1]);
   });
 
-  it('null si les devises diffèrent', () => {
-    expect(lowestKnownCostIndex([c(50, 'known', 'EUR'), c(40, 'known', 'USD')])).toBeNull();
+  it('[] si une offre a un coût inconnu', () => {
+    expect(lowestKnownCostIndex([c(90, 'known'), c(null, 'unknown')])).toEqual([]);
   });
 
-  it('null sur une liste vide', () => {
-    expect(lowestKnownCostIndex([])).toBeNull();
+  it('[] si les devises diffèrent', () => {
+    expect(lowestKnownCostIndex([c(50, 'known', 'EUR'), c(40, 'known', 'USD')])).toEqual([]);
+  });
+
+  it('[] sur une liste vide', () => {
+    expect(lowestKnownCostIndex([])).toEqual([]);
   });
 });
 
@@ -369,6 +373,12 @@ describe('bestRankedIndex / compareTakeaway — synthèse honnête de la compara
 
   it('moins de 2 offres → null', () => {
     expect(compareTakeaway([o(1, 'Fnac', 79)])).toBeNull();
+  });
+
+  it('mieux classée à égalité de coût avec une autre → le dit sans trancher entre les deux', () => {
+    const t = compareTakeaway([o(1, 'Fnac', 79), o(2, 'Boulanger', 79)]) as string;
+    expect(t).toContain('Fnac');
+    expect(t).toContain('égalité');
   });
 });
 
