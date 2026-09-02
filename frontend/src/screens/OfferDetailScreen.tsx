@@ -81,7 +81,25 @@ export function OfferDetailScreen({
     }
   }
 
-  const canOpen = Boolean(prep?.checkoutUrl);
+  // N'ouvre que des URL http(s) réelles. `checkoutUrl` vient d'une offre
+  // réellement découverte (le backend ne fabrique jamais de lien), mais une
+  // valeur inattendue ne doit pas atteindre Linking.openURL.
+  const openableUrl =
+    prep?.checkoutUrl && /^https?:\/\//i.test(prep.checkoutUrl) ? prep.checkoutUrl : null;
+
+  async function openMerchant() {
+    if (!openableUrl) return;
+    try {
+      await Linking.openURL(openableUrl);
+    } catch {
+      // Aucun navigateur, schéma refusé par l'OS… on le dit plutôt que de
+      // laisser une promesse rejetée non gérée remonter.
+      setPrepError(
+        "Impossible d'ouvrir la page du marchand sur cet appareil. "
+        + `Copiez le lien : ${openableUrl}`
+      );
+    }
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -268,15 +286,21 @@ export function OfferDetailScreen({
             </Text>
           ) : null}
           {prep.nextAction ? <Text style={styles.prepAction}>{prep.nextAction}</Text> : null}
-          {canOpen ? (
+          {openableUrl ? (
             <Pressable
-              onPress={() => Linking.openURL(prep!.checkoutUrl!)}
+              onPress={openMerchant}
               accessibilityRole="link"
               accessibilityLabel="Ouvrir la page du marchand"
               style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
             >
               <Text style={styles.secondaryText}>Ouvrir la page du marchand</Text>
             </Pressable>
+          ) : prep.status === 'partial' || prep.status === 'success' ? (
+            // Statut « page prête » annoncé mais aucune URL exploitable : on ne
+            // laisse pas l'utilisateur sans issue ni explication.
+            <Text style={styles.unknownNote}>
+              Aucun lien exploitable n’a été fourni pour cette offre.
+            </Text>
           ) : null}
           <Text style={styles.paymentNote}>
             Capucine ne prend jamais le paiement. Vous validez l’achat vous-même chez le marchand.
