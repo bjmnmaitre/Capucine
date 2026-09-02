@@ -264,6 +264,21 @@ function RefinementBar({
       </View>
 
       <View style={styles.refineChips}>
+        {/* Quand la liste est triée par coût, offrir le retour symétrique vers
+            la pertinence — sinon le seul recours est « repartir de la
+            recherche initiale », qui annule AUSSI tous les autres affinages. */}
+        {response.rankingPreference?.applied
+          && response.rankingPreference.preference === 'PRICE_LOWEST' ? (
+          <Pressable
+            onPress={() => submit('trie par meilleure correspondance')}
+            disabled={refining}
+            accessibilityRole="button"
+            accessibilityLabel="Affiner : revenir au tri par meilleure correspondance"
+            style={({ pressed }) => [styles.refineChip, pressed && styles.cardPressed]}
+          >
+            <Text style={styles.refineChipText}>meilleure correspondance</Text>
+          </Pressable>
+        ) : null}
         {REFINEMENTS.map((r) => (
           <Pressable
             key={r}
