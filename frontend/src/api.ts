@@ -16,21 +16,49 @@ import {
  * itself is served), so we reuse that host and swap in the API port. An
  * explicit EXPO_PUBLIC_API_URL always wins, for tunnels or a deployed backend.
  */
-const DEFAULT_API_PORT = 3001;
+export const DEFAULT_API_PORT = 3001;
+
+/**
+ * Bare host out of an Expo host URI. On a physical device over LAN this is
+ * `192.168.x.y:8081`; it can also arrive scheme-prefixed (`exp://…`,
+ * `http://…`) or path-suffixed depending on the Expo channel. We want only the
+ * host — no scheme, no port, no path. Returns `null` when nothing usable is
+ * left. Pure; unit-tested — this is THE path a phone uses to find the backend.
+ */
+export function hostFromExpoHostUri(hostUri: string | undefined | null): string | null {
+  if (!hostUri || typeof hostUri !== 'string') return null;
+  let s = hostUri.trim();
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // drop scheme:// (exp://, http://, …)
+  s = s.split('/')[0];                            // drop /path or ?query
+  s = s.split(':')[0];                            // drop :port
+  s = s.trim();
+  return s.length > 0 ? s : null;
+}
+
+/**
+ * Pure backend base-URL resolution. `explicit` (EXPO_PUBLIC_API_URL) always
+ * wins; otherwise the LAN host from Expo + the API port; `localhost` only as a
+ * last resort — on a real device Expo always reports a host URI, so reaching
+ * that branch means a misconfiguration, and the health check will then surface
+ * `http://localhost:3001` as the address it tried (a legible signal).
+ */
+export function apiBaseUrlFrom(
+  hostUri: string | undefined | null,
+  explicit?: string | undefined | null
+): string {
+  if (explicit && explicit.trim().length > 0) {
+    return explicit.trim().replace(/\/+$/, '');
+  }
+  const host = hostFromExpoHostUri(hostUri);
+  if (host) return `http://${host}:${DEFAULT_API_PORT}`;
+  return `http://localhost:${DEFAULT_API_PORT}`;
+}
 
 function resolveBaseUrl(): string {
-  const explicit = process.env.EXPO_PUBLIC_API_URL;
-  if (explicit && explicit.length > 0) return explicit.replace(/\/$/, '');
-
   const hostUri =
     Constants.expoConfig?.hostUri ??
     (Constants.expoGoConfig as { debuggerHost?: string } | undefined)?.debuggerHost;
-
-  if (hostUri) {
-    const host = hostUri.split(':')[0];
-    if (host) return `http://${host}:${DEFAULT_API_PORT}`;
-  }
-  return `http://localhost:${DEFAULT_API_PORT}`;
+  return apiBaseUrlFrom(hostUri, process.env.EXPO_PUBLIC_API_URL);
 }
 
 export const API_BASE_URL = resolveBaseUrl();
