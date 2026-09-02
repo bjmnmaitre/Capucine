@@ -7,7 +7,8 @@ import {
   loadProfile, saveCriterion, setAvailabilityPreference, setRankingPreference, unexcludeMerchant,
 } from '../api';
 import {
-  availabilityPreferenceOf, criterionId, isMerchantExclusion, merchantNameOf, rankingPreferenceOf,
+  availabilityPreferenceOf, freeTextPreferenceCriterion, isMerchantExclusion,
+  merchantNameOf, rankingPreferenceOf,
 } from '../profile';
 import { ApiError, PREFERENCE_LEVELS, PreferenceLevel, ProfileCriterion } from '../types';
 import { theme } from '../theme';
@@ -86,7 +87,7 @@ export function ProfileScreen({ userId, onBack }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await saveCriterion(userId, { id: criterionId(trimmed), name: trimmed, level });
+      await saveCriterion(userId, freeTextPreferenceCriterion(trimmed, level));
       setName('');
       await refresh();
     } catch (err) {

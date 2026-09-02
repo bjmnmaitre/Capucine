@@ -26,6 +26,35 @@ export function criterionId(name: string): string {
   return slug.length > 0 ? slug : `pref-${djb2(name.trim())}`;
 }
 
+/**
+ * Corps d'une préférence en TEXTE LIBRE pour PUT /profile/:userId/criterion.
+ *
+ * `unknownPolicy: 'pass'` est délibéré : une formulation libre est un indice
+ * « au mieux », pas une spec strictement vérifiable. Sans ce drapeau, une
+ * préférence libre marquée « obligatoire » deviendrait une barrière
+ * d'admissibilité — et comme presque aucune offre ne publie la donnée
+ * correspondante, chaque recherche renverrait ZÉRO résultat (UNKNOWN traité
+ * comme BAD, l'invariant que Capucine refuse). Avec `'pass'`, une donnée
+ * inconnue laisse l'offre passer ; une donnée qui CONTREDIT la préférence la
+ * disqualifie toujours. C'est exactement le comportement décrit à l'écran
+ * (« Capucine les applique quand elle sait relier votre formulation à un
+ * critère — sinon elle les conserve sans pouvoir les appliquer »), et le même
+ * correctif que celui déjà appliqué aux specs techniques extraites de la
+ * requête (backend : spec-criteria-unknown-policy).
+ */
+export function freeTextPreferenceCriterion<L extends string>(
+  name: string,
+  level: L
+): { id: string; name: string; level: L; parameters: { unknownPolicy: 'pass' } } {
+  const trimmed = name.trim();
+  return {
+    id: criterionId(trimmed),
+    name: trimmed,
+    level,
+    parameters: { unknownPolicy: 'pass' },
+  };
+}
+
 // ── Exclusions de marchand (préférence permanente) ──────────────────────────
 
 /**

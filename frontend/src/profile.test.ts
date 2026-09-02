@@ -5,7 +5,7 @@
  */
 import {
   AVAILABILITY_PREFERENCE_CRITERION_ID, availabilityPreferenceCriterion, availabilityPreferenceOf,
-  criterionId, isMerchantExclusion, MERCHANT_EXCLUSION_ID_PREFIX,
+  criterionId, freeTextPreferenceCriterion, isMerchantExclusion, MERCHANT_EXCLUSION_ID_PREFIX,
   merchantExclusionCriterion, merchantExclusionId, merchantNameOf,
   RANKING_PREFERENCE_CRITERION_ID, rankingPreferenceCriterion, rankingPreferenceOf,
 } from './profile';
@@ -31,6 +31,28 @@ describe('criterionId', () => {
   it('le repli par hash reste déterministe', () => {
     expect(criterionId('€€€')).toBe(criterionId('€€€'));
     expect(criterionId('€€€')).not.toBe(criterionId('✓✓'));
+  });
+});
+
+/**
+ * Préférence en texte libre : elle ne doit JAMAIS pouvoir devenir une barrière
+ * d'admissibilité dure. `unknownPolicy: 'pass'` garantit qu'une donnée inconnue
+ * laisse l'offre passer — sinon une préférence « obligatoire » libre viderait
+ * chaque recherche (UNKNOWN traité comme BAD).
+ */
+describe('freeTextPreferenceCriterion', () => {
+  it('attache toujours unknownPolicy: pass, quel que soit le niveau', () => {
+    for (const level of ['required', 'very_important', 'important', 'preference', 'low'] as const) {
+      const body = freeTextPreferenceCriterion('Livraison en France', level);
+      expect(body.parameters).toEqual({ unknownPolicy: 'pass' });
+      expect(body.level).toBe(level);
+    }
+  });
+
+  it('id stable et dérivé du nom, nom trimé', () => {
+    const body = freeTextPreferenceCriterion('  Produit neuf  ', 'important');
+    expect(body.id).toBe(criterionId('Produit neuf'));
+    expect(body.name).toBe('Produit neuf');
   });
 });
 
