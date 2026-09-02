@@ -272,7 +272,9 @@ export function OfferDetailScreen({
 
       {prepError ? (
         <View style={styles.errorBox} accessibilityLiveRegion="assertive">
-          <Text style={styles.errorTitle}>{prepError}</Text>
+          {/* selectable : quand l'ouverture du navigateur échoue, le message
+              contient le lien à copier — il doit être copiable. */}
+          <Text style={styles.errorTitle} selectable>{prepError}</Text>
         </View>
       ) : null}
 

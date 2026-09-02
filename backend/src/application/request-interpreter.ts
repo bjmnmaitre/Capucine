@@ -1605,11 +1605,18 @@ const ENGLISH_STOP_WORDS = new Set([
 // ============================================================================
 
 /**
- * Detects a request to reorder results by price — returns the
- * RankingPreference id (see ranking-preference.ts) or null when the text
- * expresses no ranking intent. Never guesses BEST_VALUE/FASTEST_DELIVERY/
- * BEST_RATED from vague wording — only PRICE_LOWEST has real signal
- * patterns today, matching what ranking-preference.ts actually implements.
+ * Detects a request to reorder results — returns the RankingPreference id
+ * (see ranking-preference.ts) or null when the text expresses no ranking
+ * intent. Never guesses BEST_VALUE/FASTEST_DELIVERY/BEST_RATED from vague
+ * wording — only PRICE_LOWEST has real signal patterns today, matching what
+ * ranking-preference.ts actually implements.
+ *
+ * BEST_MATCH is returned for an explicit request to go BACK to relevance
+ * order ("par pertinence", "meilleure correspondance", "ordre par défaut").
+ * This is what lets a user with a PERMANENT "always cheapest" profile
+ * preference get relevance order for one conversation — the permanent
+ * preference is the session's starting order, an explicit follow-up still
+ * overrides it (conversation-manager.ts createFollowUpSession()).
  */
 export function extractRankingPreference(text: string): RankingPreference | null {
   const PRICE_LOWEST_PATTERNS = [
@@ -1624,7 +1631,23 @@ export function extractRankingPreference(text: string): RankingPreference | null
     /\bsort(?:ed)?\s+by\s+price\b/i,
     /\bbest\s+price\b/i,
   ];
+  // Checked BEFORE BEST_MATCH so "meilleur prix" stays PRICE_LOWEST.
   if (PRICE_LOWEST_PATTERNS.some(re => re.test(text))) return 'PRICE_LOWEST';
+
+  const BEST_MATCH_PATTERNS = [
+    /\bpar\s+pertinence\b/i,
+    /\bmeilleure?\s+correspondances?\b/i,
+    /\bordre\s+(?:par\s+d[ée]faut|normal|habituel|d'origine|initial)\b/i,
+    /\bclassement\s+(?:par\s+d[ée]faut|normal|habituel)\b/i,
+    /\bremets?\s+l['e]\s*ordre\s+(?:normal|par\s+d[ée]faut)\b/i,
+    /\bpeu\s+importe\s+le\s+prix\b/i,
+    /\bignore\s+le\s+prix\b/i,
+    /\bby\s+relevance\b/i,
+    /\bbest\s+match\b/i,
+    /\bdefault\s+(?:order|ranking|sort)\b/i,
+  ];
+  if (BEST_MATCH_PATTERNS.some(re => re.test(text))) return 'BEST_MATCH';
+
   return null;
 }
 

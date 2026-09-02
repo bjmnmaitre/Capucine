@@ -869,6 +869,24 @@ describe('extractRankingPreference', () => {
     expect(extractRankingPreference('uniquement neuf')).toBeNull();
     expect(extractRankingPreference('moins de 1100 €')).toBeNull(); // "moins de" ≠ "moins cher"
   });
+
+  it('retour explicite à la pertinence → BEST_MATCH (annule un PRICE_LOWEST permanent pour cette conversation)', () => {
+    for (const t of [
+      'trie par meilleure correspondance',
+      'classe par pertinence',
+      'remets l\'ordre par défaut',
+      'ordre normal',
+      'peu importe le prix',
+      'sort by relevance',
+      'best match please',
+    ]) {
+      expect(extractRankingPreference(t)).toBe('BEST_MATCH');
+    }
+  });
+
+  it('"meilleur prix" reste PRICE_LOWEST malgré le mot "meilleur"', () => {
+    expect(extractRankingPreference('donne-moi le meilleur prix')).toBe('PRICE_LOWEST');
+  });
 });
 
 // ============================================================================

@@ -433,6 +433,44 @@ describe('ConversationManager — conversational follow-ups', () => {
     expect(session.targetCountries).toEqual(['FR']);
   });
 
+  it('une préférence PERMANENTE PRICE_LOWEST est l\'ordre de départ de la session', () => {
+    const cheapestProfile: UserProfile = {
+      ...profile,
+      preferences: {
+        ...profile.preferences,
+        criteria: [{
+          id: 'ranking-preference', name: 'Toujours le moins cher',
+          level: 'preference', parameters: { rankingPreference: 'PRICE_LOWEST' },
+        }],
+      },
+    };
+    const result = makeSearchResultWithCriteria([budgetCriterion], ['ordinateur', 'portable'], []);
+    const id = mgr.createFollowUpSession('user-1', 'ordinateur portable', cheapestProfile, result);
+    expect(mgr.getSession(id)!.rankingPreference).toBe('PRICE_LOWEST');
+  });
+
+  it('un affinage explicite « meilleure correspondance » annule le PRICE_LOWEST permanent POUR CETTE conversation', () => {
+    const cheapestProfile: UserProfile = {
+      ...profile,
+      preferences: {
+        ...profile.preferences,
+        criteria: [{
+          id: 'ranking-preference', name: 'Toujours le moins cher',
+          level: 'preference', parameters: { rankingPreference: 'PRICE_LOWEST' },
+        }],
+      },
+    };
+    const result = makeSearchResultWithCriteria([budgetCriterion], ['ordinateur', 'portable'], []);
+    const id = mgr.createFollowUpSession('user-1', 'ordinateur portable', cheapestProfile, result);
+
+    const { updatedSession } = mgr.applyFollowUp(id, 'trie par meilleure correspondance', [], undefined, {
+      rankingPreference: 'BEST_MATCH',
+    });
+    expect(updatedSession.rankingPreference).toBe('BEST_MATCH');
+    // le profil permanent lui-même n'est pas touché
+    expect(mgr.getSession(id)!.profile.preferences.criteria[0].parameters!.rankingPreference).toBe('PRICE_LOWEST');
+  });
+
   it('J. a rankingPreference set via applyFollowUp persists across LATER follow-ups that don\'t mention it', () => {
     const result = makeSearchResultWithCriteria([budgetCriterion], ['ordinateur', 'portable'], []);
     const id = mgr.createFollowUpSession('user-1', 'ordinateur portable', profile, result);
