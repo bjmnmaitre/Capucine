@@ -205,9 +205,9 @@ function RefinementBar({
       ) : null}
 
       {availabilityLabel ? (
-        <View style={styles.orderChip} accessible accessibilityLabel={availabilityLabel}>
-          <Text style={styles.orderChipText}>{availabilityLabel}</Text>
-        </View>
+        <Text style={styles.availabilityNote} accessibilityLabel={availabilityLabel}>
+          {availabilityLabel}
+        </Text>
       ) : null}
 
       {history.length > 0 ? (
@@ -538,6 +538,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.space(1), paddingVertical: 4, marginBottom: theme.space(1),
   },
   orderChipText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
+  // Phrase explicative (pas un badge) : rendue comme une ligne pleine largeur
+  // qui s'enroule proprement sur un écran étroit.
+  availabilityNote: {
+    fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600',
+    lineHeight: 18, marginBottom: theme.space(1),
+  },
   refineHistory: { marginBottom: theme.space(1) },
   refineHistoryItem: { fontSize: theme.font.small, color: theme.color.textMuted, lineHeight: 20 },
   resetBtn: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: 2 },
