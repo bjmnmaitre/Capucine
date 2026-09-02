@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { BackHandler, SafeAreaView, StatusBar, StyleSheet } from 'react-native';
 import { checkHealth, HealthStatus, refine, search } from './src/api';
 import { recordSearch } from './src/history';
@@ -57,6 +57,12 @@ export default function App() {
   const [health, setHealth] = useState<HealthStatus | undefined>(undefined);
   const [checkingHealth, setCheckingHealth] = useState(false);
 
+  // Synchronous re-entry guard. `disabled={loading}` on the buttons already
+  // prevents the common case, but two taps in the same frame both read the
+  // stale `loading === false`; a ref is updated immediately and closes that
+  // window so a search / refinement is never fired twice.
+  const inFlight = useRef(false);
+
   const recheckHealth = useCallback(async () => {
     setCheckingHealth(true);
     try {
@@ -85,6 +91,8 @@ export default function App() {
   }, [step]);
 
   async function onSearch(query: string) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     setError(null);
     setErrorDetail(null);
@@ -104,16 +112,19 @@ export default function App() {
       setErrorDetail(e.detail ?? null);
     } finally {
       setLoading(false);
+      inFlight.current = false;
     }
   }
 
   async function onRefine(answer: string) {
     if (step.name !== 'results') return;
+    if (inFlight.current) return;
     const sessionId = step.response.session?.sessionId;
     if (!sessionId) {
       setRefineError('Cette recherche ne peut pas être affinée. Relancez une recherche.');
       return;
     }
+    inFlight.current = true;
     setRefining(true);
     setRefineError(null);
     try {
@@ -125,6 +136,7 @@ export default function App() {
       setRefineError((err as ApiError).message ?? "L'affinage a échoué.");
     } finally {
       setRefining(false);
+      inFlight.current = false;
     }
   }
 

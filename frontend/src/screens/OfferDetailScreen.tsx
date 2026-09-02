@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
@@ -58,16 +58,19 @@ export function OfferDetailScreen({
   const [preparing, setPreparing] = useState(false);
   const [prep, setPrep] = useState<PrepareCartResponse | null>(null);
   const [prepError, setPrepError] = useState<string | null>(null);
+  const inFlight = useRef(false);
 
   const currency = offer.cost.currency || offer.price?.currency || 'EUR';
   const isTotalKnown = offer.cost.certainty === 'known';
   const reasons = explainOfferRanking(offer, allOffers, ranking, availabilityEmphasis);
 
   async function onPrepare() {
+    if (inFlight.current) return;
     if (!sessionId) {
       setPrepError("La session de recherche est expirée. Relancez une recherche.");
       return;
     }
+    inFlight.current = true;
     setPreparing(true);
     setPrepError(null);
     setPrep(null);
@@ -78,6 +81,7 @@ export function OfferDetailScreen({
       setPrepError(e.message ?? 'La préparation a échoué.');
     } finally {
       setPreparing(false);
+      inFlight.current = false;
     }
   }
 
