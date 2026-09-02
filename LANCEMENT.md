@@ -23,8 +23,12 @@ joindre :
 
 ```
 [CapucineAPI] Sur cette machine : http://localhost:3001/health
-[CapucineAPI] Depuis le téléphone (en0) : http://10.7.144.52:3001/health
+[CapucineAPI] Depuis le téléphone (en0) : http://192.168.1.16:3001/health
 ```
+
+L'adresse `en0` **change avec le réseau** (Wi-Fi, partage de connexion de
+l'iPhone…). Toujours lire celle que le Terminal 1 vient d'afficher — ne pas se
+fier à une adresse notée ailleurs.
 
 Vérifier que la ligne « Web search » indique `serper (configured)`.
 
@@ -57,7 +61,7 @@ Elle affiche l'adresse qu'elle a essayée. Dans l'ordre :
 3. Forcer l'adresse en dernier recours :
    ```bash
    cd frontend
-   EXPO_PUBLIC_API_URL=http://10.7.144.52:3001 npx expo start --clear
+   EXPO_PUBLIC_API_URL=http://<adresse-en0-du-Terminal-1>:3001 npx expo start --clear
    ```
 
 ## Vérifier avant de tester
