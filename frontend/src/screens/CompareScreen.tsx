@@ -5,7 +5,7 @@ import {
   bestRankedIndex, compareTakeaway, costLabel, lowestKnownCostIndex,
   priceLabel, shippingValueLabel, stockConfirmedIndexes, stockLabel,
 } from '../presentation';
-import { CERTAINTY_LABEL, displayText, theme } from '../theme';
+import { displayText, theme } from '../theme';
 
 interface Props {
   offers: RankedOffer[];
@@ -53,6 +53,18 @@ function mostReliableIndexes(offers: RankedOffer[]): number[] {
   return known.filter((k) => Math.abs(k.r - max) < 0.005).map((k) => k.i);
 }
 
+/**
+ * Certitude du coût, en un mot — les libellés complets de CERTAINTY_LABEL
+ * (« Coût partiellement connu ») débordaient et se coupaient en milieu de mot
+ * dans une colonne de comparaison à 3 offres sur petit écran. La ligne est
+ * juste sous « Coût total », le contexte est donc conservé.
+ */
+const CERTAINTY_SHORT: Record<string, string> = {
+  known: 'connu',
+  partially_known: 'partiel',
+  unknown: 'inconnu',
+};
+
 const ROWS: RowSpec[] = [
   { label: 'Rang', value: (o) => `#${o.rank}` },
   { label: 'Prix produit', value: priceLabel },
@@ -60,7 +72,7 @@ const ROWS: RowSpec[] = [
   { label: 'Coût total', value: costLabel, best: lowestKnownCostIndex },
   {
     label: 'Certitude du coût',
-    value: (o) => CERTAINTY_LABEL[o.cost?.certainty] ?? o.cost?.certainty ?? 'inconnue',
+    value: (o) => CERTAINTY_SHORT[o.cost?.certainty] ?? 'inconnu',
   },
   {
     label: 'Disponibilité (stock)',
@@ -117,8 +129,8 @@ export function CompareScreen({ offers, onBack }: Props) {
       ) : null}
 
       <Text style={styles.note}>
-        Les valeurs viennent du classement de Capucine ; rien n’est recalculé ici.
-        Une donnée inconnue reste affichée comme inconnue.
+        Valeurs issues du classement de Capucine, non recalculées ici : une donnée
+        inconnue reste affichée comme inconnue.
       </Text>
 
       <View style={styles.grid}>
