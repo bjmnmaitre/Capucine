@@ -8,15 +8,51 @@ import {
   RANKING_PREFERENCE_CRITERION_ID, rankingPreferenceCriterion,
 } from './profile';
 
+/** Dev-only logging gate. Metro sets NODE_ENV; `__DEV__` isn't visible to the
+ *  test tsconfig, so this expresses the same thing portably. Silent under jest. */
+const IS_DEV = process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test';
+
 /**
  * Resolving the backend address.
  *
  * Expo Go runs on a PHONE, so `localhost` points at the phone, not at the dev
- * machine. Expo already knows the machine's LAN address (it is how the bundle
- * itself is served), so we reuse that host and swap in the API port. An
- * explicit EXPO_PUBLIC_API_URL always wins, for tunnels or a deployed backend.
+ * machine. When the bundle is served over the LAN, Expo's host URI is the
+ * machine's LAN address — we reuse that host and swap in the API port.
+ *
+ * But when the bundle is served through the **Expo tunnel** (`*.exp.direct`,
+ * ngrok, Cloudflare…), that host is a public relay that ONLY forwards Metro's
+ * port. Deriving `http://<tunnel-host>:3001` from it points the app at a port
+ * that relay never exposes — the mistake this module now refuses to make.
+ *
+ * On a tunnelled session the backend needs its own public address, passed
+ * explicitly via EXPO_PUBLIC_API_URL (see `scripts/start-tunnel.mjs`, which
+ * opens an ngrok tunnel to :3001 and injects its URL). An explicit value
+ * always wins.
  */
 export const DEFAULT_API_PORT = 3001;
+
+/**
+ * Host suffixes that identify a dev tunnel rather than a directly reachable
+ * host. The backend is NEVER derived from one of these — a tunnel forwards a
+ * single port, not the whole machine.
+ */
+const TUNNEL_HOST_SUFFIXES = [
+  '.exp.direct', '.exp.host',
+  '.ngrok.io', '.ngrok-free.app', '.ngrok-free.dev', '.ngrok.app', '.ngrok.dev',
+  '.trycloudflare.com', '.loca.lt', '.lhr.life', '.serveo.net',
+];
+
+/**
+ * Is `host` something the phone can reach directly on the LAN (an IP, a
+ * `.local` mDNS name, a bare hostname)? False for the public tunnel relays,
+ * whose host must not be reused as the backend host.
+ */
+export function isLanReachableHost(host: string | null | undefined): boolean {
+  if (!host) return false;
+  const h = host.trim().toLowerCase();
+  if (h.length === 0) return false;
+  return !TUNNEL_HOST_SUFFIXES.some((suffix) => h === suffix.slice(1) || h.endsWith(suffix));
+}
 
 /**
  * Bare host out of an Expo host URI. On a physical device over LAN this is
@@ -35,33 +71,92 @@ export function hostFromExpoHostUri(hostUri: string | undefined | null): string 
   return s.length > 0 ? s : null;
 }
 
+/** How the backend address was resolved — for dev logging and for the UI to
+ *  tell "backend is down" apart from "backend address was never configured". */
+export type ApiUrlSource = 'explicit' | 'lan' | 'unconfigured';
+
+export interface ResolvedApi {
+  baseUrl: string;
+  source: ApiUrlSource;
+}
+
 /**
  * Pure backend base-URL resolution. `explicit` (EXPO_PUBLIC_API_URL) always
- * wins; otherwise the LAN host from Expo + the API port; `localhost` only as a
- * last resort — on a real device Expo always reports a host URI, so reaching
- * that branch means a misconfiguration, and the health check will then surface
- * `http://localhost:3001` as the address it tried (a legible signal).
+ * wins; otherwise a *LAN-reachable* host from Expo + the API port. A tunnel
+ * host is NOT usable — it yields `source: 'unconfigured'` and a localhost
+ * placeholder that will fail fast on a device, so the UI shows a
+ * configuration-needed state rather than silently hammering a dead port.
  */
+export function resolveApiFrom(
+  hostUri: string | undefined | null,
+  explicit?: string | undefined | null
+): ResolvedApi {
+  if (explicit && explicit.trim().length > 0) {
+    return { baseUrl: explicit.trim().replace(/\/+$/, ''), source: 'explicit' };
+  }
+  const host = hostFromExpoHostUri(hostUri);
+  if (host && isLanReachableHost(host)) {
+    return { baseUrl: `http://${host}:${DEFAULT_API_PORT}`, source: 'lan' };
+  }
+  return { baseUrl: `http://localhost:${DEFAULT_API_PORT}`, source: 'unconfigured' };
+}
+
+/** Back-compat string-only resolver (kept for existing callers and tests). */
 export function apiBaseUrlFrom(
   hostUri: string | undefined | null,
   explicit?: string | undefined | null
 ): string {
-  if (explicit && explicit.trim().length > 0) {
-    return explicit.trim().replace(/\/+$/, '');
-  }
-  const host = hostFromExpoHostUri(hostUri);
-  if (host) return `http://${host}:${DEFAULT_API_PORT}`;
-  return `http://localhost:${DEFAULT_API_PORT}`;
+  return resolveApiFrom(hostUri, explicit).baseUrl;
 }
 
-function resolveBaseUrl(): string {
+function resolveApi(): ResolvedApi {
   const hostUri =
     Constants.expoConfig?.hostUri ??
     (Constants.expoGoConfig as { debuggerHost?: string } | undefined)?.debuggerHost;
-  return apiBaseUrlFrom(hostUri, process.env.EXPO_PUBLIC_API_URL);
+  return resolveApiFrom(hostUri, process.env.EXPO_PUBLIC_API_URL);
 }
 
-export const API_BASE_URL = resolveBaseUrl();
+const RESOLVED_API = resolveApi();
+
+/** Base URL used for every request. Never shown in the UI. */
+export const API_BASE_URL = RESOLVED_API.baseUrl;
+/** `false` when no backend address could be resolved (tunnelled session with
+ *  no EXPO_PUBLIC_API_URL). The UI uses this to explain what to do. */
+export const API_CONFIGURED = RESOLVED_API.source !== 'unconfigured';
+export const API_URL_SOURCE: ApiUrlSource = RESOLVED_API.source;
+
+// Developer-only signal. The USER never sees an address; a developer running
+// Metro sees exactly what the app resolved and why.
+if (IS_DEV) {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[Capucine] backend = ${API_BASE_URL} (${API_URL_SOURCE})`
+    + (API_URL_SOURCE === 'unconfigured'
+      ? ' — tunnelled session: set EXPO_PUBLIC_API_URL or use `npm run start:tunnel`'
+      : '')
+  );
+}
+
+/**
+ * Headers sent with every request. `ngrok-skip-browser-warning` is inert for a
+ * direct/LAN backend and, when the backend is behind an ngrok free tunnel,
+ * skips the HTML interstitial ngrok would otherwise return to a browser-like
+ * client — keeping the response pure JSON.
+ */
+const BASE_HEADERS: Record<string, string> = {
+  'ngrok-skip-browser-warning': 'true',
+};
+
+/**
+ * The user-facing message when a request cannot reach the backend. NO address,
+ * NO port, NO "check the server is started" — those are developer instructions.
+ * Wording depends only on whether an address was ever resolved.
+ */
+export function networkErrorMessage(): string {
+  return API_CONFIGURED
+    ? 'Capucine ne parvient pas à se connecter. Vérifiez votre connexion, puis réessayez.'
+    : 'Capucine n’est pas encore configurée pour se connecter à son service sur cet appareil.';
+}
 
 /**
  * Une recherche réelle enchaîne plusieurs requêtes au moteur PUIS la lecture
@@ -80,19 +175,17 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...BASE_HEADERS, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-  } catch (err) {
+  } catch {
     // Unreachable backend, DNS failure, timeout, phone off Wi-Fi. We say so
     // plainly instead of rendering an empty result list, which would read as
-    // "no offers exist" — a claim we have no basis for.
-    throw new ApiError(
-      'network',
-      "Capucine n'a pas pu joindre son service.",
-      `Adresse essayée : ${API_BASE_URL}${path}`
-    );
+    // "no offers exist" — a claim we have no basis for. The address tried is
+    // a developer detail (logged), never surfaced to the user.
+    if (IS_DEV) console.warn(`[Capucine] ${path} unreachable at ${API_BASE_URL}`);
+    throw new ApiError('network', networkErrorMessage(), undefined);
   } finally {
     clearTimeout(timer);
   }
@@ -126,6 +219,9 @@ export function search(query: string, userId: string): Promise<SearchResponse> {
 /** Ce que /health nous apprend, réduit à ce dont l'UI a besoin. */
 export interface HealthStatus {
   reachable: boolean;
+  /** `false` when no backend address is configured (tunnelled session). The UI
+   *  then shows a "not set up yet" state, not a "service is down" one. */
+  configured: boolean;
   /** 'mock' = interprétation heuristique ; 'real' = un fournisseur IA est actif. */
   aiStatus?: 'mock' | 'real' | string;
   /** 'configured' = au moins une vraie source Web ; 'no_real_source' = catalogue local seul. */
@@ -139,21 +235,29 @@ export interface HealthStatus {
  * pas une exception à gérer partout.
  */
 export async function checkHealth(timeoutMs = 4000): Promise<HealthStatus> {
+  // No address was ever resolved — don't bother the network, and let the UI
+  // show a configuration state instead of a transient "unreachable" flash.
+  if (!API_CONFIGURED) return { reachable: false, configured: false };
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
-    if (!res.ok) return { reachable: false };
+    const res = await fetch(`${API_BASE_URL}/health`, {
+      headers: BASE_HEADERS,
+      signal: controller.signal,
+    });
+    if (!res.ok) return { reachable: false, configured: true };
     const body = (await res.json()) as {
       capabilities?: { aiProviders?: { status?: string }; webSearch?: { status?: string } };
     };
     return {
       reachable: true,
+      configured: true,
       aiStatus: body.capabilities?.aiProviders?.status,
       webSearch: body.capabilities?.webSearch?.status,
     };
   } catch {
-    return { reachable: false };
+    return { reachable: false, configured: true };
   } finally {
     clearTimeout(timer);
   }
@@ -195,12 +299,15 @@ async function request<T>(method: 'GET' | 'PUT' | 'DELETE', path: string, body?:
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: body === undefined
+        ? BASE_HEADERS
+        : { ...BASE_HEADERS, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
   } catch {
-    throw new ApiError('network', "Capucine n'a pas pu joindre son service.", `${API_BASE_URL}${path}`);
+    if (IS_DEV) console.warn(`[Capucine] ${method} ${path} unreachable at ${API_BASE_URL}`);
+    throw new ApiError('network', networkErrorMessage(), undefined);
   } finally {
     clearTimeout(timer);
   }

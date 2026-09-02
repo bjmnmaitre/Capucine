@@ -24,11 +24,16 @@ Puis scannez le QR code avec **Expo Go** (le téléphone doit être sur le même
 
 ## Adresse du service
 
-L’application déduit l’adresse du backend à partir de l’hôte servi par Expo — c’est ainsi qu’elle
-fonctionne depuis un téléphone, où `localhost` désignerait le téléphone lui-même. L’adresse
-réellement utilisée est affichée en bas de l’écran de recherche.
+Sur le même Wi-Fi, l’application déduit l’adresse du backend à partir de l’hôte **LAN** servi
+par Expo (où `localhost` désignerait le téléphone lui-même). Un hôte de **tunnel**
+(`*.exp.direct`, ngrok…) n’est jamais réutilisé comme backend — il ne relaie que le port de
+Metro. Aucune adresse n’est affichée à l’utilisateur ; le développeur la lit dans les logs
+Metro (`[Capucine] backend = …`).
 
-Pour pointer ailleurs (tunnel, backend déployé) :
+Réseau public / isolation des clients : `npm run start:tunnel` (ouvre un tunnel ngrok vers
+`:3001` et l’injecte dans `EXPO_PUBLIC_API_URL`). Voir `../LANCEMENT.md`.
+
+Pour pointer ailleurs (backend déployé) :
 
 ```bash
 EXPO_PUBLIC_API_URL=https://mon-backend.example.com npm start

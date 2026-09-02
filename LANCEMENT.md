@@ -1,68 +1,73 @@
 # Lancer Capucine dans Expo Go
 
-Trois étapes. Compter deux minutes.
+Deux cas : même Wi-Fi (simple), ou réseau public / partagé (tunnel).
 
 ## Avant de commencer
 
-- Le Mac et le téléphone doivent être sur **le même réseau Wi-Fi**.
 - L'app **Expo Go** doit être installée sur le téléphone.
 - Le fichier `backend/.env` doit contenir une clé de recherche Web valide :
   `SERPER_API_KEY=...`
   Sans elle, Capucine démarre quand même mais ne trouvera aucune offre réelle —
   et `/health` le dira franchement (`no_real_source`).
 
-## Terminal 1 — le backend
+## Terminal 1 — le backend (toujours)
 
 ```bash
 cd backend
 npm run dev
 ```
 
-Au démarrage, le serveur affiche l'adresse à laquelle le **téléphone** doit le
-joindre :
-
-```
-[CapucineAPI] Sur cette machine : http://localhost:3001/health
-[CapucineAPI] Depuis le téléphone (en0) : http://192.168.1.16:3001/health
-```
-
-L'adresse `en0` **change avec le réseau** (Wi-Fi, partage de connexion de
-l'iPhone…). Toujours lire celle que le Terminal 1 vient d'afficher — ne pas se
-fier à une adresse notée ailleurs.
-
 Vérifier que la ligne « Web search » indique `serper (configured)`.
 
-## Terminal 2 — l'application
+---
+
+## Cas A — Mac et téléphone sur le même Wi-Fi
 
 ```bash
 cd frontend
 npx expo start
 ```
 
-Un QR code s'affiche.
+Scanner le QR code. L'application **déduit automatiquement** l'adresse du
+backend depuis l'hôte LAN par lequel Expo lui a servi le bundle, et y remplace
+le port par 3001. Rien à configurer.
 
-## Le téléphone
+## Cas B — réseau public, réseau invité, isolation des clients
 
-Scanner le QR code avec l'appareil photo (iOS) ou depuis Expo Go (Android).
+Sur ces réseaux le téléphone ne peut PAS joindre l'adresse LAN du Mac. Il faut
+un tunnel — **un pour Metro, un pour le backend**. Le domaine du tunnel Expo
+(`*.exp.direct`) ne sert QUE Metro ; l'app ne le prend jamais pour le backend
+(voir `frontend/src/api.ts`).
 
-L'application résout **automatiquement** l'adresse du backend : elle reprend
-l'adresse réseau par laquelle Expo lui a servi le bundle, et y remplace le port
-par 3001. Aucune configuration à faire.
+Un seul script gère les deux :
 
-## Si l'application dit « Capucine n'a pas pu joindre son service »
+```bash
+cd frontend
+npm run start:tunnel          # tunnel backend (ngrok) + `expo start --tunnel`
+```
 
-Elle affiche l'adresse qu'elle a essayée. Dans l'ordre :
+Le script :
+1. vérifie que le backend répond sur `:3001` ;
+2. ouvre (ou réutilise) un tunnel `ngrok http 3001` ;
+3. récupère son URL publique et la passe à Expo via `EXPO_PUBLIC_API_URL` ;
+4. lance `expo start --tunnel`.
 
-1. Comparer cette adresse à celle annoncée par le Terminal 1. Si elles
-   diffèrent, le téléphone et le Mac ne sont pas sur le même réseau.
-2. Ouvrir l'adresse `/health` du Terminal 1 dans le navigateur du **téléphone**.
-   Si elle ne répond pas, c'est le réseau — pare-feu du Mac, ou réseau invité
-   qui isole les appareils entre eux.
-3. Forcer l'adresse en dernier recours :
-   ```bash
-   cd frontend
-   EXPO_PUBLIC_API_URL=http://<adresse-en0-du-Terminal-1>:3001 npx expo start --clear
-   ```
+Pré-requis : `ngrok` installé et configuré une fois avec un authtoken
+(`ngrok config add-authtoken <token>`). `expo start --tunnel` peut demander à
+installer `@expo/ngrok` au premier lancement — accepter.
+
+Pour garder Metro en LAN mais tunneller seulement le backend :
+`npm run start:tunnel -- --lan`.
+
+## Si l'application affiche un problème de connexion
+
+- **« Capucine ne parvient pas à se connecter »** : le backend est configuré
+  mais injoignable. Vérifier le Terminal 1, puis relancer depuis l'app.
+- **« pas encore configurée pour se connecter … sur cet appareil »** : session
+  tunnelée sans URL backend → utiliser `npm run start:tunnel` (Cas B).
+
+Aucune adresse technique n'est affichée à l'utilisateur ; le développeur voit
+l'URL résolue dans les logs Metro (`[Capucine] backend = …`).
 
 ## Vérifier avant de tester
 

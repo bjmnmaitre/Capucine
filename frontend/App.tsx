@@ -36,7 +36,6 @@ export default function App() {
   const [step, setStep] = useState<Step>({ name: 'search' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [errorDetail, setErrorDetail] = useState<string | null>(null);
   // Refinement runs from the results screen and has its own in-flight state:
   // the list stays visible and interactive while a follow-up is being applied.
   const [refining, setRefining] = useState(false);
@@ -95,7 +94,6 @@ export default function App() {
     inFlight.current = true;
     setLoading(true);
     setError(null);
-    setErrorDetail(null);
     try {
       const response = await search(query, USER_ID);
       // An empty result list is a legitimate answer, not an error: it moves to
@@ -109,7 +107,6 @@ export default function App() {
     } catch (err) {
       const e = err as ApiError;
       setError(e.message ?? 'La recherche a échoué.');
-      setErrorDetail(e.detail ?? null);
     } finally {
       setLoading(false);
       inFlight.current = false;
@@ -169,7 +166,6 @@ export default function App() {
         <SearchScreen
           loading={loading}
           error={error}
-          errorDetail={errorDetail}
           health={health}
           checkingHealth={checkingHealth}
           onRecheckHealth={recheckHealth}

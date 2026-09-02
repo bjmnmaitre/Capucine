@@ -4,7 +4,7 @@ import {
   StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { theme } from '../theme';
-import { API_BASE_URL, HealthStatus } from '../api';
+import { HealthStatus } from '../api';
 import {
   clearHistory, loadHistory, relativeTime, removeSearch, SearchHistoryEntry,
 } from '../history';
@@ -14,7 +14,6 @@ const EXAMPLES = ['casque Sony WH-1000XM5', 'MacBook Air M4 16 Go', 'chaussures 
 interface Props {
   loading: boolean;
   error: string | null;
-  errorDetail?: string | null;
   health?: HealthStatus;
   checkingHealth?: boolean;
   onRecheckHealth?: () => void;
@@ -26,7 +25,7 @@ interface Props {
 }
 
 export function SearchScreen({
-  loading, error, errorDetail, health, checkingHealth, onRecheckHealth,
+  loading, error, health, checkingHealth, onRecheckHealth,
   initialQuery, onSearch, onOpenProfile,
 }: Props) {
   const [query, setQuery] = useState(initialQuery ?? '');
@@ -73,24 +72,30 @@ export function SearchScreen({
 
         {health && !health.reachable ? (
           <View style={styles.offlineBox} accessibilityLiveRegion="polite">
-            <Text style={styles.offlineTitle}>Service Capucine injoignable</Text>
-            <Text style={styles.offlineBody}>
-              Adresse essayée : {API_BASE_URL}
-              {'\n'}Vérifiez que le service est démarré et que ce téléphone est sur le même
-              réseau que le Mac.
+            <Text style={styles.offlineTitle}>
+              {health.configured
+                ? 'Connexion impossible'
+                : 'Capucine n’est pas encore configurée'}
             </Text>
-            <Pressable
-              onPress={onRecheckHealth}
-              disabled={checkingHealth}
-              accessibilityRole="button"
-              accessibilityLabel="Réessayer la connexion au service"
-              accessibilityState={{ disabled: !!checkingHealth, busy: !!checkingHealth }}
-              style={({ pressed }) => [styles.retryBtn, (pressed || checkingHealth) && styles.buttonPressed]}
-            >
-              {checkingHealth
-                ? <ActivityIndicator color={theme.color.accentText} />
-                : <Text style={styles.retryBtnText}>Réessayer</Text>}
-            </Pressable>
+            <Text style={styles.offlineBody}>
+              {health.configured
+                ? 'Capucine ne parvient pas à joindre son service. Vérifiez votre connexion, puis réessayez.'
+                : 'Sur cet appareil, Capucine ne sait pas encore où joindre son service. Relancez la session avec le tunnel de développement.'}
+            </Text>
+            {health.configured ? (
+              <Pressable
+                onPress={onRecheckHealth}
+                disabled={checkingHealth}
+                accessibilityRole="button"
+                accessibilityLabel="Réessayer la connexion"
+                accessibilityState={{ disabled: !!checkingHealth, busy: !!checkingHealth }}
+                style={({ pressed }) => [styles.retryBtn, (pressed || checkingHealth) && styles.buttonPressed]}
+              >
+                {checkingHealth
+                  ? <ActivityIndicator color={theme.color.accentText} />
+                  : <Text style={styles.retryBtnText}>Réessayer</Text>}
+              </Pressable>
+            ) : null}
           </View>
         ) : health?.reachable && health.webSearch && health.webSearch !== 'configured' ? (
           // Service joignable mais AUCUNE vraie source Web : le dire franchement
@@ -147,10 +152,7 @@ export function SearchScreen({
         {error ? (
           <View style={styles.errorBox} accessibilityLiveRegion="assertive">
             <Text style={styles.errorTitle}>{error}</Text>
-            {errorDetail ? <Text style={styles.errorDetail}>{errorDetail}</Text> : null}
-            <Text style={styles.errorHint}>
-              Vérifiez que le service Capucine est démarré, puis réessayez.
-            </Text>
+            <Text style={styles.errorHint}>Vérifiez votre connexion, puis réessayez.</Text>
           </View>
         ) : null}
 
@@ -224,12 +226,12 @@ export function SearchScreen({
           <Text style={styles.profileLinkText}>Vos préférences permanentes ›</Text>
         </Pressable>
 
-        <Text style={styles.apiNote}>
-          {health?.reachable
-            ? `Service connecté${health.webSearch === 'configured' ? ' · recherche Web active' : ''}`
-              + `${health.aiStatus === 'real' ? ' · IA activée' : ''}`
-            : `Service : ${API_BASE_URL}`}
-        </Text>
+        {health?.reachable ? (
+          <Text style={styles.apiNote}>
+            {`Service connecté${health.webSearch === 'configured' ? ' · recherche Web active' : ''}`
+              + `${health.aiStatus === 'real' ? ' · IA activée' : ''}`}
+          </Text>
+        ) : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -284,7 +286,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
   },
   errorTitle: { color: theme.color.danger, fontWeight: '700', fontSize: theme.font.body },
-  errorDetail: { color: theme.color.text, fontSize: theme.font.small, marginTop: theme.space(0.5) },
   errorHint: { color: theme.color.textMuted, fontSize: theme.font.small, marginTop: theme.space(1) },
   examples: { marginTop: theme.space(4) },
   examplesTitle: {
