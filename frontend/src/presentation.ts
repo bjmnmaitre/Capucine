@@ -104,6 +104,21 @@ export function rankingPreferenceLabel(
 }
 
 /**
+ * Ce que l'écran dit de la préférence « privilégier la disponibilité
+ * immédiate », quand elle est active. `null` sinon — rien à afficher. Le texte
+ * reste honnête : le bonus ne s'applique QU'aux offres dont le stock/la
+ * livraison sont confirmés, et ne renverse jamais une bien meilleure
+ * correspondance.
+ */
+export function availabilityEmphasisLabel(
+  active: boolean | null | undefined
+): string | null {
+  return active
+    ? 'Disponibilité immédiate privilégiée — à correspondance proche, une offre en stock confirmé passe devant.'
+    : null;
+}
+
+/**
  * Ce que chaque statut de POST /prepare-cart veut RÉELLEMENT dire — aligné
  * sur backend/cart-preparation-engine.ts, qui distingue soigneusement « page
  * remise » de « panier créé ». Un web redirect ne crée PAS de panier chez le

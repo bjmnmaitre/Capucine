@@ -169,6 +169,14 @@ export interface SearchResponse {
     hiddenOfferCount: number;
     hiddenMerchants: string[];
   } | null;
+  /**
+   * La préférence permanente « privilégier la disponibilité immédiate » était
+   * active pour cette recherche : elle a relevé le bonus de classement des
+   * offres dont le stock/la livraison sont CONFIRMÉS (jamais de malus pour une
+   * disponibilité inconnue). Informe l'UI, qui peut alors expliquer pourquoi
+   * une offre en stock passe devant une correspondance légèrement meilleure.
+   */
+  availabilityEmphasis?: boolean;
   results: RankedOffer[];
   summary?: SearchSummary;
   interpretation?: { productTerms?: string[]; [k: string]: unknown } | null;

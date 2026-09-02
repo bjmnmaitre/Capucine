@@ -4,6 +4,7 @@
  * inconnue pourrait devenir une affirmation sur l'écran de l'utilisateur.
  */
 import {
+  availabilityEmphasisLabel,
   bestRankedIndex, compareTakeaway, costLabel, explainOfferRanking, lowestKnownCostIndex,
   merchantLabel, offerAccessibilityLabel, offerUrlLabel, prepStatusLabel, priceLabel,
   rankingPreferenceLabel, resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
@@ -162,6 +163,21 @@ describe('rankingPreferenceLabel — n’annonce que ce qui est réellement appl
 
   it('préférence inconnue → aucun libellé plutôt qu’un code brut', () => {
     expect(rankingPreferenceLabel({ preference: 'SOMETHING_NEW', applied: true })).toBeNull();
+  });
+});
+
+describe('availabilityEmphasisLabel — annoncé seulement quand actif, sans surpromesse', () => {
+  it('inactif / absent → null', () => {
+    expect(availabilityEmphasisLabel(false)).toBeNull();
+    expect(availabilityEmphasisLabel(null)).toBeNull();
+    expect(availabilityEmphasisLabel(undefined)).toBeNull();
+  });
+
+  it('actif → une phrase qui reste conditionnelle (« à correspondance proche »)', () => {
+    const label = availabilityEmphasisLabel(true);
+    expect(label).not.toBeNull();
+    expect(label).toMatch(/correspondance proche/);
+    expect(label).toMatch(/stock confirmé/);
   });
 });
 

@@ -3,10 +3,12 @@ import {
   ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import {
-  clearRankingPreference, deleteCriterion, excludeMerchant, loadProfile,
-  saveCriterion, setRankingPreference, unexcludeMerchant,
+  clearAvailabilityPreference, clearRankingPreference, deleteCriterion, excludeMerchant,
+  loadProfile, saveCriterion, setAvailabilityPreference, setRankingPreference, unexcludeMerchant,
 } from '../api';
-import { criterionId, isMerchantExclusion, merchantNameOf, rankingPreferenceOf } from '../profile';
+import {
+  availabilityPreferenceOf, criterionId, isMerchantExclusion, merchantNameOf, rankingPreferenceOf,
+} from '../profile';
 import { ApiError, PREFERENCE_LEVELS, PreferenceLevel, ProfileCriterion } from '../types';
 import { theme } from '../theme';
 
@@ -54,8 +56,11 @@ export function ProfileScreen({ userId, onBack }: Props) {
   // best-effort attribute hints.
   const merchantExclusions = criteria.filter(isMerchantExclusion);
   const cheapestFirst = rankingPreferenceOf(criteria) === 'PRICE_LOWEST';
+  const availabilityFirst = availabilityPreferenceOf(criteria);
   const otherCriteria = criteria.filter(
-    (c) => !isMerchantExclusion(c) && c.id !== 'ranking-preference'
+    (c) => !isMerchantExclusion(c)
+      && c.id !== 'ranking-preference'
+      && c.id !== 'availability-preference'
   );
 
   async function refresh() {
@@ -139,6 +144,20 @@ export function ProfileScreen({ userId, onBack }: Props) {
     try {
       if (cheapestFirst) await clearRankingPreference(userId);
       else await setRankingPreference(userId, 'PRICE_LOWEST');
+      await refresh();
+    } catch (err) {
+      setError((err as ApiError).message ?? "L'enregistrement a échoué.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onToggleAvailabilityFirst() {
+    setBusy(true);
+    setError(null);
+    try {
+      if (availabilityFirst) await clearAvailabilityPreference(userId);
+      else await setAvailabilityPreference(userId);
       await refresh();
     } catch (err) {
       setError((err as ApiError).message ?? "L'enregistrement a échoué.");
@@ -238,6 +257,30 @@ export function ProfileScreen({ userId, onBack }: Props) {
         </View>
         <Text style={[styles.toggleState, cheapestFirst && styles.toggleStateOn]}>
           {cheapestFirst ? 'ON' : 'OFF'}
+        </Text>
+      </Pressable>
+
+      {/* ── Disponibilité immédiate — axe distinct de l'ordre ci-dessus ── */}
+      <Text style={styles.section} accessibilityRole="header">Disponibilité</Text>
+      <Pressable
+        onPress={onToggleAvailabilityFirst}
+        disabled={busy}
+        accessibilityRole="switch"
+        accessibilityLabel="Privilégier la disponibilité immédiate"
+        accessibilityHint="À correspondance proche, une offre en stock confirmé passe devant. Ne pénalise jamais une disponibilité inconnue."
+        accessibilityState={{ checked: availabilityFirst, disabled: busy }}
+        style={({ pressed }) => [styles.toggleRow, pressed && styles.pressed]}
+      >
+        <View style={styles.rowText}>
+          <Text style={styles.rowName}>Privilégier la disponibilité immédiate</Text>
+          <Text style={styles.rowLevel}>
+            {availabilityFirst
+              ? 'Activé — une offre en stock confirmé est favorisée à correspondance proche'
+              : 'Désactivé — la disponibilité ne départage que les ex æquo'}
+          </Text>
+        </View>
+        <Text style={[styles.toggleState, availabilityFirst && styles.toggleStateOn]}>
+          {availabilityFirst ? 'ON' : 'OFF'}
         </Text>
       </Pressable>
 

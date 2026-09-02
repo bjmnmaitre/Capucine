@@ -3,6 +3,7 @@ import {
   ApiError, PreferenceLevel, PrepareCartResponse, ProfileResponse, SearchResponse,
 } from './types';
 import {
+  AVAILABILITY_PREFERENCE_CRITERION_ID, availabilityPreferenceCriterion,
   merchantExclusionCriterion, merchantExclusionId,
   RANKING_PREFERENCE_CRITERION_ID, rankingPreferenceCriterion,
 } from './profile';
@@ -239,4 +240,18 @@ export function setRankingPreference(userId: string, pref: string): Promise<unkn
 
 export function clearRankingPreference(userId: string): Promise<unknown> {
   return deleteCriterion(userId, RANKING_PREFERENCE_CRITERION_ID);
+}
+
+/**
+ * Persistent "prioritise immediate availability" preference — an axis distinct
+ * from the ordering above (they compose). Applied from the very first search
+ * after, survives every conversational follow-up (it lives in the session's
+ * profile snapshot on the backend).
+ */
+export function setAvailabilityPreference(userId: string): Promise<unknown> {
+  return saveCriterion(userId, availabilityPreferenceCriterion());
+}
+
+export function clearAvailabilityPreference(userId: string): Promise<unknown> {
+  return deleteCriterion(userId, AVAILABILITY_PREFERENCE_CRITERION_ID);
 }

@@ -102,3 +102,32 @@ export function rankingPreferenceCriterion(pref: string): {
     parameters: { rankingPreference: pref },
   };
 }
+
+// ── Préférence « privilégier la disponibilité immédiate » ───────────────────
+
+/**
+ * Axe INDÉPENDANT de la préférence de tri (les deux se composent : on peut
+ * vouloir « le moins cher » ET « ce qui est en stock »). Un seul critère porte
+ * le choix ; sa présence avec `prioritizeAvailability === true` est
+ * l'interrupteur. Convention reconnue par le backend (domain/profile.ts) :
+ * elle relève le plafond du bonus de disponibilité au classement, sans jamais
+ * pénaliser une disponibilité inconnue ni renverser une bien meilleure
+ * correspondance.
+ */
+export const AVAILABILITY_PREFERENCE_CRITERION_ID = 'availability-preference';
+
+export function availabilityPreferenceOf(criteria: ProfileCriterionLike[]): boolean {
+  const c = criteria.find((x) => x.id === AVAILABILITY_PREFERENCE_CRITERION_ID);
+  return c?.parameters?.['prioritizeAvailability'] === true;
+}
+
+export function availabilityPreferenceCriterion(): {
+  id: string; name: string; level: 'preference'; parameters: { prioritizeAvailability: true };
+} {
+  return {
+    id: AVAILABILITY_PREFERENCE_CRITERION_ID,
+    name: 'Privilégier la disponibilité immédiate',
+    level: 'preference',
+    parameters: { prioritizeAvailability: true },
+  };
+}

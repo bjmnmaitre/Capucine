@@ -3,7 +3,9 @@ import {
   ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { RankedOffer, SearchResponse } from '../types';
-import { costLabel, explainOfferRanking, rankingPreferenceLabel } from '../presentation';
+import {
+  availabilityEmphasisLabel, costLabel, explainOfferRanking, rankingPreferenceLabel,
+} from '../presentation';
 import { CERTAINTY_LABEL, displayText, formatMoney, theme } from '../theme';
 
 interface Props {
@@ -179,6 +181,7 @@ function RefinementBar({
   const history = response.session?.answeredQuestions ?? [];
   const canRefine = Boolean(response.session?.sessionId);
   const orderLabel = rankingPreferenceLabel(response.rankingPreference);
+  const availabilityLabel = availabilityEmphasisLabel(response.availabilityEmphasis);
 
   function submit(value: string) {
     const trimmed = value.trim();
@@ -196,6 +199,12 @@ function RefinementBar({
       {orderLabel ? (
         <View style={styles.orderChip} accessible accessibilityLabel={`Ordre actuel : ${orderLabel}`}>
           <Text style={styles.orderChipText}>{orderLabel}</Text>
+        </View>
+      ) : null}
+
+      {availabilityLabel ? (
+        <View style={styles.orderChip} accessible accessibilityLabel={availabilityLabel}>
+          <Text style={styles.orderChipText}>{availabilityLabel}</Text>
         </View>
       ) : null}
 

@@ -4,6 +4,7 @@
  * backend ne reçoit jamais un id vide (qu'il rejette).
  */
 import {
+  AVAILABILITY_PREFERENCE_CRITERION_ID, availabilityPreferenceCriterion, availabilityPreferenceOf,
   criterionId, isMerchantExclusion, MERCHANT_EXCLUSION_ID_PREFIX,
   merchantExclusionCriterion, merchantExclusionId, merchantNameOf,
   RANKING_PREFERENCE_CRITERION_ID, rankingPreferenceCriterion, rankingPreferenceOf,
@@ -83,5 +84,43 @@ describe('préférence de tri permanente', () => {
     ])).toBe('PRICE_LOWEST');
     expect(rankingPreferenceOf([{ id: 'price', parameters: { maxBudget: 400 } }])).toBeNull();
     expect(rankingPreferenceOf([])).toBeNull();
+  });
+});
+
+/**
+ * Préférence « privilégier la disponibilité immédiate » : axe indépendant du
+ * tri, corps conforme à la convention backend (domain/profile.ts), id fixe
+ * (ré-activer ne duplique pas), et un flag absent/malformé compte comme OFF.
+ */
+describe('préférence de disponibilité permanente', () => {
+  it('availabilityPreferenceCriterion : corps conforme, id fixe', () => {
+    const body = availabilityPreferenceCriterion();
+    expect(body.id).toBe(AVAILABILITY_PREFERENCE_CRITERION_ID);
+    expect(body.level).toBe('preference');
+    expect(body.parameters).toEqual({ prioritizeAvailability: true });
+  });
+
+  it('availabilityPreferenceOf : true seulement sur le flag exact', () => {
+    expect(availabilityPreferenceOf([
+      { id: AVAILABILITY_PREFERENCE_CRITERION_ID, parameters: { prioritizeAvailability: true } },
+    ])).toBe(true);
+    expect(availabilityPreferenceOf([
+      { id: AVAILABILITY_PREFERENCE_CRITERION_ID, parameters: { prioritizeAvailability: 'yes' } },
+    ])).toBe(false);
+    expect(availabilityPreferenceOf([
+      { id: AVAILABILITY_PREFERENCE_CRITERION_ID, parameters: null },
+    ])).toBe(false);
+    expect(availabilityPreferenceOf([{ id: 'price' }])).toBe(false);
+    expect(availabilityPreferenceOf([])).toBe(false);
+  });
+
+  it('les deux axes se composent sans collision d\'id', () => {
+    const criteria = [
+      rankingPreferenceCriterion('PRICE_LOWEST'),
+      availabilityPreferenceCriterion(),
+    ];
+    expect(rankingPreferenceOf(criteria)).toBe('PRICE_LOWEST');
+    expect(availabilityPreferenceOf(criteria)).toBe(true);
+    expect(criteria[0].id).not.toBe(criteria[1].id);
   });
 });
