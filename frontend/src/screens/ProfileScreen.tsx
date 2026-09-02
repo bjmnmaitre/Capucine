@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView,
+  StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import {
   clearAvailabilityPreference, clearRankingPreference, deleteCriterion, excludeMerchant,
@@ -168,6 +169,10 @@ export function ProfileScreen({ userId, onBack }: Props) {
   }
 
   return (
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <Pressable
         onPress={onBack}
@@ -386,10 +391,12 @@ export function ProfileScreen({ userId, onBack }: Props) {
         ))
       )}
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   container: { padding: theme.space(2), paddingBottom: theme.space(6) },
   back: { minHeight: theme.minTouch, justifyContent: 'center' },
   backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
