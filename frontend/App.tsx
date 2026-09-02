@@ -190,6 +190,7 @@ export default function App() {
           offer={step.offer}
           allOffers={step.response.results ?? []}
           ranking={step.response.rankingPreference}
+          availabilityEmphasis={step.response.availabilityEmphasis}
           sessionId={step.response.session?.sessionId ?? null}
           onBack={() =>
             setStep({ name: 'results', query: step.query, response: step.response })

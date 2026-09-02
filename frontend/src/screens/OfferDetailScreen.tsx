@@ -15,6 +15,9 @@ interface Props {
    *  celle-ci dans l'explication du classement. */
   allOffers: RankedOffer[];
   ranking?: RankingPreferenceState | null;
+  /** SearchResponse.availabilityEmphasis — pour EXPLIQUER pourquoi une offre
+   *  en stock confirmé remonte, quand la préférence est active. */
+  availabilityEmphasis?: boolean;
   sessionId: string | null;
   onBack: () => void;
 }
@@ -49,14 +52,16 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
   );
 }
 
-export function OfferDetailScreen({ offer, allOffers, ranking, sessionId, onBack }: Props) {
+export function OfferDetailScreen({
+  offer, allOffers, ranking, availabilityEmphasis, sessionId, onBack,
+}: Props) {
   const [preparing, setPreparing] = useState(false);
   const [prep, setPrep] = useState<PrepareCartResponse | null>(null);
   const [prepError, setPrepError] = useState<string | null>(null);
 
   const currency = offer.cost.currency || offer.price?.currency || 'EUR';
   const isTotalKnown = offer.cost.certainty === 'known';
-  const reasons = explainOfferRanking(offer, allOffers, ranking);
+  const reasons = explainOfferRanking(offer, allOffers, ranking, availabilityEmphasis);
 
   async function onPrepare() {
     if (!sessionId) {

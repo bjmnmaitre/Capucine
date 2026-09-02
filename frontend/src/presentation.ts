@@ -288,7 +288,11 @@ function comparableCost(
 export function explainOfferRanking(
   offer: ExplainableOffer,
   others: ExplainableOffer[],
-  ranking?: RankingPreferenceState | null
+  ranking?: RankingPreferenceState | null,
+  /** La préférence permanente « privilégier la disponibilité immédiate » était
+   *  active pour cette recherche (SearchResponse.availabilityEmphasis). Sert
+   *  uniquement à EXPLIQUER — le classement, lui, vient déjà du backend. */
+  availabilityEmphasis?: boolean
 ): string[] {
   const points: string[] = [];
   const self = comparableCost(offer);
@@ -368,6 +372,22 @@ export function explainOfferRanking(
     const blocked = (readiness.blocked ?? []).map((p) => READINESS_PENDING_LABEL[p] ?? p);
     if (blocked.length > 0) points.push(`Bloquant avant achat : ${blocked.join(', ')}.`);
     else if (pending.length > 0) points.push(`À confirmer avant d’acheter : ${pending.join(', ')}.`);
+  }
+
+  // ── 4bis. L'effet de la préférence « disponibilité immédiate » ───────────
+  // Dit seulement quand elle est ACTIVE et que CETTE offre a un stock
+  // réellement confirmé — jamais « votre préférence a joué » sur une offre
+  // dont la disponibilité est inconnue (elle n'aurait rien gagné).
+  if (availabilityEmphasis && readiness) {
+    const stockConfirmed = !(readiness.pending ?? []).includes('inStock')
+      && !(readiness.blocked ?? []).includes('inStock');
+    if (stockConfirmed) {
+      points.push(
+        offer.rank === 1
+          ? 'Vous privilégiez la disponibilité immédiate : à correspondance proche, son stock confirmé la fait passer devant.'
+          : 'Son stock confirmé lui a valu un bonus (vous privilégiez la disponibilité immédiate), sans renverser une meilleure correspondance.'
+      );
+    }
   }
 
   // ── 5. Qualité de correspondance ────────────────────────────────────────

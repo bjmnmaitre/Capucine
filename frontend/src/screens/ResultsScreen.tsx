@@ -57,11 +57,12 @@ function certaintyStyle(certainty: string) {
 }
 
 function OfferRow({
-  offer, allOffers, ranking, compareMode, selected, atCapacity, onPress,
+  offer, allOffers, ranking, availabilityEmphasis, compareMode, selected, atCapacity, onPress,
 }: {
   offer: RankedOffer;
   allOffers: RankedOffer[];
   ranking: SearchResponse['rankingPreference'];
+  availabilityEmphasis?: boolean;
   compareMode: boolean;
   selected: boolean;
   atCapacity: boolean;
@@ -79,7 +80,7 @@ function OfferRow({
   const shipping = shippingLabel(offer);
   // Deterministic, comparison-aware "why" — the headline plus the single most
   // useful supporting fact. Full reasoning lives on the detail screen.
-  const why = explainOfferRanking(offer, allOffers, ranking);
+  const why = explainOfferRanking(offer, allOffers, ranking, availabilityEmphasis);
   const recommended = offer.rank === 1;
 
   // One spoken sentence per offer, now including WHY it sits here: a
@@ -464,6 +465,7 @@ export function ResultsScreen({
               offer={item}
               allOffers={results}
               ranking={response.rankingPreference}
+              availabilityEmphasis={response.availabilityEmphasis}
               compareMode={compareMode}
               selected={selectedIds.includes(item.offerId)}
               atCapacity={selectedIds.length >= MAX_COMPARE}

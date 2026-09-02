@@ -361,6 +361,30 @@ describe('explainOfferRanking — situer une offre, jamais inventer', () => {
     expect(pending.some((l) => l.includes('À confirmer') && l.includes('livraison'))).toBe(true);
   });
 
+  it('emphase disponibilité + stock confirmé → explique l’effet de la préférence', () => {
+    const out = explainOfferRanking(
+      offer({ rank: 1, readiness: { ready: false, pending: ['deliverable'], blocked: [] } }),
+      [], { preference: 'BEST_MATCH', applied: true }, true
+    );
+    expect(out.some((l) => /privilégiez la disponibilité immédiate/.test(l))).toBe(true);
+  });
+
+  it('emphase disponibilité MAIS stock inconnu → n’attribue aucun gain à la préférence', () => {
+    const out = explainOfferRanking(
+      offer({ rank: 1, readiness: { ready: false, pending: ['inStock', 'deliverable'], blocked: [] } }),
+      [], { preference: 'BEST_MATCH', applied: true }, true
+    );
+    expect(out.some((l) => /disponibilité immédiate/.test(l))).toBe(false);
+  });
+
+  it('emphase désactivée → aucune phrase sur la préférence, même stock confirmé', () => {
+    const out = explainOfferRanking(
+      offer({ rank: 1, readiness: { ready: true, pending: [], blocked: [] } }),
+      [], { preference: 'BEST_MATCH', applied: true }, false
+    );
+    expect(out.some((l) => /privilégiez la disponibilité/.test(l))).toBe(false);
+  });
+
   it('toujours au moins un point (la position)', () => {
     expect(explainOfferRanking(offer({}), []).length).toBeGreaterThan(0);
   });
