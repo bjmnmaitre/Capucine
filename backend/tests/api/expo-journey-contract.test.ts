@@ -281,6 +281,33 @@ describe('Contrat du parcours Expo', () => {
     }
   });
 
+  // ── Préférence de disponibilité : champ toujours présent, booléen ────────
+  it('availabilityEmphasis est toujours un booléen (false sans préférence)', async () => {
+    const res = await runSearch('casque Sony WH-1000XM5');
+    expect(res.status).toBe(200);
+    // L'écran lit ce champ pour afficher (ou non) le bandeau « disponibilité
+    // privilégiée ». Un undefined le ferait passer inaperçu.
+    expect(typeof res.body.availabilityEmphasis).toBe('boolean');
+    expect(res.body.availabilityEmphasis).toBe(false);
+  });
+
+  // ── Usage compris : phrase toute faite quand l'utilisateur l'a dit ───────
+  it('usageContext.summary est une phrase prête à afficher, source « user » quand l’usage est énoncé', async () => {
+    const res = await runSearch('casque Sony WH-1000XM5 pour écouter de la musique dans le train');
+    expect(res.status).toBe(200);
+    expect(res.body.usageContext).toBeTruthy();
+    expect(res.body.usageContext.source).toBe('user');
+    // Le backend possède la phrase — l'écran ne recompose rien à partir des codes.
+    expect(typeof res.body.usageContext.summary).toBe('string');
+    expect(res.body.usageContext.summary.length).toBeGreaterThan(0);
+  });
+
+  it('usageContext est null quand aucun usage n’est énoncé — l’écran n’invente pas « vous avez indiqué »', async () => {
+    const res = await runSearch('casque Sony WH-1000XM5');
+    expect(res.status).toBe(200);
+    expect(res.body.usageContext ?? null).toBeNull();
+  });
+
   // ── U. provenance conservée jusqu'à l'écran ──────────────────────────────
   it('U. chaque offre porte sa provenance jusqu’à l’interface', async () => {
     const res = await runSearch('casque Sony WH-1000XM5');

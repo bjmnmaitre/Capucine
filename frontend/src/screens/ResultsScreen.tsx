@@ -5,6 +5,7 @@ import {
 import { RankedOffer, SearchResponse } from '../types';
 import {
   availabilityEmphasisLabel, costLabel, explainOfferRanking, rankingPreferenceLabel,
+  usageContextLabel,
 } from '../presentation';
 import { CERTAINTY_LABEL, displayText, formatMoney, theme } from '../theme';
 
@@ -335,6 +336,8 @@ export function ResultsScreen({
   // Honnêteté : si des offres ont été masquées par une exclusion de marchand
   // (affinage « sans X » OU préférence permanente), on le dit — la liste
   // n'est pas juste plus courte en silence.
+  const usageNote = usageContextLabel(response.usageContext);
+
   const mx = response.merchantExclusions;
   const exclusionNote = mx && mx.hiddenOfferCount > 0
     ? `${mx.hiddenOfferCount} offre${mx.hiddenOfferCount > 1 ? 's' : ''} masquée${mx.hiddenOfferCount > 1 ? 's' : ''}`
@@ -382,6 +385,10 @@ export function ResultsScreen({
           </Text>
         ) : response.summary?.resultSummary ? (
           <Text style={styles.summary}>{response.summary.resultSummary}</Text>
+        ) : null}
+
+        {!compareMode && usageNote ? (
+          <Text style={styles.usageNote} accessibilityLabel={usageNote}>{usageNote}</Text>
         ) : null}
 
         {!compareMode && exclusionNote ? (
@@ -509,6 +516,10 @@ const styles = StyleSheet.create({
   exclusionNote: {
     fontSize: theme.font.small, color: theme.color.unknown, marginTop: theme.space(0.5),
     lineHeight: 18,
+  },
+  usageNote: {
+    fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
+    lineHeight: 18, fontStyle: 'italic',
   },
   list: { padding: theme.space(2), paddingBottom: theme.space(5) },
   listWithBar: { paddingBottom: theme.space(12) },

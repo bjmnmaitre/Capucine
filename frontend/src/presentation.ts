@@ -10,7 +10,7 @@
  * classement viennent du backend et ne sont jamais recalculés ici.
  */
 import { displayText, formatMoney } from './theme';
-import type { RankedOffer, RankingPreferenceState } from './types';
+import type { RankedOffer, RankingPreferenceState, SearchResponse } from './types';
 
 /** Libellé de livraison. « inconnue » et « offerte » ne se confondent jamais. */
 /**
@@ -116,6 +116,26 @@ export function availabilityEmphasisLabel(
   return active
     ? 'Disponibilité immédiate privilégiée — à correspondance proche, une offre en stock confirmé passe devant.'
     : null;
+}
+
+/**
+ * Ce que l'écran dit de l'usage compris. `null` si rien d'exploitable, ou si
+ * le backend n'a pas fourni de phrase toute faite (on n'en recompose jamais
+ * une à partir des codes). Le préfixe dépend de la SOURCE : « Vous avez
+ * indiqué » seulement quand l'utilisateur l'a réellement dit — sinon
+ * « Capucine a supposé », qui n'engage pas l'utilisateur.
+ */
+export function usageContextLabel(
+  uc: SearchResponse['usageContext'] | null | undefined
+): string | null {
+  const summary = uc?.summary?.trim();
+  if (!summary) return null;
+  const prefix = uc?.source === 'user'
+    ? 'Vous avez indiqué un usage'
+    : uc?.source === 'profile'
+      ? 'D’après vos préférences, usage'
+      : 'Capucine a supposé un usage';
+  return `${prefix} : ${summary}.`;
 }
 
 /**

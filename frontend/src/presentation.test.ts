@@ -4,7 +4,7 @@
  * inconnue pourrait devenir une affirmation sur l'écran de l'utilisateur.
  */
 import {
-  availabilityEmphasisLabel,
+  availabilityEmphasisLabel, usageContextLabel,
   bestRankedIndex, compareTakeaway, costLabel, explainOfferRanking, lowestKnownCostIndex,
   merchantLabel, offerAccessibilityLabel, offerUrlLabel, prepStatusLabel, priceLabel,
   rankingPreferenceLabel, resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
@@ -163,6 +163,37 @@ describe('rankingPreferenceLabel — n’annonce que ce qui est réellement appl
 
   it('préférence inconnue → aucun libellé plutôt qu’un code brut', () => {
     expect(rankingPreferenceLabel({ preference: 'SOMETHING_NEW', applied: true })).toBeNull();
+  });
+});
+
+describe('usageContextLabel — préfixe selon la source, jamais recomposé', () => {
+  it('rien à afficher sans summary', () => {
+    expect(usageContextLabel(null)).toBeNull();
+    expect(usageContextLabel(undefined)).toBeNull();
+    expect(usageContextLabel({ usage: 'music', source: 'user', confidence: 0.9 })).toBeNull();
+    expect(usageContextLabel({ usage: 'music', source: 'user', confidence: 0.9, summary: '  ' })).toBeNull();
+  });
+
+  it('source « user » → « Vous avez indiqué »', () => {
+    const label = usageContextLabel({
+      usage: 'music', source: 'user', confidence: 0.9,
+      summary: "pour l'écoute de musique, dans les transports",
+    });
+    expect(label).toBe("Vous avez indiqué un usage : pour l'écoute de musique, dans les transports.");
+  });
+
+  it('source « inferred » → formulation qui n’engage pas l’utilisateur', () => {
+    const label = usageContextLabel({
+      usage: 'sport', source: 'inferred', confidence: 0.5, summary: 'pour le sport',
+    });
+    expect(label).toMatch(/^Capucine a supposé/);
+  });
+
+  it('source « profile » → rattaché aux préférences', () => {
+    const label = usageContextLabel({
+      usage: 'office', source: 'profile', confidence: 0.7, summary: 'au bureau',
+    });
+    expect(label).toMatch(/préférences/);
   });
 });
 

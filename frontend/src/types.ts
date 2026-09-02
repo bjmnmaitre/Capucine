@@ -179,6 +179,21 @@ export interface SearchResponse {
   availabilityEmphasis?: boolean;
   results: RankedOffer[];
   summary?: SearchSummary;
+  /**
+   * Ce que Capucine a compris de l'USAGE prévu du produit. `source: 'user'`
+   * = l'utilisateur l'a dit explicitement (« pour le train ») ; `'inferred'`
+   * = déduit ; `'profile'` = vient d'une préférence permanente. `summary` est
+   * une phrase déjà rédigée et traduite par le backend — affichée telle
+   * quelle, jamais recomposée à partir des codes.
+   */
+  usageContext?: {
+    usage: string;
+    context?: string | null;
+    source: 'user' | 'inferred' | 'profile' | string;
+    confidence: number;
+    matchedText?: string | null;
+    summary?: string | null;
+  } | null;
   interpretation?: { productTerms?: string[]; [k: string]: unknown } | null;
   effectiveCriteria?: unknown;
   /**

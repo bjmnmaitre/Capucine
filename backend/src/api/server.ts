@@ -32,6 +32,7 @@ import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator } from '../application/ai-providers';
 import { FileProfileStore } from '../application/profile-store';
 import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, availabilityPreferenceFromProfile } from '../domain/profile';
+import { describeUsageContext } from '../domain/usage-context-mapping';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
@@ -1511,6 +1512,11 @@ function serializeResult(
       source: result.usageContext.source,
       confidence: result.usageContext.confidence,
       matchedText: result.usageContext.matchedText ?? null,
+      // Ready-made human phrase (localized, backend-owned) covering this entry
+      // and every `additional` one — e.g. "pour l'écoute de musique, dans les
+      // transports". The client shows it verbatim; it never composes its own
+      // from the codes above.
+      summary: describeUsageContext(result.usageContext, result.language),
       additional: (result.usageContext.additional ?? []).map(entry => ({
         usage: entry.usage,
         context: entry.context ?? null,
