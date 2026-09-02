@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { RankedOffer } from '../types';
 import {
   bestRankedIndex, compareTakeaway, costLabel, lowestKnownCostIndex,
-  priceLabel, shippingValueLabel,
+  priceLabel, shippingValueLabel, stockConfirmedIndexes, stockLabel,
 } from '../presentation';
 import { CERTAINTY_LABEL, displayText, theme } from '../theme';
 
@@ -61,6 +61,11 @@ const ROWS: RowSpec[] = [
   {
     label: 'Certitude du coût',
     value: (o) => CERTAINTY_LABEL[o.cost?.certainty] ?? o.cost?.certainty ?? 'inconnue',
+  },
+  {
+    label: 'Disponibilité (stock)',
+    value: stockLabel,
+    best: stockConfirmedIndexes,
   },
   {
     label: 'Prêt à l’achat',

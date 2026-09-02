@@ -196,6 +196,32 @@ export function lowestKnownCostIndex(
   }, []);
 }
 
+/**
+ * État du STOCK seul (dimension `inStock` de la readiness), distinct de « prêt
+ * à l'achat » qui exige AUSSI prix vérifié, lien et livraison. `blocked` =
+ * rupture positivement constatée ; `pending` = inconnu ; absent des deux =
+ * confirmé. On ne dit jamais « en rupture » sur une simple absence de donnée.
+ */
+export function stockLabel(offer: Pick<RankedOffer, 'readiness'>): string {
+  const r = offer.readiness;
+  if (!r) return 'inconnu';
+  if ((r.blocked ?? []).includes('inStock')) return 'rupture annoncée';
+  if ((r.pending ?? []).includes('inStock')) return 'non confirmé';
+  return 'en stock confirmé';
+}
+
+/** Index des offres au stock POSITIVEMENT confirmé — jamais celles dont le
+ *  stock est seulement inconnu. Sert à mettre en gras la cellule gagnante en
+ *  comparaison, jamais à reclasser. */
+export function stockConfirmedIndexes(
+  offers: Array<Pick<RankedOffer, 'readiness'>>
+): number[] {
+  return offers.reduce<number[]>((acc, o, i) => {
+    if (stockLabel(o) === 'en stock confirmé') acc.push(i);
+    return acc;
+  }, []);
+}
+
 /** Index de l'offre la mieux classée (rang le plus petit) parmi celles
  *  fournies. `-1` si la liste est vide. */
 export function bestRankedIndex(offers: Array<Pick<RankedOffer, 'rank'>>): number {

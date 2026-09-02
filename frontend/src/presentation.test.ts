@@ -8,6 +8,7 @@ import {
   bestRankedIndex, compareTakeaway, costLabel, explainOfferRanking, lowestKnownCostIndex,
   merchantLabel, offerAccessibilityLabel, offerUrlLabel, prepStatusLabel, priceLabel,
   rankingPreferenceLabel, resultsSummary, shippingLabel, shippingValueLabel, isShippingKnown,
+  stockLabel, stockConfirmedIndexes,
 } from './presentation';
 import { formatMoney } from './theme';
 
@@ -387,6 +388,29 @@ describe('explainOfferRanking — situer une offre, jamais inventer', () => {
 
   it('toujours au moins un point (la position)', () => {
     expect(explainOfferRanking(offer({}), []).length).toBeGreaterThan(0);
+  });
+});
+
+describe('stockLabel / stockConfirmedIndexes — « inconnu » n’est jamais « rupture »', () => {
+  const o = (readiness?: { pending?: string[]; blocked?: string[] }) =>
+    ({ readiness: readiness ? { ready: false, pending: [], blocked: [], ...readiness } : undefined } as never);
+
+  it('confirmé quand inStock n’est ni pending ni blocked', () => {
+    expect(stockLabel(o({ pending: ['deliverable'] }))).toBe('en stock confirmé');
+  });
+  it('non confirmé quand inStock est pending', () => {
+    expect(stockLabel(o({ pending: ['inStock'] }))).toBe('non confirmé');
+  });
+  it('rupture seulement sur un blocked positif', () => {
+    expect(stockLabel(o({ blocked: ['inStock'] }))).toBe('rupture annoncée');
+  });
+  it('pas de readiness → inconnu, pas rupture', () => {
+    expect(stockLabel(o())).toBe('inconnu');
+  });
+  it('stockConfirmedIndexes ne retient que les stocks positivement confirmés', () => {
+    expect(stockConfirmedIndexes([
+      o({ pending: ['deliverable'] }), o({ pending: ['inStock'] }), o(), o({ blocked: ['inStock'] }),
+    ])).toEqual([0]);
   });
 });
 
