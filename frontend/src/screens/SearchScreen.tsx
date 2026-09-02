@@ -92,6 +92,17 @@ export function SearchScreen({
                 : <Text style={styles.retryBtnText}>Réessayer</Text>}
             </Pressable>
           </View>
+        ) : health?.reachable && health.webSearch && health.webSearch !== 'configured' ? (
+          // Service joignable mais AUCUNE vraie source Web : le dire franchement
+          // plutôt que de laisser l'utilisateur lancer une recherche qui ne
+          // remontera que le catalogue local (ou rien).
+          <View style={styles.offlineBox} accessibilityLiveRegion="polite">
+            <Text style={styles.offlineTitle}>Recherche Web indisponible</Text>
+            <Text style={styles.offlineBody}>
+              Le service répond, mais aucune source Web réelle n’est configurée
+              (SERPER_API_KEY). Les recherches ne remonteront pas d’offres réelles.
+            </Text>
+          </View>
         ) : null}
 
         <Text style={styles.label} nativeID="search-label">Votre recherche</Text>
