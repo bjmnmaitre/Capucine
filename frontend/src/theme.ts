@@ -37,11 +37,25 @@ export function formatMoney(amount: number | null | undefined, currency: string 
   // the string "NaN €", which is worse than saying nothing — it looks like a
   // price. Infinity and a malformed number are unknown values too.
   if (amount === null || amount === undefined || !Number.isFinite(amount)) return 'inconnu';
-  const code = currency && currency.length > 0 ? currency : 'EUR';
+
+  const raw = typeof currency === 'string' ? currency.trim() : '';
+  const isIsoCode = /^[A-Za-z]{3}$/.test(raw);
+
+  // A blank currency defaults to EUR (destination is France, the overwhelming
+  // majority of offers are in euros). But an EXPLICIT non-ISO value — the
+  // backend sends the literal "unknown" when it read an amount off a page
+  // without a currency symbol — must not be silently rendered as euros, nor
+  // as the raw token ("34,9 unknown"): keep the number, flag the currency.
+  if (raw.length > 0 && !isIsoCode) {
+    const n = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+    return `${n} (devise non précisée)`;
+  }
+
+  const code = isIsoCode ? raw.toUpperCase() : 'EUR';
   try {
     return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: code }).format(amount);
   } catch {
-    // An unsupported currency code must not lose the amount.
+    // An unsupported (but 3-letter) currency code must not lose the amount.
     return `${amount} ${code}`;
   }
 }

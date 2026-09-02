@@ -32,6 +32,23 @@ describe('formatMoney — un montant absent ne devient jamais un prix', () => {
     expect(formatMoney(42, null)).toContain('42');
     expect(formatMoney(42, 'PAS-UNE-DEVISE')).toContain('42');
   });
+
+  it('devise vide → défaut euros (destination France)', () => {
+    expect(formatMoney(42, null)).toMatch(/€/);
+    expect(formatMoney(42, '')).toMatch(/€/);
+  });
+
+  it('devise explicitement « unknown » → montant conservé, devise signalée, jamais « 42 unknown » ni « € »', () => {
+    const out = formatMoney(34.9, 'unknown');
+    expect(out).toContain('34,90');
+    expect(out).toContain('devise non précisée');
+    expect(out).not.toContain('unknown');
+    expect(out).not.toMatch(/€/);
+  });
+
+  it('code ISO à 3 lettres respecté (casse indifférente)', () => {
+    expect(formatMoney(10, 'usd')).toMatch(/\$|USD/);
+  });
 });
 
 describe('formatScore', () => {
