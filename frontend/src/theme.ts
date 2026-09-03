@@ -1,29 +1,133 @@
+import { Platform } from 'react-native';
+
 /**
- * Minimal design tokens. Contrast ratios against `surface` (#FFFFFF) are
- * >= 4.5:1 for every text colour, and touch targets are never below 44pt.
+ * CAPUCINE — design tokens.
+ *
+ * One source of truth for colour, type, spacing, radius, elevation. Screens
+ * never hard-code a hex value or a magic number: every visual decision routes
+ * through here so the app reads as one product.
+ *
+ * Contrast: every text colour is >= 4.5:1 on `surface` (#FFFFFF) and on
+ * `background`. Touch targets are never below `minTouch` (44pt, Apple HIG).
+ *
+ * Direction: warm, quiet, premium. Few borders, one accent, generous space,
+ * a strong type hierarchy carrying the meaning instead of colour and chrome.
  */
+
+const palette = {
+  ink: '#15130F',        // near-black, warm — 16.7:1 on paper
+  inkSoft: '#5B5750',    // secondary text — 7.0:1 on paper
+  inkFaint: '#736E65',   // captions, placeholders — 4.8:1 on paper
+  paper: '#FBF9F5',      // app background, warm off-white
+  card: '#FFFFFF',       // raised surfaces
+  cardAlt: '#F4F1EA',    // insets, pressed rows, skeletons
+  line: '#E7E2D8',       // hairlines
+  lineStrong: '#D8D2C4',
+
+  accent: '#1F5C4D',     // deep pine green — 6.6:1 on paper
+  accentText: '#FFFFFF',
+  accentSoft: '#E6EFEB', // accent-tinted surface
+  accentInk: '#174A3D',  // accent used as text on accentSoft — 7.1:1
+
+  known: '#1C6B44',      // a fact we stand behind — 5.4:1 on paper
+  knownSoft: '#E4F1E7',
+  unknown: '#7A5200',    // unknown, NOT an error — 5.2:1 on paper
+  unknownSoft: '#F6EAD3',
+  danger: '#9B2C2C',     // 6.4:1 on paper
+  dangerSoft: '#F7E4E1',
+
+  overlay: 'rgba(21,19,15,0.32)',
+};
+
 export const theme = {
   color: {
-    background: '#F6F7F9',
-    surface: '#FFFFFF',
-    border: '#D3D7DE',
-    text: '#14181F',        // 16.1:1 on white
-    textMuted: '#4F5764',   // 7.6:1 on white
-    accent: '#1B4FD8',      // 7.0:1 on white
-    accentText: '#FFFFFF',
-    known: '#14603A',       // 6.4:1 — a fact we stand behind
-    unknown: '#6B4A00',     // 6.3:1 — unknown, NOT an error colour
-    danger: '#9B1C1C',      // 7.4:1
+    // Semantic surface / text roles
+    background: palette.paper,
+    surface: palette.card,
+    surfaceAlt: palette.cardAlt,
+    border: palette.line,
+    borderStrong: palette.lineStrong,
+    text: palette.ink,
+    textMuted: palette.inkSoft,
+    textFaint: palette.inkFaint,
+
+    // Accent
+    accent: palette.accent,
+    accentText: palette.accentText,
+    accentSoft: palette.accentSoft,
+    accentInk: palette.accentInk,
+
+    // Certainty semantics — UNKNOWN is its own colour, never the error colour
+    known: palette.known,
+    knownSoft: palette.knownSoft,
+    unknown: palette.unknown,
+    unknownSoft: palette.unknownSoft,
+    danger: palette.danger,
+    dangerSoft: palette.dangerSoft,
+
+    overlay: palette.overlay,
   },
+
+  /** 8-pt spacing scale. `space(1)` = 8, `space(0.5)` = 4, `space(3)` = 24. */
   space: (n: number) => n * 8,
-  radius: 12,
+
+  /** Single legacy radius token (kept: many styles read `theme.radius`). */
+  radius: 14,
+  /** Named radii for new work. */
+  radii: { sm: 8, md: 14, lg: 20, xl: 28, pill: 999 },
+
   /** Apple HIG / Material minimum touch target. */
   minTouch: 44,
+
   font: {
-    title: 26,
+    /** Home hero. */
+    mega: 40,
+    display: 30,
+    title: 24,
     heading: 19,
     body: 16,
     small: 14,
+    label: 12.5,
+  },
+
+  weight: {
+    regular: '400',
+    medium: '500',
+    semibold: '600',
+    bold: '700',
+  },
+
+  /** Absolute line-heights, paired with the sizes above. */
+  leading: {
+    mega: 44,
+    display: 36,
+    title: 30,
+    heading: 25,
+    body: 23,
+    small: 20,
+  },
+
+  /** Platform elevation. Spread into a style: `...theme.shadow.card`. Kept
+   *  deliberately soft — one warm shadow, never a hard drop. */
+  shadow: {
+    card: Platform.select({
+      ios: {
+        shadowColor: '#2A2109',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.06,
+        shadowRadius: 16,
+      },
+      default: { elevation: 2 },
+    }) as object,
+    raised: Platform.select({
+      ios: {
+        shadowColor: '#2A2109',
+        shadowOffset: { width: 0, height: 12 },
+        shadowOpacity: 0.1,
+        shadowRadius: 28,
+      },
+      default: { elevation: 8 },
+    }) as object,
   },
 } as const;
 

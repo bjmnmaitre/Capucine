@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import {
   ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
+import { Screen } from '../components/Screen';
 import { prepareCart } from '../api';
 import {
   costLabel, explainOfferRanking, prepStatusLabel, shippingValueLabel, isShippingKnown,
@@ -19,6 +20,9 @@ interface Props {
    *  en stock confirmé remonte, quand la préférence est active. */
   availabilityEmphasis?: boolean;
   sessionId: string | null;
+  /** Fired once when /prepare-cart returns, with its EXACT status and the
+   *  merchant name — for the Activité journal. Never called on failure. */
+  onPrepared?: (status: string, merchant: string | null) => void;
   onBack: () => void;
 }
 
@@ -53,7 +57,7 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
 }
 
 export function OfferDetailScreen({
-  offer, allOffers, ranking, availabilityEmphasis, sessionId, onBack,
+  offer, allOffers, ranking, availabilityEmphasis, sessionId, onPrepared, onBack,
 }: Props) {
   const [preparing, setPreparing] = useState(false);
   const [prep, setPrep] = useState<PrepareCartResponse | null>(null);
@@ -75,7 +79,9 @@ export function OfferDetailScreen({
     setPrepError(null);
     setPrep(null);
     try {
-      setPrep(await prepareCart(sessionId, offer.offerId));
+      const result = await prepareCart(sessionId, offer.offerId);
+      setPrep(result);
+      onPrepared?.(result.status, offer.merchant?.name ?? null);
     } catch (err) {
       const e = err as ApiError;
       setPrepError(e.message ?? 'La préparation a échoué.');

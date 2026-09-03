@@ -6,10 +6,14 @@ import {
   priceLabel, shippingValueLabel, stockConfirmedIndexes, stockLabel,
 } from '../presentation';
 import { displayText, theme } from '../theme';
+import { Screen, ScreenTitle, EmptyState } from '../components/Screen';
+import { Button } from '../components/Button';
 
 interface Props {
   offers: RankedOffer[];
   onBack: () => void;
+  /** Clears the selection so the Comparer tab returns to its empty state. */
+  onClear: () => void;
 }
 
 /**
@@ -103,24 +107,49 @@ const ROWS: RowSpec[] = [
   },
 ];
 
-export function CompareScreen({ offers, onBack }: Props) {
+export function CompareScreen({ offers, onBack, onClear }: Props) {
   const topIdx = bestRankedIndex(offers);
   const takeaway = compareTakeaway(offers);
 
+  if (offers.length < 2) {
+    return (
+      <Screen>
+        <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+          <ScreenTitle eyebrow="Décider" title="Comparer" />
+          <EmptyState
+            title="Aucune comparaison en cours"
+            body="Depuis vos résultats, touchez « Comparer », choisissez 2 ou 3 offres, et elles s’afficheront ici côte à côte."
+            action={
+              offers.length === 1
+                ? <Button label="Voir les résultats" onPress={onBack} />
+                : undefined
+            }
+          />
+        </ScrollView>
+      </Screen>
+    );
+  }
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <Screen>
+    <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      <ScreenTitle
+        eyebrow="Décider"
+        title={`Comparer ${offers.length} offres`}
+        trailing={
+          <Pressable onPress={onClear} accessibilityRole="button" accessibilityLabel="Vider la comparaison" hitSlop={8}>
+            <Text style={styles.clear}>Vider</Text>
+          </Pressable>
+        }
+      />
       <Pressable
         onPress={onBack}
         accessibilityRole="button"
         accessibilityLabel="Revenir aux résultats"
         style={({ pressed }) => [styles.back, pressed && styles.backPressed]}
       >
-        <Text style={styles.backText}>‹ Résultats</Text>
+        <Text style={styles.backText}>‹ Retour aux résultats</Text>
       </Pressable>
-
-      <Text style={styles.title} accessibilityRole="header">
-        Comparer {offers.length} offres
-      </Text>
 
       {takeaway ? (
         <View style={styles.takeaway} accessible accessibilityLabel={takeaway}>
@@ -190,18 +219,20 @@ export function CompareScreen({ offers, onBack }: Props) {
         })}
       </View>
     </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: theme.space(2), paddingBottom: theme.space(6) },
-  back: { minHeight: theme.minTouch, justifyContent: 'center' },
+  container: { padding: theme.space(2), paddingTop: theme.space(2), paddingBottom: theme.space(4) },
+  clear: { fontSize: theme.font.small, fontWeight: theme.weight.semibold, color: theme.color.accent },
+  back: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: theme.space(0.5) },
   backPressed: { opacity: 0.7 },
-  backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
+  backText: { color: theme.color.accent, fontSize: theme.font.small, fontWeight: '600' },
   title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
   takeaway: {
     marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radius,
-    backgroundColor: '#F4F7FF', borderWidth: 1, borderColor: theme.color.accent,
+    backgroundColor: theme.color.accentSoft, borderWidth: 1, borderColor: theme.color.accent,
   },
   takeawayText: { fontSize: theme.font.small, color: theme.color.text, lineHeight: 20 },
   note: {
