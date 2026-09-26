@@ -705,7 +705,9 @@ const readiness = readinessByOfferId?.get(offer.id);
         const chrKeywords = ['chr', 'pro', 'professionnel', 'restaurant', 'cuisine', 'horeca', 'matériel', 'equipement', 'fournisseur', 'grossiste'];
         // Only check merchant NAME for CHR keywords — URLs may contain "professionnel"
         // because generalists also sell professional equipment
-        const hasChrKeyword = chrKeywords.some(kw => merchantName.includes(kw));
+        // Whole words only: 'pro' must not match "Promo Shop" / "Prodirect".
+        const nameWords = new Set(merchantName.split(/[^a-z0-9àâäçéèêëîïôöùûüÿœ]+/i).filter(Boolean));
+        const hasChrKeyword = chrKeywords.some(kw => nameWords.has(kw));
         const hasKnownPrice = offer.price?.value !== null && offer.price?.value !== undefined && offer.price?.value > 0;
         const hasDirectUrl = offer.executionUrl && offer.executionUrl.length > 0;
         

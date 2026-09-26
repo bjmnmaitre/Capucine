@@ -989,4 +989,21 @@ describe('CHR searchContext: malus for generalist merchants, boost for specialis
       expect(r.overallScore).toBeGreaterThanOrEqual(0);
     });
   });
+  it('"pro" matches a whole word only: "Promo Shop" gets NO CHR boost, "Cuisine Pro" does', () => {
+    const mk = (id: string, name: string) => {
+      const o = createOffer(id, createMerchant(id, name, 'FR'), 2000);
+      o.executionUrl = `https://${id}.example/four`;
+      return o;
+    };
+    const { rankedOffers } = rankOffers({
+      offers: [mk('promo', 'Promo Shop'), mk('neutral', 'Maison Martin'), mk('cuisinepro', 'Cuisine Pro')],
+      effectiveCriteria: [createCriterion('category', 'Catégorie', 'required', { preferredValues: ['four_professionnel'], unknownPolicy: 'pass' })],
+      requestId: 'test-chr-word-boundary',
+      timestamp: new Date(),
+      searchContext: 'restaurant_equipment',
+    });
+    const score = (id: string) => rankedOffers.find(r => r.offer.id === id)!.overallScore;
+    expect(score('promo')).toBe(score('neutral'));
+    expect(score('cuisinepro')).toBeGreaterThan(score('neutral'));
+  });
 });
