@@ -12,6 +12,11 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: ['<rootDir>/src/**/*.test.ts'],
+  // theme.ts lit Platform (ombre iOS/Android) alors que ces tests n'ont
+  // aucun besoin de monter React Native : un stub minimal suffit.
+  moduleNameMapper: {
+    '^react-native$': '<rootDir>/test/react-native-stub.ts',
+  },
   // Jest's globals are declared in a test-only tsconfig so the app's own
   // tsconfig (and therefore the Expo build) stays untouched.
   transform: {

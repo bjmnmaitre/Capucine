@@ -403,9 +403,9 @@ function buildCatalog(): CatalogEntry[] {
       shippingCost: 0,
       characteristics: sony_xm5_chars,
     }),
-    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling over ear',
+    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling over ear noir',
     category: 'casque',
-    tags: ['sony', 'bluetooth', 'anc', 'over-ear'],
+    tags: ['sony', 'bluetooth', 'anc', 'over-ear', 'noir'],
   });
 
   entries.push({
@@ -416,9 +416,9 @@ function buildCatalog(): CatalogEntry[] {
       shippingCost: 0,
       characteristics: sony_xm5_chars,
     }),
-    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling',
+    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling noir',
     category: 'casque',
-    tags: ['sony', 'bluetooth', 'anc', 'over-ear'],
+    tags: ['sony', 'bluetooth', 'anc', 'over-ear', 'noir'],
   });
 
   entries.push({
@@ -429,9 +429,9 @@ function buildCatalog(): CatalogEntry[] {
       shippingCost: 0,
       characteristics: sony_xm5_chars,
     }),
-    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling',
+    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling noir',
     category: 'casque',
-    tags: ['sony', 'bluetooth', 'anc', 'over-ear'],
+    tags: ['sony', 'bluetooth', 'anc', 'over-ear', 'noir'],
   });
 
   // Sony WH-1000XM5 — Boulanger with CONFLICTING weight (260g vs 250g from manufacturer)
@@ -451,9 +451,9 @@ function buildCatalog(): CatalogEntry[] {
         warranty: known('1 an', 'boulanger'),
       },
     }),
-    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling boulanger',
+    searchCorpus: 'sony wh-1000xm5 casque bluetooth anc noise cancelling boulanger noir',
     category: 'casque',
-    tags: ['sony', 'bluetooth', 'anc', 'over-ear'],
+    tags: ['sony', 'bluetooth', 'anc', 'over-ear', 'noir'],
   });
 
   // Bose QuietComfort 45

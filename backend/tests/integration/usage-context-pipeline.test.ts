@@ -23,6 +23,8 @@ import {
   DiscoveryResult,
 } from '../../src/application/discovery';
 import { DataPoint, Merchant, Offer, UserProfile, UsageContext } from '../../src/domain/types';
+import { AIOrchestrator } from '../../src/application/ai-orchestrator';
+import { MockAIProvider } from '../../src/application/ai-orchestrator';
 import type { Application } from 'express';
 
 // ============================================================================
@@ -515,7 +517,10 @@ describe('§19 Four turns over HTTP — what Capucine ends up understanding', ()
 
   beforeAll(async () => {
     const { default: supertest } = await import('supertest');
-    app = buildApp();
+    const { AIOrchestrator } = await import('../../src/application/ai-orchestrator');
+    const { MockAIProvider } = await import('../../src/application/ai-orchestrator');
+    const mockAiOrchestrator = new AIOrchestrator([new MockAIProvider()]);
+    app = buildApp({ webAdapters: [], aiOrchestrator: mockAiOrchestrator });
 
     const turn1 = await supertest(app).post('/search').send({
       query: 'Je cherche un Sony XM5 noir.',

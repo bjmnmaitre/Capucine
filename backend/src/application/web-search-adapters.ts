@@ -131,6 +131,10 @@ export class BraveSearchAdapter implements WebSearchAdapter {
     url.searchParams.set('count', String(Math.min(params.maxResults ?? 10, 20)));
     if (params.language) url.searchParams.set('search_lang', params.language);
     if (params.country) url.searchParams.set('country', params.country.toLowerCase());
+    if (params.location) {
+      url.searchParams.set('search_lang', 'fr');
+      url.searchParams.set('country', 'fr');
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -228,6 +232,11 @@ export class SerperAdapter implements WebSearchAdapter {
       };
       if (params.language) body['hl'] = params.language;
       if (params.country) body['gl'] = params.country.toLowerCase();
+      if (params.location) {
+        body['location'] = `${params.location}, France`;
+        body['gl'] = 'fr';
+        body['hl'] = 'fr';
+      }
 
       const response = await fetch(SerperAdapter.API_URL, {
         method: 'POST',

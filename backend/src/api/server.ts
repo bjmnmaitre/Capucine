@@ -29,18 +29,115 @@ import { CapucineEngine, SearchRequest } from '../application/capucine-engine';
 import { buildDefaultToolRegistry } from '../application/tools';
 import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import type { WebSearchAdapter } from '../application/tools';
-import { buildAIOrchestrator } from '../application/ai-providers';
+import { buildAIOrchestrator, AIOrchestrator } from '../application/ai-providers';
 import { FileProfileStore } from '../application/profile-store';
 import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, availabilityPreferenceFromProfile } from '../domain/profile';
 import { describeUsageContext } from '../domain/usage-context-mapping';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
 import { translate, SupportedLanguage, DEFAULT_COUNTRY, COUNTRY_TO_SEARCH_LANGUAGE } from '../application/i18n';
+import { DOMAIN_PRODUCT_CATEGORIES, DOMAIN_CATEGORY_PATTERNS } from '../application/request-interpreter';
 import { sortByPreference, reasonCodeFor, RankingPreference, DEFAULT_RANKING_PREFERENCE, isRankingPreference } from '../application/ranking-preference';
 import { createDefaultCartPreparationEngine } from '../application/cart-preparation-engine';
 import { CheckoutSessionService } from '../application/checkout-session-service';
 import { CostEngine } from '../application/cost-engine';
 import { CheckoutSession } from '../domain/types';
+import {
+  buildOnboardingCriteria,
+  buildMerchantAccounts,
+  normalizeShippingProfile,
+  ONBOARDING_BUDGET_ID,
+  ONBOARDING_CONDITION_ID,
+  ONBOARDING_FREE_SHIPPING_ID,
+  ONBOARDING_ORIGIN_ID,
+} from '../domain/onboarding';
+import { DelicityMenuFetcher } from '../infrastructure/delicity-menu-fetcher';
+import { buildDelicityCart } from '../application/delicity-cart-builder';
+import { deriveMerchantAvailability, type MerchantMenu, type FulfillmentMode } from '../domain/merchant-types';
+
+// ============================================================================
+// SEARCH RESULT CACHE (anti-rate-limit)
+// ============================================================================
+
+interface CacheEntry {
+  value: object;
+  expiresAt: number;
+}
+
+/** Simple LRU cache with TTL. Max 100 entries, 5-minute TTL. */
+class SearchCache {
+  private readonly map = new Map<string, CacheEntry>();
+  private readonly maxSize = 100;
+  private readonly ttlMs = 5 * 60 * 1000;
+  private hitCount = 0;
+  private missCount = 0;
+
+  private normalizeKey(query: string, userId: string): string {
+    return `${userId}:${query.toLowerCase().trim()}`;
+  }
+
+  get(query: string, userId: string): object | null {
+    const key = this.normalizeKey(query, userId);
+    const entry = this.map.get(key);
+    if (!entry) {
+      this.missCount++;
+      return null;
+    }
+    if (Date.now() > entry.expiresAt) {
+      this.map.delete(key);
+      this.missCount++;
+      return null;
+    }
+    // Move to end (most recently used)
+    this.map.delete(key);
+    this.map.set(key, entry);
+    this.hitCount++;
+    return entry.value;
+  }
+
+  set(query: string, userId: string, value: object): void {
+    const key = this.normalizeKey(query, userId);
+    // Evict oldest if at capacity
+    if (this.map.size >= this.maxSize && !this.map.has(key)) {
+      const firstKey = this.map.keys().next().value;
+      if (firstKey) this.map.delete(firstKey);
+    }
+    this.map.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  }
+
+  /** Remove all cached entries for a specific user (e.g., after profile update). */
+  invalidateUser(userId: string): void {
+    const prefix = `${userId}:`;
+    for (const key of this.map.keys()) {
+      if (key.startsWith(prefix)) {
+        this.map.delete(key);
+      }
+    }
+  }
+
+  /** Clear all cache entries (for testing). */
+  clear(): void {
+    this.map.clear();
+    this.hitCount = 0;
+    this.missCount = 0;
+  }
+
+  /** Get cache statistics. */
+  getStats(): { size: number; maxSize: number; hits: number; misses: number; hitRate: string } {
+    const total = this.hitCount + this.missCount;
+    const hitRate = total > 0 ? (this.hitCount / total * 100).toFixed(0) + '%' : '0%';
+    return {
+      size: this.map.size,
+      maxSize: this.maxSize,
+      hits: this.hitCount,
+      misses: this.missCount,
+      hitRate,
+    };
+  }
+}
+
+// Singleton cache instance
+export const searchCache = new SearchCache();
 
 // ============================================================================
 // APP FACTORY
@@ -78,6 +175,12 @@ export interface BuildAppOptions {
    * demander la lecture.
    */
   enablePageEnrichment?: boolean;
+  /**
+   * Optional AI orchestrator override. Production uses the real orchestrator
+   * from buildAIOrchestrator(). Tests can pass a mock orchestrator for
+   * deterministic, offline execution.
+   */
+  aiOrchestrator?: AIOrchestrator;
 }
 
 /**
@@ -251,28 +354,44 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
    * Returns service status. Used by load balancers and monitoring.
    */
   app.get('/health', (_req: Request, res: Response) => {
+    // Get AI orchestrator cooldown status
+    const groqCooldown = (global as any).__groqCooldownUntil ? Date.now() < (global as any).__groqCooldownUntil : false;
+    const openrouterCooldown = (global as any).__openrouterCooldownUntil ? Date.now() < (global as any).__openrouterCooldownUntil : false;
+
+    // Get search cache stats
+    const cacheStats = searchCache.getStats();
+
     res.json({
       status: 'ok',
       service: 'capucine',
       version: '0.1.0',
+      uptime: Math.round(process.uptime() * 10) / 10,
       timestamp: new Date().toISOString(),
+      cache: {
+        size: cacheStats.size,
+        maxSize: cacheStats.maxSize,
+        ttlMs: 300000,
+        hitRate: cacheStats.hitRate,
+      },
+      aiProvider: {
+        current: aiSetup.configured[0] || 'mock',
+        fallback: aiSetup.configured[1] || 'mock',
+        groqCooldown,
+        openrouterCooldown,
+      },
+      serper: {
+        configured: configuredAdapters.some(a => a.adapterName === 'serper'),
+      },
       capabilities: {
         aiProviders: {
           status: aiSetup.status,
           configured: aiSetup.configured,
           blocked: aiSetup.blocked,
         },
-        // NoOpWebSearchAdapter reports isConfigured() === true (it is a real,
-        // deliberately empty adapter), so counting configured adapters alone
-        // would answer "configured" on a server that cannot search the web at
-        // all. That reading is what makes an API key look installed when it is
-        // not, so the noop case is named for what it is: no real source.
         webSearch: (() => {
           const realAdapters = configuredAdapters.filter(a => a.adapterName !== 'noop');
           return {
             status: realAdapters.length > 0 ? 'configured' : 'no_real_source',
-            /** Reachable web search providers. Empty means results can only
-             *  come from the local catalog. */
             providers: realAdapters.map(a => a.adapterName),
             adapters: webAdapters.map(a => a.adapterName),
           };
@@ -332,6 +451,15 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           parameters: c.parameters ?? null,
         })),
         updatedAt: profile.updatedAt.toISOString(),
+        onboardingCompleted: profile.onboardingCompleted ?? false,
+        shipping: profile.shipping ?? null,
+        merchantAccounts: (profile.merchantAccounts ?? []).map(a => ({
+          merchantName: a.merchantName,
+          note: (a as { note?: string }).note ?? null,
+          grantedAt: a.grantedAt instanceof Date
+            ? a.grantedAt.toISOString().split('T')[0]
+            : String(a.grantedAt).split('T')[0],
+        })),
       });
     } catch (err) {
       return next(err);
@@ -383,6 +511,9 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
         parameters,
       });
 
+      // Invalidate search cache for this user since their profile changed
+      searchCache.invalidateUser(userId);
+
       return res.json({ ok: true, userId, criterionId: id });
     } catch (err) {
       return next(err);
@@ -399,6 +530,8 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
       const userId = req.params['userId'] as string;
       const criterionId = req.params['criterionId'] as string;
       await profileStore.removeCriterion(userId, criterionId);
+      // Invalidate search cache for this user since their profile changed
+      searchCache.invalidateUser(userId);
       return res.json({ ok: true });
     } catch (err) {
       return next(err);
@@ -439,6 +572,18 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
       // Load profile from store (returns empty profile if user not found).
       // The store is the single point of truth for persistent preferences.
       const effectiveUserId = userId ?? 'anonymous';
+
+      // ── Cache lookup ──────────────────────────────────────────────────────
+      // Don't use cache when explicit criteria are provided — they represent
+      // intentional user constraints that must be respected fresh.
+      const hasExplicitCriteria = Array.isArray(criteria) && criteria.length > 0;
+      const isMockMode = process.env['USE_MOCK_AI'] === 'true';
+      const cached = (hasExplicitCriteria || isMockMode) ? null : searchCache.get(query.trim(), effectiveUserId);
+      if (cached) {
+        res.setHeader('X-Cache', 'HIT');
+        return res.json(cached);
+      }
+
       const profile = await profileStore.load(effectiveUserId);
 
       const searchRequest: SearchRequest = {
@@ -507,6 +652,13 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           : undefined
       );
       logSearchDiagnostics(query.trim(), payload);
+      // Cache the result only if no explicit criteria were provided
+      if (!hasExplicitCriteria) {
+        searchCache.set(query.trim(), effectiveUserId, payload);
+        res.setHeader('X-Cache', 'MISS');
+      } else {
+        res.setHeader('X-Cache', 'BYPASS');
+      }
       return res.json(payload);
 
     } catch (err) {
@@ -541,11 +693,55 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
    *
    * Response: same shape as POST /search, with updated results.
    *
-   * INVARIANT 5: The original query text is NEVER modified — clarification
-   * answers extend it via enrichedQuery; follow-ups extend the criteria
-   * snapshot instead (see ConversationManager.applyFollowUp()). Either way
-   * the engine re-runs the real pipeline — no shortcut, no fabricated delta.
+* INVARIANT 5: The original query text is NEVER modified — clarification
+ * answers extend it via enrichedQuery; follow-ups extend the criteria
+ * snapshot instead (see ConversationManager.applyFollowUp()). Either way
+ * the engine re-runs the real pipeline — no shortcut, no fabricated delta.
+ */
+
+  /**
+   * GET /suggest?q=...
+   * Returns up to 5 search suggestions based on known domain categories.
+   * No AI call, no web search — pure pattern matching, <10ms.
    */
+  app.get('/suggest', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const q = (req.query.q as string | undefined)?.trim() ?? '';
+      if (q.length < 2) {
+        return res.json({ suggestions: [] });
+      }
+
+      const lower = q.toLowerCase();
+      const suggestions: string[] = [];
+
+      // Match against known domain categories and their patterns
+      for (const [category, patterns] of Object.entries(DOMAIN_CATEGORY_PATTERNS)) {
+        for (const pattern of patterns) {
+          if (pattern.includes(lower) || lower.includes(pattern)) {
+            // Generate suggestions from category
+            const categoryLabel = category.replace(/_/g, ' ');
+            const base = `catégorie ${categoryLabel}`;
+            suggestions.push(base, `${base} professionnel`, `${base} CHR`, `${base} occasion`);
+          }
+        }
+      }
+
+      // Also check DOMAIN_PRODUCT_CATEGORIES directly for partial matches
+      for (const cat of DOMAIN_PRODUCT_CATEGORIES) {
+        const catLower = cat.replace(/_/g, ' ');
+        if (catLower.includes(lower) || lower.includes(catLower)) {
+          suggestions.push(`matériel ${catLower}`, `équipement ${catLower} CHR`);
+        }
+      }
+
+      // Deduplicate and limit
+      const unique = [...new Set(suggestions)].slice(0, 5);
+      return res.json({ suggestions: unique });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   app.post('/clarify', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { sessionId, questionId, answer } = req.body as {
@@ -1123,6 +1319,177 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
   });
 
   // ── Error handler ───────────────────────────────────────────────────────────
+
+  // ============================================================================
+  // POST /profile/:userId/onboarding
+  // ============================================================================
+  /**
+   * Apply onboarding answers to a user profile.
+   *
+   * CARDINAL RULE: all criteria built here are SOFT (very_important/important/preference)
+   * with unknownPolicy:'pass' — they influence ranking, never admissibility.
+   * A re-run REPLACES the onboarding-generated criteria but PRESERVES any
+   * criteria added since (e.g. ranking-preference, availability).
+   */
+  app.post('/profile/:userId/onboarding', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.params['userId'] as string;
+      if (!userId || userId.trim().length === 0) {
+        return res.status(400).json({ ok: false, error: 'MISSING_USER_ID' });
+      }
+
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return res.status(400).json({ ok: false, error: 'INVALID_BODY' });
+      }
+
+      // IDs that onboarding owns — replaced on re-run
+      const ONBOARDING_IDS = new Set([
+        ONBOARDING_BUDGET_ID,
+        ONBOARDING_CONDITION_ID,
+        ONBOARDING_FREE_SHIPPING_ID,
+        ONBOARDING_ORIGIN_ID,
+      ]);
+      // Merchant-exclusion criteria are also onboarding-owned
+      const isMerchantExclude = (id: string) => id.startsWith('merchant-exclude-');
+
+      const newCriteria = buildOnboardingCriteria(body);
+      const shipping = normalizeShippingProfile(body.shipping ?? null);
+      const merchantAccounts = buildMerchantAccounts(body.merchantAccounts ?? null);
+
+      // Load profile, strip old onboarding criteria, append new ones
+      const profile = await profileStore.load(userId);
+      const preserved = profile.preferences.criteria.filter(
+        c => !ONBOARDING_IDS.has(c.id) && !isMerchantExclude(c.id)
+      );
+      profile.preferences.criteria = [...preserved, ...newCriteria];
+      profile.preferences.updatedAt = new Date();
+      profile.onboardingCompleted = true;
+      profile.onboardingCompletedAt = new Date();
+      if (shipping) profile.shipping = shipping;
+      if (merchantAccounts.length > 0) profile.merchantAccounts = merchantAccounts;
+
+      await profileStore.save(profile);
+      searchCache.invalidateUser(userId);
+
+      return res.json({
+        ok: true,
+        onboardingCompleted: true,
+        criteria: profile.preferences.criteria.map(c => ({
+          id: c.id,
+          name: c.name,
+          level: c.level,
+          parameters: c.parameters,
+        })),
+        shipping: profile.shipping ?? null,
+        merchantAccounts: (profile.merchantAccounts ?? []).map(a => ({
+          merchantName: a.merchantName,
+          note: (a as { note?: string }).note ?? null,
+          grantedAt: a.grantedAt instanceof Date
+            ? a.grantedAt.toISOString().split('T')[0]
+            : String(a.grantedAt).split('T')[0],
+        })),
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ============================================================================
+  // POST /merchant/delicity/menu
+  // ============================================================================
+  /**
+   * Fetch and return a Delicity restaurant's menu for display/pre-fill.
+   * The fetcher is constructed per-request so tests can spy on the prototype.
+   */
+  app.post('/merchant/delicity/menu', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { restaurantUrl } = req.body as { restaurantUrl?: unknown };
+      if (!restaurantUrl || typeof restaurantUrl !== 'string') {
+        return res.status(400).json({ ok: false, error: 'MISSING_RESTAURANT_URL' });
+      }
+
+      const fetcher = new DelicityMenuFetcher();
+      const menu = await fetcher.fetchMenu(restaurantUrl);
+      if (!menu) {
+        return res.status(422).json({ ok: false, error: 'MENU_FETCH_FAILED', restaurantUrl });
+      }
+
+      return res.json({ ok: true, menu });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ============================================================================
+  // POST /merchant/delicity/cart
+  // ============================================================================
+  /**
+   * Build a Delicity cart from a pre-fetched menu + user item lines.
+   * Pure computation — no network call.
+   */
+  app.post('/merchant/delicity/cart', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = req.body as {
+        restaurantUrl?: unknown;
+        menu?: unknown;
+        items?: unknown;
+        fulfillmentMode?: unknown;
+      };
+
+      if (!body.restaurantUrl || typeof body.restaurantUrl !== 'string') {
+        return res.status(400).json({ ok: false, error: 'MISSING_FIELD', field: 'restaurantUrl' });
+      }
+      if (!body.menu || typeof body.menu !== 'object' || Array.isArray(body.menu)) {
+        return res.status(400).json({ ok: false, error: 'MISSING_FIELD', field: 'menu' });
+      }
+      if (!Array.isArray(body.items)) {
+        return res.status(400).json({ ok: false, error: 'MISSING_FIELD', field: 'items' });
+      }
+
+      const validModes = ['delivery', 'takeaway', 'both'];
+      const fulfillmentMode = (body.fulfillmentMode ?? 'takeaway') as string;
+      if (!validModes.includes(fulfillmentMode)) {
+        return res.status(400).json({ ok: false, error: 'INVALID_FULFILLMENT_MODE' });
+      }
+
+      const menu = body.menu as MerchantMenu;
+      const availability = deriveMerchantAvailability(menu);
+
+      const adapterPayload: Record<string, unknown> = {
+        isOpen: menu.isOpen,
+        redirectUrl: body.restaurantUrl,
+        requiresMerchantAccount: true,
+      };
+      if (menu.reopensAt) adapterPayload['reopensAt'] = menu.reopensAt;
+
+      if (!menu.isOpen) {
+        return res.json({
+          ok: true,
+          cart: null,
+          adapter: adapterPayload,
+          availability,
+        });
+      }
+
+      const lines = (body.items as Array<{ name: unknown; quantity: unknown }>).map(i => ({
+        name: String(i.name ?? ''),
+        quantity: Number(i.quantity ?? 0),
+      }));
+
+      const cart = buildDelicityCart(lines, menu, fulfillmentMode as FulfillmentMode);
+
+      return res.json({
+        ok: true,
+        cart,
+        adapter: adapterPayload,
+        availability,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     // NEVER expose stack traces in responses — log them server-side only
@@ -1560,6 +1927,7 @@ function serializeResult(
       attemptedLevels: result.searchPlan.expansion.attemptedLevels,
       primaryTerms: result.searchPlan.query.primaryTerms,
       alternativeTerms: result.searchPlan.query.alternativeTerms ?? [],
+      searchContext: result.searchPlan.searchContext,
     },
 
     // Provenance summary — which sources contributed to the ranked results

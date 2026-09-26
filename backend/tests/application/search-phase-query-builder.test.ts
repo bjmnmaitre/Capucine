@@ -91,8 +91,8 @@ describe('SearchPhaseQueryBuilder', () => {
         countries: ['FR'],
       };
       const terms = builder.buildPhaseTerms(noRefQuery);
-      // No digits → falls back to first 2 primary terms
-      expect(terms.exactRefs.length).toBeGreaterThan(0);
+      // No digits → falls back to first 2 primary terms in phase1Terms
+      expect(terms.phase1Terms.length).toBeGreaterThan(0);
     });
 
     it('handles empty query gracefully', () => {

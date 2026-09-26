@@ -196,6 +196,13 @@ export interface SearchPlan {
   // ── What to search ────────────────────────────────────────────────────────
   query: SearchQuery;
 
+  // ── Search context ────────────────────────────────────────────────────────
+  /**
+   * 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b'
+   * Determines which search strategies and sources are prioritized.
+   */
+  searchContext: string;
+
   // ── Rarity assessment ─────────────────────────────────────────────────────
   rarityLevel: 'common' | 'uncommon' | 'rare' | 'very_rare' | 'extremely_rare';
 
@@ -267,6 +274,15 @@ export interface PhaseTerms {
 
   /** Multilingual equivalents: "noise cancelling headphones", "kopfhörer bluetooth" */
   multilingualTerms: string[];
+
+  /** Original primary search terms (brand names, category words, etc.) —
+   *  used so that phase 1 queries can include brand names like "sony"
+   *  alongside exact model references. */
+  primaryTerms: string[];
+
+  /** Terms to use for Phase 1 search queries —
+   *  exactRefs if available, otherwise first few primary terms. */
+  phase1Terms: string[];
 }
 
 /**
@@ -306,7 +322,11 @@ export class SearchPhaseQueryBuilder {
     // Exact refs: anything that looks like a model number (contains digits, often dashes)
     const exactRefs = primary.filter(t => this.looksLikeModelRef(t));
 
-    // If no explicit model refs, use all primary terms as "exact" for Phase 1
+    // If no explicit model refs, fall back to first 2 primary terms as "exact" for Phase 1
+    // (legacy behavior — treats category/brand terms as exact refs when no model ref found)
+    const fallbackExactRefs = exactRefs.length > 0 ? exactRefs : primary.slice(0, 2);
+
+    // Phase 1 terms: use exactRefs if available, otherwise fallback exactRefs
     const phase1Terms = exactRefs.length > 0 ? exactRefs : primary.slice(0, 2);
 
     // Brand+model combos: pairs like "brand modelref"
@@ -340,12 +360,14 @@ export class SearchPhaseQueryBuilder {
       : [];
 
     return {
-      exactRefs: dedup(phase1Terms),
+      exactRefs: dedup(exactRefs),
       brandModelCombos: dedup(brandModelCombos),
       modelVariants: dedup(modelVariants),
       synonyms: dedup(synonyms),
       categoryTerms: dedup(categoryTerms),
       multilingualTerms: dedup(multilingualTerms),
+      primaryTerms: dedup(primary),
+      phase1Terms: dedup(phase1Terms),
     };
   }
 
@@ -362,8 +384,14 @@ export class SearchPhaseQueryBuilder {
   termsForLevel(phaseTerms: PhaseTerms, level: SearchLevel): string[] {
     const terms: string[] = [];
 
-    // Always include exact refs if we have them
-    if (level >= 1) terms.push(...phaseTerms.exactRefs);
+    // Level 1: use phase1Terms (exactRefs if available, otherwise first primary terms)
+    if (level >= 1) terms.push(...phaseTerms.phase1Terms);
+    // Also include non-ref primary terms (brand names, category words) from level 1
+    // so that brand names like "sony" are not dropped at the first phase
+    if (level >= 1 && phaseTerms.primaryTerms) {
+      const nonRefs = phaseTerms.primaryTerms.filter(t => !phaseTerms.exactRefs.includes(t));
+      terms.push(...nonRefs);
+    }
     if (level >= 2) terms.push(...phaseTerms.brandModelCombos);
     if (level >= 3) terms.push(...phaseTerms.modelVariants);
     if (level >= 4) terms.push(...phaseTerms.synonyms);
@@ -379,9 +407,10 @@ export class SearchPhaseQueryBuilder {
   /** True if the term looks like a product model reference (has digits, may have dashes) */
   private looksLikeModelRef(term: string): boolean {
     // Must have at least one digit + at least 4 chars total
+    // Must also contain at least one letter (not just pure numbers)
     // Examples: "wh-1000xm5", "iphone-15-pro", "gtx-4080", "macbook-pro-m3"
-    // Not: "sony", "casque", "bluetooth"
-    return /\d/.test(term) && term.length >= 4;
+    // Not: "sony", "casque", "bluetooth", "1000", "2024"
+    return /[a-z]/i.test(term) && /\d/.test(term) && term.length >= 4;
   }
 
   /** Generate brand+model combos from primary terms + exact refs */
@@ -458,6 +487,7 @@ export class SearchPlanBuilder {
     maxPrice?: number;
     currency?: string;
     usageContext?: UsageContext;
+    searchContext?: string;
   }): SearchPlan {
 
     const rarityLevel = config.rarityLevel || 'common';
@@ -482,6 +512,9 @@ export class SearchPlanBuilder {
           ? { max: config.maxPrice, currency: config.currency || 'EUR' }
           : undefined,
       },
+
+      // Search context for CHR/professional queries
+      searchContext: config.searchContext || 'consumer',
 
       rarityLevel,
       estimatedAvailability: this.estimateAvailability(rarityLevel),

@@ -483,6 +483,8 @@ export interface WebSearchParams {
   language?: string;
   /** Restrict to a specific country (ISO 3166-1 alpha-2) */
   country?: string;
+  /** Optional city for geo-targeted search (e.g., "Toulouse") */
+  location?: string;
 }
 
 export interface WebSearchResult {

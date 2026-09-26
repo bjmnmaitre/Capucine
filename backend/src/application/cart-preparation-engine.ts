@@ -176,6 +176,20 @@ export interface CartPreparationResult {
   nextAction?: string; // What user should do next
   error?: string;
 
+  /**
+   * Merchant adapters (e.g. Delicity) surface a scheduled reopening date when
+   * they must decline a preparation because the restaurant is closed. ISO
+   * date string; informational only, never used for ranking.
+   */
+  reopensAt?: string;
+
+  /**
+   * Merchant adapters signal that the hand-over page requires the user to log
+   * in / open an account before paying. Informational only: it tells the UI
+   * to warn the user, it does not gate anything.
+   */
+  requiresMerchantAccount?: boolean;
+
   // Purchase tracking fields
   merchantCartId?: string; // Correlates with PreparedCart.merchantCartId
   webhookUrl?: string; // For merchant notifications

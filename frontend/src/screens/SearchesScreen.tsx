@@ -4,13 +4,11 @@ import {
   clearHistory, loadHistory, relativeTime, removeSearch, SearchHistoryEntry,
 } from '../history';
 import { Screen, ScreenTitle, EmptyState } from '../components/Screen';
-import { Button } from '../components/Button';
-import { theme } from '../theme';
+import { theme, cardStyle, primaryButtonStyle, textStyle } from '../theme';
 
 /**
- * The Recherches tab — the user's own history, as cards they can act on.
- * Persisted on the device (see history.ts); reloaded every time the tab is
- * shown so a search just made from the journey appears here.
+ * The Recherches tab — your search history. Each card shows what you searched for,
+ * when you searched, and how many results you got. Tap to rerun a search.
  */
 export function SearchesScreen({
   onRun, onNewSearch,
@@ -54,8 +52,9 @@ export function SearchesScreen({
                 accessibilityRole="button"
                 accessibilityLabel="Tout effacer"
                 hitSlop={8}
+                style={({ pressed }) => [styles.clearBtn, pressed && styles.pressed]}
               >
-                <Text style={styles.clear}>Tout effacer</Text>
+                <Text style={styles.clearText}>Tout effacer</Text>
               </Pressable>
             ) : undefined
           }
@@ -63,9 +62,13 @@ export function SearchesScreen({
 
         {loaded && items.length === 0 ? (
           <EmptyState
-            title="Aucune recherche pour l’instant"
-            body="Vos recherches apparaîtront ici. Vous pourrez les relancer d’un geste."
-            action={<Button label="Nouvelle recherche" onPress={onNewSearch} />}
+            title="Aucune recherche pour l'instant"
+            body="Vos recherches apparaîtront ici. Vous pourrez les relancer d'un geste."
+            action={
+              <Pressable onPress={onNewSearch} style={styles.actionButton}>
+                <Text style={styles.actionButtonText}>Nouvelle recherche</Text>
+              </Pressable>
+            }
           />
         ) : (
           <View style={styles.list}>
@@ -78,23 +81,28 @@ export function SearchesScreen({
                     `Relancer : ${h.query}. ${h.resultCount} offre${h.resultCount > 1 ? 's' : ''} la dernière fois, ${relativeTime(h.at)}.`
                   }
                   accessibilityHint="Relance cette recherche"
-                  style={({ pressed }) => [styles.cardMain, pressed && styles.pressed]}
+                  style={({ pressed }) => [styles.cardInner, pressed && styles.pressed]}
                 >
-                  <Text style={styles.query} numberOfLines={2}>{h.query}</Text>
-                  <Text style={styles.meta}>
-                    {h.resultCount > 0
-                      ? `${h.resultCount} offre${h.resultCount > 1 ? 's' : ''} la dernière fois`
-                      : 'aucune offre la dernière fois'} · {relativeTime(h.at)}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => onRemove(h.query)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Retirer « ${h.query} » de l’historique`}
-                  hitSlop={8}
-                  style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
-                >
-                  <Text style={styles.removeGlyph}>✕</Text>
+                  <View style={styles.cardMain}>
+                    <Text style={styles.query} numberOfLines={2}>{h.query}</Text>
+                    <View style={styles.metaRow}>
+                      <Text style={styles.meta}>
+                        {h.resultCount > 0
+                          ? `${h.resultCount} offre${h.resultCount > 1 ? 's' : ''} la dernière fois`
+                          : 'aucune offre la dernière fois'}
+                      </Text>
+                      <Text style={styles.metaTime}>{relativeTime(h.at)}</Text>
+                    </View>
+                  </View>
+                  <Pressable
+                    onPress={() => onRemove(h.query)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Retirer « ${h.query} » de l'historique`}
+                    hitSlop={8}
+                    style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.removeText}>✕</Text>
+                  </Pressable>
                 </Pressable>
               </View>
             ))}
@@ -108,35 +116,73 @@ export function SearchesScreen({
 const styles = StyleSheet.create({
   container: {
     paddingHorizontal: theme.space(2.5),
-    paddingTop: theme.space(2),
+    paddingTop: theme.space(1.5),
     paddingBottom: theme.space(4),
   },
-  clear: { fontSize: theme.font.small, fontWeight: theme.weight.semibold, color: theme.color.accent },
+  clearBtn: {
+    paddingHorizontal: theme.space(1),
+    paddingVertical: theme.space(0.25),
+  },
+  clearText: { fontSize: theme.font.small, fontWeight: theme.weight.semibold, color: theme.color.accent },
+  pressed: { opacity: theme.opacity.pressed },
+
   list: { marginTop: theme.space(3), gap: theme.space(1.5) },
   card: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
     backgroundColor: theme.color.surface,
     borderRadius: theme.radii.md,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.color.border,
-    ...theme.shadow.card,
+    overflow: 'hidden',
+    ...theme.shadow.subtle,
   },
-  cardMain: { flex: 1, padding: theme.space(2), justifyContent: 'center', minHeight: theme.minTouch + 12 },
+  cardInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.space(2),
+  },
+  cardMain: { flex: 1, minWidth: 0 },
   query: {
+    flex: 1,
     fontSize: theme.font.body,
     lineHeight: theme.leading.body,
     fontWeight: theme.weight.semibold,
     color: theme.color.text,
   },
-  meta: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 4 },
-  remove: {
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1.5), marginTop: theme.space(1) },
+  meta: {
+    color: theme.color.textMuted,
+    fontSize: theme.font.small,
+    flexShrink: 1,
+  },
+  metaTime: {
+    color: theme.color.textFaint,
+    fontSize: theme.font.micro,
+    flexShrink: 0,
+  },
+  removeBtn: {
     width: theme.minTouch,
     alignItems: 'center',
     justifyContent: 'center',
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: theme.color.border,
+    padding: theme.space(0.5),
   },
-  removeGlyph: { fontSize: theme.font.body, color: theme.color.textFaint, fontWeight: theme.weight.semibold },
-  pressed: { opacity: 0.6 },
+  removeText: {
+    color: theme.color.textFaint,
+    fontSize: theme.font.body,
+    fontWeight: theme.weight.semibold,
+  },
+
+  actionButton: {
+    marginTop: theme.space(3),
+    paddingHorizontal: theme.space(3),
+    paddingVertical: theme.space(1),
+    backgroundColor: theme.color.accent,
+    borderRadius: theme.radii.md,
+    alignSelf: 'center',
+    ...theme.shadow.subtle,
+  },
+  actionButtonText: {
+    color: theme.color.accentText,
+    fontSize: theme.font.body,
+    fontWeight: '700',
+  },
 });

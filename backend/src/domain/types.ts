@@ -263,6 +263,41 @@ export interface CriteriaProfile {
 // ============================================================================
 
 /**
+ * Shipping data collected by the onboarding and used ONLY to prefill the
+ * merchant's checkout form at the final validation step. Capucine never
+ * completes a purchase: the user still reviews and confirms at the merchant.
+ * Stored explicitly by the user during profile creation — never observed.
+ */
+export interface ShippingProfile {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  street?: string;
+  /** ISO 3166-1 alpha-2 city name as typed by the user. */
+  city?: string;
+  postalCode?: string;
+  /** ISO 3166-1 alpha-2, defaults to 'FR' at storage time. */
+  country?: string;
+  /** Where the user prefers to receive parcels. */
+  preferredDeliveryMode?: 'home' | 'parcel_locker' | 'pickup_point' | 'no_preference';
+}
+
+/**
+ * An existing merchant account the user agrees to share with Capucine so the
+ * final validation step can go straight to a prepared checkout. The presence
+ * of the entry IS the user's consent — nothing about accounts is stored or
+ * used unless this list contains the merchant.
+ */
+export interface MerchantAccount {
+  /** Merchant as typed, e.g. 'Amazon', 'Fnac'. */
+  merchantName: string;
+  /** Free-form note the user may add. */
+  note?: string;
+  /** When consent was given. */
+  grantedAt: Date;
+}
+
+/**
  * UserProfile represents persistent user preferences.
  * This is NEVER modified automatically by observations or searches.
  * Only explicit user actions modify the profile.
@@ -278,6 +313,17 @@ export interface UserProfile {
   // Metadata
   createdAt: Date;
   updatedAt: Date;
+
+  // ── Profile creation / onboarding state ──
+  /** True once the user completed (or skipped) the profile-creation wizard.
+   *  Absent/undefined = onboarding still to run. */
+  onboardingCompleted?: boolean;
+  /** When that happened — audit only, never shown as a fact of behaviour. */
+  onboardingCompletedAt?: Date;
+  /** Prefill-only shipping data (see ShippingProfile). */
+  shipping?: ShippingProfile;
+  /** Consented, shared merchant accounts (each entry IS the consent). */
+  merchantAccounts?: MerchantAccount[];
 
   // Optional: User-facing description of what they want
   description?: string;
@@ -325,6 +371,9 @@ export interface CurrentSearchRequirements {
 
   // Usage context for this search (contextual, not hard constraint)
   usageContext?: UsageContext;
+
+  // Search context: 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b'
+  searchContext?: string;
 
   // Clarifications made during AI interpretation
   clarifications?: {
@@ -819,6 +868,14 @@ export interface RankingRequest {
    * Absent → ranking is byte-for-byte the pre-usage-context behavior.
    */
   usageContext?: UsageContext;
+
+  /**
+   * Search context: 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b'
+   * Used to boost specialized merchants for professional queries.
+   * CONTEXTUAL ONLY: applied AFTER admissibility, adds a bounded,
+   * non-negative bonus. Absent → no CHR merchant boost.
+   */
+  searchContext?: string;
 
   /**
    * The user opted into "prioritise immediate availability" (a permanent

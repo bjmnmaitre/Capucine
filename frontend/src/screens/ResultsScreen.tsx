@@ -7,7 +7,7 @@ import {
   availabilityEmphasisLabel, costLabel, explainOfferRanking, rankingPreferenceLabel,
   usageContextLabel,
 } from '../presentation';
-import { CERTAINTY_LABEL, displayText, formatMoney, theme } from '../theme';
+import { CERTAINTY_LABEL, displayText, formatMoney, theme, cardStyle, inputStyle, textStyle } from '../theme';
 
 interface Props {
   query: string;
@@ -18,45 +18,54 @@ interface Props {
   onResetRefinements: () => void;
   onSelect: (offer: RankedOffer) => void;
   onCompare: (offers: RankedOffer[]) => void;
-  /** Retour à l'écran de recherche, texte actuel pré-rempli — pour l'option
-   *  de récupération « reformuler la recherche », qui ne demande PAS de
-   *  retaper une requête vide. */
   onReformulate: (query: string) => void;
   onBack: () => void;
 }
 
-/**
- * Types de recoveryOptions que le backend peut suggérer sans exiger de
- * valeur (pas de budget chiffré, pas de condition à deviner) — les seuls
- * qu'on peut rendre RÉELLEMENT actionnables d'un tap. Les autres
- * (relax_budget, accept_refurbished) restent du texte informatif : le
- * backend ne comprend une relance que sous une forme précise ("élargis à
- * 1100 €"), qu'on ne peut pas deviner ici sans risquer d'envoyer une phrase
- * que l'interpréteur ne reconnaît pas, ou pire, sur-contraint (« reconditionné »
- * seul devient un critère REQUIRED, pas une simple autorisation).
- */
 const REFORMULATE_OPTION_TYPES = new Set(['expand_search_terms']);
 
 const MAX_COMPARE = 3;
 
-/** Ready-made refinements — the phrasings the backend's follow-up interpreter
- *  reliably understands, offered as one tap instead of forcing the user to
- *  guess what it accepts. */
 const REFINEMENTS = ['le moins cher', 'sans Amazon', 'uniquement du neuf', 'livraison rapide'];
 
-/** An unknown delivery cost is not a free delivery: the two never collapse. */
-function shippingLabel(offer: RankedOffer): string {
+function shippingLabel(offer: RankedOffer): { text: string; style: any } {
   const s = offer.shipping;
-  if (!s || s.status === 'unknown' || s.amount === null) return 'livraison inconnue';
-  if (s.amount === 0) return 'livraison offerte';
-  return `livraison ${formatMoney(s.amount, s.currency)}`;
+  if (!s || s.status === 'unknown' || s.amount === null) {
+    return { text: 'livraison inconnue', style: styles.shippingUnknown };
+  }
+  if (s.amount === 0) {
+    return { text: 'Livraison gratuite', style: styles.shippingFree };
+  }
+  return { text: `livraison ${formatMoney(s.amount, s.currency)}`, style: styles.shippingCost };
 }
 
-function certaintyStyle(certainty: string) {
+function priceDisplay(offer: RankedOffer): { text: string; style: any } {
+  const p = offer.price;
+  if (!p || p.amount === null || p.amount === undefined || p.amount === 0) {
+    return { text: 'Prix non communiqué', style: styles.priceOnRequest };
+  }
+  // currency 'unknown' → prix approximatif avec tilde
+  if (!p.currency || p.currency === 'unknown') {
+    const n = p.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return { text: `~${n} €`, style: styles.priceApprox };
+  }
+  // Format FR : toLocaleString + " €" suffix (pas Intl.NumberFormat avec style:'currency')
+  const n = p.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return { text: `${n} €`, style: styles.priceValue };
+}
+
+function certaintyBadgeStyle(certainty: string) {
   return certainty === 'known' ? styles.badgeKnown : styles.badgeUnknown;
 }
 
-function OfferRow({
+function isChrSpecialist(offer: RankedOffer): boolean {
+  const merchantName = offer.merchant?.name?.toLowerCase() ?? '';
+  const merchantUrl = offer.offerUrl?.toLowerCase() ?? '';
+  const chrKeywords = ['chr', 'pro', 'professionnel', 'restaurant', 'cuisine', 'horeca', 'matériel', 'equipement', 'fournisseur', 'grossiste'];
+  return chrKeywords.some(kw => merchantName.includes(kw) || merchantUrl.includes(kw));
+}
+
+function OfferCard({
   offer, allOffers, ranking, availabilityEmphasis, compareMode, selected, atCapacity, onPress,
 }: {
   offer: RankedOffer;
@@ -68,32 +77,24 @@ function OfferRow({
   atCapacity: boolean;
   onPress: () => void;
 }) {
-  // `price` is null when the backend could not extract one. 'prix inconnu'
-  // is the honest rendering — never 0, never a dash standing in for a number.
-  const price = offer.price ? formatMoney(offer.price.amount, offer.price.currency) : 'prix inconnu';
   const isTotalKnown = offer.cost.certainty === 'known';
-  // Le COÛT TOTAL est ce que Capucine compare — mis en avant, pas le prix seul.
-  // costLabel : "X" si connu, "au moins X" si partiel, "coût inconnu" sinon.
   const total = costLabel(offer);
   const totalUnknown = offer.cost.certainty === 'unknown' || offer.cost.totalKnown == null;
 
-  const shipping = shippingLabel(offer);
-  // Deterministic, comparison-aware "why" — the headline plus the single most
-  // useful supporting fact. Full reasoning lives on the detail screen.
+  const shippingInfo = shippingLabel(offer);
+  const priceInfo = priceDisplay(offer);
   const why = explainOfferRanking(offer, allOffers, ranking, availabilityEmphasis);
   const recommended = offer.rank === 1;
 
-  // One spoken sentence per offer, now including WHY it sits here: a
-  // screen-reader user gets the recommendation reasoning without opening the card.
   const certaintyText = CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty;
   const a11yLabel = compareMode
     ? `${selected ? 'Sélectionnée pour comparaison' : 'Non sélectionnée'}. `
-      + `Offre numéro ${offer.rank}, ${displayText(offer.merchant?.name, 'Marchand inconnu')}, `
+      + `Offre n°${offer.rank}, ${displayText(offer.merchant?.name, 'Marchand inconnu')}, `
       + `${totalUnknown ? 'coût total inconnu' : 'coût total ' + total}.`
-    : `Offre numéro ${offer.rank}${recommended ? ', recommandée' : ''}. `
+    : `Offre n°${offer.rank}${recommended ? ', recommandée' : ''}. `
       + `${displayText(offer.merchant?.name, 'Marchand inconnu')}. `
       + `${totalUnknown ? 'Coût total inconnu' : 'Coût total ' + total} — ${certaintyText}. `
-      + `Prix ${price}, ${shipping}. `
+      + `Prix ${priceInfo.text}, ${shippingInfo.text}. `
       + why.join(' ');
 
   return (
@@ -116,49 +117,72 @@ function OfferRow({
         pressed && styles.cardPressed,
       ]}
     >
+      {/* Card header — rank + merchant */}
       <View style={styles.cardHead}>
         {compareMode ? (
-          <Text style={[styles.checkbox, selected && styles.checkboxOn]}>
-            {selected ? '☑' : '☐'}
-          </Text>
+          <View style={styles.checkboxWrap}>
+            <Text style={[styles.checkbox, selected && styles.checkboxOn]}>
+              {selected ? '✓' : ''}
+            </Text>
+          </View>
         ) : (
-          <Text style={styles.rank}>#{offer.rank}</Text>
+          <View style={styles.rankBadge}>
+            <Text style={styles.rankText}>#{offer.rank}</Text>
+          </View>
         )}
         <Text style={styles.merchant} numberOfLines={1}>
           {displayText(offer.merchant?.name, 'Marchand inconnu')}
         </Text>
-        {recommended && !compareMode ? <Text style={styles.recommendedTag}>✓ Recommandée</Text> : null}
+        {recommended && !compareMode ? (
+          <View style={styles.recommendedPill}>
+            <Text style={styles.recommendedPillText}>Recommandée</Text>
+          </View>
+        ) : null}
+        {isChrSpecialist(offer) ? (
+          <View style={styles.chrPill}>
+            <Text style={styles.chrPillText}>Spécialiste CHR</Text>
+          </View>
+        ) : null}
       </View>
 
-      {/* Le coût total, ce que Capucine compare réellement, est le chiffre
-          dominant — le prix seul n'est qu'une composante, montrée dessous. */}
-      <Text style={styles.totalLabel}>
-        {isTotalKnown ? 'Coût total' : totalUnknown ? 'Coût total' : 'Coût total connu à ce jour'}
-      </Text>
-      <Text style={[styles.total, totalUnknown && styles.totalUnknown]}>
-        {totalUnknown ? 'inconnu' : total}
-      </Text>
-
-      <View style={[styles.badge, certaintyStyle(offer.cost.certainty)]}>
-        <Text style={[styles.badgeText, certaintyStyle(offer.cost.certainty)]}>
-          {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}
+      {/* Cost total — THE hero number */}
+      <View style={styles.totalSection}>
+        <Text style={styles.totalLabel}>
+          {isTotalKnown ? 'Coût total' : totalUnknown ? 'Coût total' : 'Coût total connu à ce jour'}
+        </Text>
+        <Text style={[styles.totalValue, totalUnknown && styles.totalUnknown]}>
+          {totalUnknown ? 'inconnu' : total}
         </Text>
       </View>
 
-      <Text style={styles.breakdown}>
-        Prix {price} · {shipping}
-      </Text>
+      {/* Certainty badge — right under the total */}
+      <View style={styles.certaintyRow}>
+        <View style={[styles.badge, certaintyBadgeStyle(offer.cost.certainty)]}>
+          <Text style={[styles.badgeText, certaintyBadgeStyle(offer.cost.certainty)]}>
+            {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}
+          </Text>
+        </View>
+        {offer.cost.statement ? (
+          <Text style={styles.costStatement} numberOfLines={2}>{offer.cost.statement}</Text>
+        ) : null}
+      </View>
 
+      {/* Price breakdown — secondary, muted */}
+      <View style={styles.breakdownRow}>
+        <Text style={[styles.breakdownLabel, priceInfo.style]}>{priceInfo.text}</Text>
+        <Text style={[styles.breakdownLabel, shippingInfo.style]}>{shippingInfo.text}</Text>
+      </View>
+
+      {/* Unknown components — honest, not hidden */}
       {!compareMode && offer.cost.unknownComponents.length > 0 ? (
         <Text style={styles.unknownList}>
           Non connu : {offer.cost.unknownComponents.join(', ')} — non estimé, non ignoré.
         </Text>
       ) : null}
 
-      {/* En mode comparaison la carte est un simple sélecteur : l'explication
-          détaillée reste sur le tableau de comparaison et l'écran de détail. */}
+      {/* Why this rank — only in list mode */}
       {!compareMode ? (
-        <View style={styles.whyBox} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        <View style={styles.whyBox}>
           {why.slice(0, 2).map((line, i) => (
             <Text key={i} style={i === 0 ? styles.whyHead : styles.whyLine}>
               {i === 0 ? line : `· ${line}`}
@@ -171,10 +195,7 @@ function OfferRow({
 }
 
 /**
- * Conversational refinement of the current search. Sends free text to
- * POST /clarify — the backend re-runs the real pipeline with the refinement
- * merged into the session, so the whole list (and its order) is replaced by a
- * genuine re-search, never a client-side filter.
+ * Conversational refinement bar — free text + quick chips.
  */
 function RefinementBar({
   response, refining, refineError, onRefine, onResetRefinements,
@@ -195,7 +216,7 @@ function RefinementBar({
   if (!canRefine) return null;
 
   return (
-    <View style={styles.refine}>
+    <View style={styles.refineCard}>
       <Text style={styles.refineTitle} accessibilityRole="header">Affiner la recherche</Text>
 
       {orderLabel ? (
@@ -225,7 +246,7 @@ function RefinementBar({
             disabled={refining}
             accessibilityRole="button"
             accessibilityLabel="Repartir de la recherche initiale"
-            accessibilityHint="Annule tous les affinages et relance la recherche d’origine"
+            accessibilityHint="Annule tous les affinages et relance la recherche d'origine"
             style={({ pressed }) => [styles.resetBtn, pressed && styles.cardPressed]}
           >
             <Text style={styles.resetBtnText}>↺ Repartir de la recherche initiale</Text>
@@ -235,7 +256,7 @@ function RefinementBar({
 
       <View style={styles.refineInputRow}>
         <TextInput
-          style={styles.refineInput}
+          style={[styles.refineInput, refining && styles.refineInputDisabled]}
           value={text}
           onChangeText={setText}
           placeholder="ex. le moins cher, livraison rapide…"
@@ -250,7 +271,7 @@ function RefinementBar({
           onPress={() => submit(text)}
           disabled={refining || text.trim().length === 0}
           accessibilityRole="button"
-          accessibilityLabel="Appliquer l’affinage"
+          accessibilityLabel="Appliquer l'affinage"
           accessibilityState={{ disabled: refining || text.trim().length === 0, busy: refining }}
           style={({ pressed }) => [
             styles.refineSend,
@@ -264,9 +285,6 @@ function RefinementBar({
       </View>
 
       <View style={styles.refineChips}>
-        {/* Quand la liste est triée par coût, offrir le retour symétrique vers
-            la pertinence — sinon le seul recours est « repartir de la
-            recherche initiale », qui annule AUSSI tous les autres affinages. */}
         {response.rankingPreference?.applied
           && response.rankingPreference.preference === 'PRICE_LOWEST' ? (
           <Pressable
@@ -319,9 +337,6 @@ export function ResultsScreen({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionShrank, setSelectionShrank] = useState(false);
 
-  // A refinement replaces the whole list. A previously-picked offer may no
-  // longer be present — drop it from the selection (never compare an offer the
-  // user can't see) and tell them once.
   useEffect(() => {
     setSelectedIds((cur) => {
       const kept = cur.filter((id) => results.some((r) => r.offerId === id));
@@ -342,16 +357,13 @@ export function ResultsScreen({
     setSelectionShrank(false);
     setSelectedIds((cur) => {
       if (cur.includes(offerId)) return cur.filter((id) => id !== offerId);
-      if (cur.length >= MAX_COMPARE) return cur; // silently capped
+      if (cur.length >= MAX_COMPARE) return cur;
       return [...cur, offerId];
     });
   }
 
   const canCompare = results.length >= 2;
 
-  // Honnêteté : si des offres ont été masquées par une exclusion de marchand
-  // (affinage « sans X » OU préférence permanente), on le dit — la liste
-  // n'est pas juste plus courte en silence.
   const usageNote = usageContextLabel(response.usageContext);
 
   const mx = response.merchantExclusions;
@@ -362,6 +374,7 @@ export function ResultsScreen({
 
   return (
     <View style={styles.flex}>
+      {/* Sticky header */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Pressable
@@ -369,6 +382,7 @@ export function ResultsScreen({
             accessibilityRole="button"
             accessibilityLabel="Revenir à la recherche"
             style={({ pressed }) => [styles.back, pressed && styles.cardPressed]}
+            hitSlop={8}
           >
             <Text style={styles.backText}>‹ Recherche</Text>
           </Pressable>
@@ -379,6 +393,7 @@ export function ResultsScreen({
               accessibilityLabel={compareMode ? 'Quitter le mode comparaison' : 'Comparer des offres'}
               accessibilityState={{ selected: compareMode }}
               style={({ pressed }) => [styles.compareToggle, compareMode && styles.compareToggleOn, pressed && styles.cardPressed]}
+              hitSlop={6}
             >
               <Text style={[styles.compareToggleText, compareMode && styles.compareToggleTextOn]}>
                 {compareMode ? 'Annuler' : '⇄ Comparer'}
@@ -392,10 +407,10 @@ export function ResultsScreen({
           {merchantIds.size > 1 ? 's' : ''} · {productIds.size} produit
           {productIds.size > 1 ? 's' : ''}
         </Text>
-        {compareMode ? (
+{compareMode ? (
           <Text style={styles.summary} accessibilityLiveRegion="polite">
             {selectionShrank
-              ? 'Une offre sélectionnée a disparu après l’affinage — sélection ajustée. '
+              ? "Une offre sélectionnée a disparu après l'affinage — sélection ajustée. "
               : ''}
             Choisissez 2 ou 3 offres à comparer ({selectedOffers.length}/{MAX_COMPARE}).
           </Text>
@@ -425,16 +440,8 @@ export function ResultsScreen({
             <Text style={styles.emptyTitle}>Aucune offre trouvée</Text>
             <Text style={styles.emptyBody}>
               {response.noResultsDiagnosis?.message ??
-                "Capucine n’a trouvé aucune offre correspondant à cette demande."}
+                "Capucine n'a trouvé aucune offre correspondant à cette demande."}
             </Text>
-            {/*
-              Ce que l'utilisateur peut faire pour élargir. Chaque option demande
-              sa confirmation : Capucine ne relâche jamais un critère toute seule.
-              Seule « reformuler » est un vrai bouton — les autres (budget,
-              reconditionné) demandent une valeur ou un mot précis que la
-              recherche libre ne peut pas deviner sans risquer de sur-contraindre
-              la prochaine recherche (voir REFORMULATE_OPTION_TYPES).
-            */}
             {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) =>
               REFORMULATE_OPTION_TYPES.has(option.type) ? (
                 <Pressable
@@ -454,6 +461,15 @@ export function ResultsScreen({
                   {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
                 </View>
               )
+            )}
+            {response.searchPlan?.searchContext === 'restaurant_equipment' && (
+              <View style={styles.chrSuggestion} accessibilityLiveRegion="polite">
+                <Text style={styles.chrSuggestionTitle}>💡 Suggestion CHR</Text>
+                <Text style={styles.chrSuggestionBody}>
+                  Essayez avec des termes plus précis : "four professionnel", "réfrigérateur CHR",
+                  "piano de cuisson", "friteuse professionnelle", "chambre froide"…
+                </Text>
+              </View>
             )}
           </View>
         </ScrollView>
@@ -476,7 +492,7 @@ export function ResultsScreen({
             />
           }
           renderItem={({ item }) => (
-            <OfferRow
+            <OfferCard
               offer={item}
               allOffers={results}
               ranking={response.rankingPreference}
@@ -502,6 +518,7 @@ export function ResultsScreen({
             accessibilityRole="button"
             accessibilityLabel={`Comparer les ${selectedOffers.length} offres sélectionnées`}
             style={({ pressed }) => [styles.compareGo, pressed && styles.cardPressed]}
+            hitSlop={6}
           >
             <Text style={styles.compareGoText}>Comparer ({selectedOffers.length})</Text>
           </Pressable>
@@ -512,24 +529,26 @@ export function ResultsScreen({
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: { flex: 1, backgroundColor: theme.color.background },
   header: {
-    padding: theme.space(2), backgroundColor: theme.color.surface,
-    borderBottomWidth: 1, borderBottomColor: theme.color.border,
+    padding: theme.space(2),
+    backgroundColor: theme.color.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.color.border,
   },
   headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  back: { minHeight: theme.minTouch, justifyContent: 'center' },
+  back: { minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1) },
   backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
   compareToggle: {
     minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
-    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.accent,
+    borderRadius: theme.radii.pill, borderWidth: 1, borderColor: theme.color.accent,
   },
   compareToggleOn: { backgroundColor: theme.color.accent },
   compareToggleText: { color: theme.color.accent, fontSize: theme.font.small, fontWeight: '700' },
   compareToggleTextOn: { color: theme.color.accentText },
-  query: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text },
+  query: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text, marginTop: theme.space(1) },
   counts: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
-  summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
+  summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5), lineHeight: 20 },
   exclusionNote: {
     fontSize: theme.font.small, color: theme.color.unknown, marginTop: theme.space(0.5),
     lineHeight: 18,
@@ -538,48 +557,53 @@ const styles = StyleSheet.create({
     fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
     lineHeight: 18, fontStyle: 'italic',
   },
-  list: { padding: theme.space(2), paddingBottom: theme.space(5) },
-  listWithBar: { paddingBottom: theme.space(12) },
-  refine: {
-    backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
-    borderColor: theme.color.border, padding: theme.space(1.5), marginBottom: theme.space(1.5),
+  list: { padding: theme.space(2), paddingBottom: theme.space(5), gap: theme.space(1.5) },
+  listWithBar: { paddingBottom: theme.space(14) },
+
+  refineCard: {
+    backgroundColor: theme.color.surface,
+    borderRadius: theme.radii.md,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+    padding: theme.space(2),
+    marginBottom: theme.space(2),
+    ...theme.shadow.subtle,
   },
   refineTitle: {
     fontSize: theme.font.small, fontWeight: '700', color: theme.color.text,
-    marginBottom: theme.space(1),
+    marginBottom: theme.space(1.5),
   },
   orderChip: {
-    alignSelf: 'flex-start', backgroundColor: '#EAF0FE', borderRadius: 6,
-    paddingHorizontal: theme.space(1), paddingVertical: 4, marginBottom: theme.space(1),
+    alignSelf: 'flex-start', backgroundColor: theme.color.accentSoft, borderRadius: theme.radii.pill,
+    paddingHorizontal: theme.space(1.5), paddingVertical: theme.space(0.5), marginBottom: theme.space(1),
   },
   orderChipText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
-  // Phrase explicative (pas un badge) : rendue comme une ligne pleine largeur
-  // qui s'enroule proprement sur un écran étroit.
   availabilityNote: {
     fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600',
     lineHeight: 18, marginBottom: theme.space(1),
   },
   refineHistory: { marginBottom: theme.space(1) },
   refineHistoryItem: { fontSize: theme.font.small, color: theme.color.textMuted, lineHeight: 20 },
-  resetBtn: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: 2 },
+  resetBtn: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: theme.space(0.5) },
   resetBtnText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
   refineInputRow: { flexDirection: 'row', gap: theme.space(1), alignItems: 'stretch' },
   refineInput: {
     flex: 1, minHeight: theme.minTouch, borderWidth: 1, borderColor: theme.color.border,
-    borderRadius: theme.radius, paddingHorizontal: theme.space(1.5),
+    borderRadius: theme.radii.md, paddingHorizontal: theme.space(1.5),
     fontSize: theme.font.body, color: theme.color.text, backgroundColor: theme.color.background,
   },
+  refineInputDisabled: { opacity: 0.6 },
   refineSend: {
-    minWidth: theme.minTouch + 8, minHeight: theme.minTouch, borderRadius: theme.radius,
+    minWidth: theme.minTouch + 8, minHeight: theme.minTouch, borderRadius: theme.radii.md,
     backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: theme.space(1.5),
+    paddingHorizontal: theme.space(1.5), ...theme.shadow.subtle,
   },
-  refineSendMuted: { opacity: 0.5 },
+  refineSendMuted: { opacity: theme.opacity.disabled },
   refineSendText: { color: theme.color.accentText, fontWeight: '700', fontSize: theme.font.body },
-  refineChips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginTop: theme.space(1) },
+  refineChips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginTop: theme.space(1.5) },
   refineChip: {
     minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
-    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
+    borderRadius: theme.radii.pill, borderWidth: 1, borderColor: theme.color.border,
     backgroundColor: theme.color.background,
   },
   refineChipText: { fontSize: theme.font.small, color: theme.color.text },
@@ -587,80 +611,126 @@ const styles = StyleSheet.create({
     marginTop: theme.space(1), fontSize: theme.font.small, color: theme.color.textMuted,
   },
   refineErrorBox: {
-    marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
+    marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radii.md,
+    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: theme.color.dangerSoft,
   },
   refineErrorText: { color: theme.color.danger, fontSize: theme.font.small, fontWeight: '600' },
+
   card: {
-    backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
-    borderColor: theme.color.border, padding: theme.space(2), marginBottom: theme.space(1.5),
+    backgroundColor: theme.color.surface,
+    borderRadius: theme.radii.md,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+    padding: theme.space(2),
+    marginBottom: theme.space(1.5),
     minHeight: theme.minTouch,
+    ...theme.shadow.subtle,
   },
-  cardPressed: { opacity: 0.75 },
-  cardSelected: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#EAF0FE' },
-  checkbox: { fontSize: 20, color: theme.color.textMuted },
+  cardPressed: { opacity: theme.opacity.pressed },
+  cardSelected: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: theme.color.accentSoft },
+  cardRecommended: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#F4F7FF' },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1.5) },
+  checkboxWrap: { width: 28, alignItems: 'center' },
+  checkbox: { fontSize: 22, color: theme.color.textMuted },
   checkboxOn: { color: theme.color.accent },
-  cardHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1) },
-  rank: {
-    fontSize: theme.font.small, fontWeight: '700', color: theme.color.accentText,
-    backgroundColor: theme.color.accent, paddingHorizontal: theme.space(1),
-    paddingVertical: 2, borderRadius: 6, overflow: 'hidden',
+  rankBadge: {
+    minWidth: 28, minHeight: 28, borderRadius: theme.radii.sm,
+    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
   },
+  rankText: { color: theme.color.accentText, fontSize: theme.font.small, fontWeight: '700' },
   merchant: { fontSize: theme.font.body, fontWeight: '600', color: theme.color.text, flexShrink: 1 },
-  totalLabel: {
-    fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(1),
+  recommendedPill: {
+    marginLeft: 'auto', paddingHorizontal: theme.space(1), paddingVertical: 2,
+    borderRadius: theme.radii.pill, backgroundColor: theme.color.accentSoft,
   },
-  total: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text, marginTop: 1 },
+  recommendedPillText: { fontSize: theme.font.micro, fontWeight: '700', color: theme.color.accent },
+
+  chrPill: {
+    marginLeft: 'auto', paddingHorizontal: theme.space(1), paddingVertical: 2,
+    borderRadius: theme.radii.pill, backgroundColor: '#E8F5E9',
+  },
+  chrPillText: { fontSize: theme.font.micro, fontWeight: '700', color: '#2E7D32' },
+
+  totalSection: { marginTop: theme.space(1.5), marginBottom: theme.space(0.5) },
+  totalLabel: { fontSize: theme.font.small, color: theme.color.textMuted },
+  totalValue: { fontSize: theme.font.display, fontWeight: '700', color: theme.color.text, marginTop: 2, letterSpacing: -0.3 },
   totalUnknown: { color: theme.color.unknown },
+
+  certaintyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(1), marginTop: theme.space(1) },
   badge: {
-    marginTop: theme.space(1), alignSelf: 'flex-start',
-    paddingHorizontal: theme.space(1), paddingVertical: 4, borderRadius: 6,
+    paddingHorizontal: theme.space(1.5), paddingVertical: 4, borderRadius: theme.radii.sm,
   },
-  badgeText: { fontSize: theme.font.small, fontWeight: '600', backgroundColor: 'transparent' },
-  badgeKnown: { color: theme.color.known, backgroundColor: '#E7F4EC' },
-  badgeUnknown: { color: theme.color.unknown, backgroundColor: '#FBF1DC' },
+  badgeText: { fontSize: theme.font.micro, fontWeight: '700', backgroundColor: 'transparent' },
+  badgeKnown: { color: theme.color.known, backgroundColor: theme.color.knownSoft },
+  badgeUnknown: { color: theme.color.unknown, backgroundColor: theme.color.unknownSoft },
+  costStatement: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, flexShrink: 1 },
+
   breakdown: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(1) },
+  breakdownRow: { flexDirection: 'row', gap: theme.space(2), marginTop: theme.space(1) },
+  breakdownLabel: { fontSize: theme.font.small },
+  priceValue: { fontSize: theme.font.small, fontWeight: '700', color: theme.color.known },
+  priceApprox: { fontSize: theme.font.small, fontWeight: '600', color: theme.color.textMuted },
+  priceOnRequest: { fontSize: theme.font.small, fontStyle: 'italic', color: theme.color.textMuted },
+  shippingCost: { fontSize: theme.font.small, color: theme.color.textMuted },
+  shippingFree: { fontSize: theme.font.small, fontWeight: '600', color: theme.color.known },
+  shippingUnknown: { fontSize: theme.font.small, fontStyle: 'italic', color: theme.color.textMuted },
   unknownList: {
     fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
   },
-  cardRecommended: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#F4F7FF' },
-  recommendedTag: {
-    fontSize: theme.font.small, fontWeight: '700', color: theme.color.accent,
-    marginLeft: 'auto',
-  },
+
   whyBox: {
-    marginTop: theme.space(1), paddingTop: theme.space(1),
+    marginTop: theme.space(1.5), paddingTop: theme.space(1.5),
     borderTopWidth: 1, borderTopColor: theme.color.border,
   },
-  whyHead: { fontSize: theme.font.small, color: theme.color.text, fontWeight: '600', lineHeight: 19 },
-  whyLine: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, lineHeight: 19 },
+  whyHead: { fontSize: theme.font.small, color: theme.color.text, fontWeight: '600', lineHeight: 20 },
+  whyLine: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, lineHeight: 20 },
+
   recovery: { marginTop: theme.space(1.5), paddingLeft: theme.space(1.5), borderLeftWidth: 3, borderLeftColor: theme.color.accent },
   recoveryText: { fontSize: theme.font.body, color: theme.color.text },
   recoveryImpact: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
   recoveryAction: {
-    marginTop: theme.space(1.5), padding: theme.space(1.5), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.accent, backgroundColor: '#F4F7FF',
+    marginTop: theme.space(1.5), padding: theme.space(1.5), borderRadius: theme.radii.md,
+    borderWidth: 1, borderColor: theme.color.accent, backgroundColor: theme.color.accentSoft,
     minHeight: theme.minTouch,
   },
   recoveryActionText: { fontSize: theme.font.body, color: theme.color.accent, fontWeight: '700' },
-  empty: { padding: theme.space(3) },
-  emptyTitle: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text },
+
+  empty: { padding: theme.space(4), alignItems: 'center' },
+  emptyTitle: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text, textAlign: 'center' },
   emptyBody: {
     fontSize: theme.font.body, color: theme.color.textMuted,
-    marginTop: theme.space(1), lineHeight: 22,
+    marginTop: theme.space(1), lineHeight: 22, textAlign: 'center', maxWidth: 300,
+  },
+  chrSuggestion: {
+    marginTop: theme.space(3), padding: theme.space(2),
+    backgroundColor: '#FFF3E0', borderRadius: theme.radii.md,
+    borderWidth: 1, borderColor: '#FFB74D',
+  },
+  chrSuggestionTitle: {
+    fontSize: theme.font.small, fontWeight: '700', color: '#E65100',
+  },
+  chrSuggestionBody: {
+    fontSize: theme.font.small, color: '#BF360C', marginTop: theme.space(0.5), lineHeight: 20,
   },
   footer: {
-    fontSize: 12, color: theme.color.textMuted,
-    textAlign: 'center', marginTop: theme.space(1),
+    fontSize: theme.font.micro, color: theme.color.textMuted,
+    textAlign: 'center', marginTop: theme.space(2),
   },
   compareBar: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
     padding: theme.space(2), backgroundColor: theme.color.surface,
     borderTopWidth: 1, borderTopColor: theme.color.border,
+    ...theme.shadow.raised,
+    // Ensure visibility above TabBar by using a higher zIndex equivalent
+    // The TabBar is rendered after the body View in App.tsx, so this bar
+    // sits at the bottom of the body View. The TabBar has its own height
+    // (~48pt) + safe area. We rely on listWithBar's paddingBottom (112pt)
+    // to keep content above this bar. The bar itself is ~60pt tall.
   },
   compareGo: {
-    minHeight: theme.minTouch + 4, borderRadius: theme.radius,
+    minHeight: theme.minTouch + 8, borderRadius: theme.radii.md,
     backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
+    ...theme.shadow.subtle,
   },
   compareGoText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
 });

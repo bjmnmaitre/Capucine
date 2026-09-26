@@ -18,6 +18,8 @@
 
 import { buildApp } from '../../src/api/server';
 import { FOLLOWUP_QUESTION_ID } from '../../src/application/conversation-manager';
+import { AIOrchestrator } from '../../src/application/ai-orchestrator';
+import { MockAIProvider } from '../../src/application/ai-orchestrator';
 import type { Application } from 'express';
 
 // ============================================================================
@@ -31,7 +33,11 @@ import type { Application } from 'express';
 let app: Application;
 
 beforeAll(() => {
-  app = buildApp();
+  // Disable web search adapters to run against InMemoryDiscovery + MockAI as intended
+  // See BuildAppOptions.webAdapters — tests should not depend on external APIs
+  // Also inject a MockAI Orchestrator for deterministic, offline execution
+  const mockAiOrchestrator = new AIOrchestrator([new MockAIProvider()]);
+  app = buildApp({ webAdapters: [], aiOrchestrator: mockAiOrchestrator });
 });
 
 // ============================================================================

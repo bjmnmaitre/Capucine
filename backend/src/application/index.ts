@@ -83,3 +83,11 @@ export * from './real-web-discovery';
 
 // Attribute extraction (brand/model/compatibility/quantity/destination/…)
 export * from './attribute-extraction';
+
+// Delicity merchant integration (menu → cart → execution adapter)
+export * from './delicity-cart-builder';
+export * from './delicity-merchant-adapter';
+
+// Override extraction from clarification answers
+export * from './preference-promotion-engine';
+export * from './override-extractor';

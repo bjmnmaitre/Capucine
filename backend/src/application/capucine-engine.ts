@@ -55,7 +55,9 @@ import {
   extractMerchantExclusion,
   extractFreeShippingIntent,
   extractDeliverabilityIntent,
+  extractOriginIntent,
   extractRetryIntent,
+  detectSearchContext,
   RetryIntent,
   InternationalIntent,
 } from './request-interpreter';
@@ -67,6 +69,7 @@ import { ToolRegistry, buildDefaultToolRegistry } from './tools';
 import { ProductPageExtractor } from './product-page-extractor';
 import { SupportedLanguage, resolveLanguage } from './i18n';
 import { defaultLanguageDetector } from './language-detection';
+import { AIRequestInterpreter } from './ai-request-interpreter';
 
 // ============================================================================
 // ENGINE INPUT / OUTPUT
@@ -148,6 +151,13 @@ export interface SearchRequest {
    * re-stating it. Threaded into RankingRequest.prioritizeAvailability.
    */
   prioritizeAvailability?: boolean;
+
+  /**
+   * Optional city for geo-targeted search (e.g., "Toulouse").
+   * When set, web search adapters (Serper, Brave) will add location
+   * parameters to their API requests for localized results.
+   */
+  location?: string;
 }
 
 /**
@@ -348,6 +358,7 @@ export class CapucineEngine {
   private readonly costEngine: CostEngine = defaultCostEngine;
   private readonly discoveryOrchestrator: DiscoveryOrchestrator;
   private readonly interpreter: BasicPatternInterpreter;
+  private readonly aiInterpreter?: AIRequestInterpreter;
   private readonly planBuilder: SearchPlanBuilder;
   private readonly phaseQueryBuilder: SearchPhaseQueryBuilder;
   private readonly aiOrchestrator?: AIOrchestrator;
@@ -364,6 +375,8 @@ export class CapucineEngine {
     this.explanationEngine = new ExplanationEngine();
     this.noResultsAnalyzer = new NoResultsAnalyzer();
     this.interpreter = new BasicPatternInterpreter();
+    // Initialize AI interpreter if AI orchestrator is available
+    this.aiInterpreter = options.aiOrchestrator ? new AIRequestInterpreter(options.aiOrchestrator) : undefined;
     this.planBuilder = new SearchPlanBuilder();
     this.phaseQueryBuilder = new SearchPhaseQueryBuilder();
     this.aiOrchestrator = options.aiOrchestrator;
@@ -452,6 +465,7 @@ export class CapucineEngine {
     resultLimit: number | null;
     excludeMerchantName: string | null;
     retryIntent: RetryIntent | null;
+    searchContext: string;
   } {
     const interpreted = this.interpreter.interpretSync({
       id: `followup-${Date.now()}`,
@@ -467,6 +481,8 @@ export class CapucineEngine {
     if (freeShipping) criteria.push(freeShipping);
     const deliverability = extractDeliverabilityIntent(text, destinationCountry);
     if (deliverability) criteria.push(deliverability);
+    const origin = extractOriginIntent(text);
+    if (origin) criteria.push(origin);
 
     return {
       criteria,
@@ -476,6 +492,7 @@ export class CapucineEngine {
       retryIntent: extractRetryIntent(text),
       resultLimit: extractResultLimit(text),
       excludeMerchantName: extractMerchantExclusion(text),
+      searchContext: detectSearchContext(text),
     };
   }
 
@@ -517,7 +534,7 @@ export class CapucineEngine {
       profileLanguage: request.profile.preferredLanguage,
     });
 
-    // ── Stage 0: NL Interpretation (BasicPatternInterpreter) ─────────────────
+    // ── Stage 0: NL Interpretation (AI or BasicPatternInterpreter) ────────────
     let preProfileCriteria = request.preInterpretedCriteria ?? [];
     let interpretedRequest: InterpretedRequest | undefined;
 
@@ -527,14 +544,37 @@ export class CapucineEngine {
       !request.skipAIInterpretation
     ) {
       const interpretStart = Date.now();
-      interpretedRequest = await this.interpreter.interpret({
-        id: `q-${request.requestId}`,
-        userId: request.profile.userId,
-        text: request.queryText,
-        timestamp: new Date(),
-      });
-      preProfileCriteria = interpretedRequest.extractedCriteria;
+      
+      // Use AI interpreter if available, otherwise fall back to pattern-based
+      if (this.aiInterpreter) {
+        interpretedRequest = await this.aiInterpreter.interpret({
+          id: `q-${request.requestId}`,
+          userId: request.profile.userId,
+          text: request.queryText,
+          timestamp: new Date(),
+        });
+      } else {
+        interpretedRequest = await this.interpreter.interpret({
+          id: `q-${request.requestId}`,
+          userId: request.profile.userId,
+          text: request.queryText,
+          timestamp: new Date(),
+        });
+      }
+      
+      // Only use extracted criteria if interpretation succeeded
+      if (interpretedRequest) {
+        preProfileCriteria = interpretedRequest.extractedCriteria;
+      }
       timing.interpretationMs = Date.now() - interpretStart;
+    }
+
+    // "fabriqué en France / made in France" is a standalone intent (same shape
+    // as extractFreeShippingIntent) — folded into the FIRST turn too, not only
+    // follow-ups, so a first search can express it directly.
+    if (request.queryText) {
+      const origin = extractOriginIntent(request.queryText);
+      if (origin) preProfileCriteria.push(origin);
     }
 
     // ── Stage 1: Clarification check ─────────────────────────────────────────
@@ -553,6 +593,7 @@ export class CapucineEngine {
     // "permanently". An explicit request.usageContext (a later conversation
     // turn replaying an earlier statement) wins over re-interpretation.
     const requestUsageContext = request.usageContext ?? interpretedRequest?.usageContext;
+    const requestSearchContext = detectSearchContext(request.queryText);
     const profileMergeStart = Date.now();
     const effectiveCriteriaSet = this.profileEngine.resolve(
       request.profile,
@@ -561,6 +602,7 @@ export class CapucineEngine {
         createdAt: new Date(),
         queryText: request.queryText,
         usageContext: requestUsageContext,
+        searchContext: requestSearchContext,
       },
       request.overrides ?? [],
       request.requestId
@@ -639,7 +681,8 @@ export class CapucineEngine {
       request.queryText,
       phaseTerms,
       effectiveLanguage,
-      request.additionalSearchLanguages
+      request.additionalSearchLanguages,
+      request.location
     );
     searchPlan = finalPlan;
     timing.discoveryMs = Date.now() - discoveryStart;
@@ -733,6 +776,8 @@ export class CapucineEngine {
         // contextual signal can add points to an ELIGIBLE offer, it can
         // never make an ineligible one rankable — see priority-engine.ts.
         usageContext: effectiveCriteriaSet.usageContext,
+        // Search context for CHR merchant boost
+        searchContext: effectiveCriteriaSet.searchContext,
         // Explicit request flag wins; otherwise read the permanent profile
         // preference directly, so a follow-up search replaying `profile`
         // keeps "prioritise availability" without re-stating it.
@@ -853,6 +898,7 @@ export class CapucineEngine {
 
     // ── Stage 2: Profile merge ────────────────────────────────────────────────
     const syncUsageContext = request.usageContext ?? interpretedRequest?.usageContext;
+    const syncSearchContext = detectSearchContext(request.queryText);
     const effectiveCriteriaSet = this.profileEngine.resolve(
       request.profile,
       {
@@ -860,6 +906,7 @@ export class CapucineEngine {
         createdAt: new Date(),
         queryText: request.queryText,
         usageContext: syncUsageContext,
+        searchContext: syncSearchContext,
       },
       request.overrides ?? [],
       request.requestId
@@ -880,7 +927,7 @@ export class CapucineEngine {
     timing.planBuildMs = Date.now() - planStart;
 
     // ── Stage 4: Discovery (sync, no escalation) ──────────────────────────────
-    const discoveryCriteria = this.planToDiscoveryCriteria(searchPlan, request.queryText, syncPhaseTerms, syncEffectiveLanguage);
+    const discoveryCriteria = this.planToDiscoveryCriteria(searchPlan, request.queryText, syncPhaseTerms, syncEffectiveLanguage, undefined, request.location);
     const discoveryStart = Date.now();
     const discovery = this.discoveryOrchestrator.discoverSync(discoveryCriteria);
     timing.discoveryMs = Date.now() - discoveryStart;
@@ -948,6 +995,7 @@ export class CapucineEngine {
         offers: eligibleOffers,
         effectiveCriteria,
         usageContext: effectiveCriteriaSet.usageContext,
+        searchContext: effectiveCriteriaSet.searchContext,
         prioritizeAvailability:
           request.prioritizeAvailability ?? availabilityPreferenceFromProfile(request.profile),
         requestId: request.requestId,
@@ -1038,9 +1086,16 @@ export class CapucineEngine {
   ): SearchPlan {
     // Use interpreter's product terms if available (brand names, model numbers, etc.)
     // Fall back to keyword extraction from raw text.
-    const primaryTerms = (interpreted?.suggestedSearchTerms?.length ?? 0) > 0
+    // Also check if the suggested terms are meaningful (not just 'mock product').
+    const hasMeaningfulSuggestedTerms = (interpreted?.suggestedSearchTerms?.length ?? 0) > 0 &&
+      !interpreted!.suggestedSearchTerms!.every(t => t === 'mock product');
+    const primaryTerms = hasMeaningfulSuggestedTerms
       ? interpreted!.suggestedSearchTerms!
       : this.extractPrimaryTerms(queryText, criteria);
+
+    // Extract searchContext from interpreted request (AI interpretation) or detect from query
+    // Prefer local detectSearchContext as it has comprehensive CHR keyword detection
+    const searchContext = detectSearchContext(queryText);
 
     // Extract categories from criteria. RequestInterpreter (and inline/
     // profile criteria following the same convention) stores the detected
@@ -1071,11 +1126,16 @@ export class CapucineEngine {
       }
     }
 
-    // Extract budget
+    // Extract budget — ONLY from hard-level criteria. A soft budget (preference,
+    // very_important, important) favours at ranking time but MUST NOT filter at
+    // discovery time — "Capucine ne limite jamais ses recherches".
     let maxPrice: number | undefined;
     let minPrice: number | undefined;
     for (const c of criteria) {
-      if (c.id.includes('budget') || c.id.includes('price') || c.name.toLowerCase().includes('budget')) {
+      if (
+        (c.level === 'required' || c.level === 'forbidden') &&
+        (c.id.includes('budget') || c.id.includes('price') || c.name.toLowerCase().includes('budget'))
+      ) {
         const mb = c.parameters?.maxBudget as number | undefined;
         if (mb !== undefined) maxPrice = mb;
         const lb = c.parameters?.minBudget as number | undefined;
@@ -1104,6 +1164,7 @@ export class CapucineEngine {
       // NOT a hard constraint and NOT part of hardConstraints — escalation
       // copies the plan wholesale, so it survives every level unchanged.
       usageContext,
+      searchContext,
     });
   }
 
@@ -1216,14 +1277,15 @@ export class CapucineEngine {
     queryText: string,
     phaseTerms?: PhaseTerms,
     language?: SupportedLanguage,
-    additionalSearchLanguages?: SupportedLanguage[]
+    additionalSearchLanguages?: SupportedLanguage[],
+    location?: string
   ): Promise<{ discovery: DiscoveryResult; finalPlan: SearchPlan }> {
     let currentPlan = initialPlan;
     let accumulated: DiscoveryResult['candidates'] = [];
     let lastResult: DiscoveryResult | undefined;
 
     for (let attempt = 0; attempt <= 4; attempt++) {
-      const criteria = this.planToDiscoveryCriteria(currentPlan, queryText, phaseTerms, language, additionalSearchLanguages);
+      const criteria = this.planToDiscoveryCriteria(currentPlan, queryText, phaseTerms, language, additionalSearchLanguages, location);
       const result = await this.discoveryOrchestrator.discover(criteria);
 
       accumulated = [...accumulated, ...result.candidates];
@@ -1254,7 +1316,7 @@ export class CapucineEngine {
         lastResult ?? {
           id: `discovery-exhausted-${Date.now()}`,
           timestamp: new Date(),
-          criteria: this.planToDiscoveryCriteria(currentPlan, queryText, undefined, language, additionalSearchLanguages),
+          criteria: this.planToDiscoveryCriteria(currentPlan, queryText, undefined, language, additionalSearchLanguages, location),
           candidates: [],
           statistics: {
             queriedSources: 0,
@@ -1288,12 +1350,16 @@ export class CapucineEngine {
     queryText: string,
     phaseTerms?: PhaseTerms,
     language?: SupportedLanguage,
-    additionalSearchLanguages?: SupportedLanguage[]
+    additionalSearchLanguages?: SupportedLanguage[],
+    location?: string
   ): DiscoveryCriteria {
     const criteria: DiscoveryCriteria = {};
     if (language) criteria.language = language;
     if (additionalSearchLanguages && additionalSearchLanguages.length > 0) {
       criteria.internationalLanguages = additionalSearchLanguages;
+    }
+    if (location) {
+      criteria.location = location;
     }
 
     // Keywords: phase-specific term set if we have phaseTerms; otherwise all terms.
@@ -1382,6 +1448,11 @@ export class CapucineEngine {
       criteria.usageContext = plan.usageContext;
     }
 
+    // Copy search context from plan to discovery criteria
+    if (plan.searchContext) {
+      criteria.searchContext = plan.searchContext;
+    }
+
     criteria.limit = this.options.maxCandidates;
 
     return criteria;
@@ -1417,7 +1488,10 @@ const STOP_WORDS = new Set([
   'mon', 'ma', 'mes', 'ton', 'ta', 'tes', 'son', 'ses', 'notre', 'votre',
   'je', 'tu', 'il', 'elle', 'nous', 'vous', 'ils', 'elles',
   'est', 'sont', 'ai', 'avoir', 'être', 'fait', 'faire',
-  'cherche', 'veux', 'voudrais', 'besoin', 'trouver', 'acheter',
+  'cherche', 'cherches', 'cherchez', 'cherchons',
+  'trouve', 'trouves', 'trouvez', 'trouvons', 'trouver',
+  'veux', 'voudrais', 'besoin', 'trouver', 'acheter',
+  'uniquement', 'seulement', 'finalement',
   'impérativement', 'obligatoirement', 'absolument',
   // English
   'the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'need',

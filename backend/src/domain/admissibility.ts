@@ -93,7 +93,7 @@ export interface RejectedOffer {
  * Handles:
  * - required constraints: offer MUST satisfy
  * - forbidden constraints: offer MUST NOT violate
- * - Unknown data handling: UNKNOWN does not automatically fail
+ * - Unknown data handling: UNKNOWN on a required constraint REJECTS by default (unknownPolicy: 'reject'); opt-in 'pass' per constraint
  *
  * DOES NOT RANK. Does not produce preference scores.
  * Simply answers: "Can this offer be considered at all?"

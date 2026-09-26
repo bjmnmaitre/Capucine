@@ -1,15 +1,26 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { theme } from '../theme';
 import { HealthStatus } from '../api';
+import { suggest, SuggestResponse } from '../api';
 import {
   clearHistory, loadHistory, relativeTime, removeSearch, SearchHistoryEntry,
 } from '../history';
 
-const EXAMPLES = ['casque Sony WH-1000XM5', 'MacBook Air M4 16 Go', 'chaussures de running homme'];
+const EXAMPLES = [
+  'casque Sony WH-1000XM5',
+  'MacBook Air M4 16 Go',
+  'chaussures de running homme',
+];
+const CHR_EXAMPLES = [
+  'four professionnel pizza La Rochelle',
+  'friteuse CHR',
+  'chambre froide restaurant',
+  'piano de cuisson professionnel',
+];
 
 interface Props {
   loading: boolean;
@@ -49,13 +60,58 @@ export function SearchScreen({
     setHistory(await removeSearch(query));
   }
 
+  // Autocomplete suggestions state
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchSuggestions = useCallback(async (text: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (text.length < 3) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const response: SuggestResponse = await suggest(text);
+        if (response.suggestions && response.suggestions.length > 0) {
+          setSuggestions(response.suggestions);
+          setShowSuggestions(true);
+        } else {
+          setSuggestions([]);
+          setShowSuggestions(false);
+        }
+      } catch {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 200);
+  }, []);
+
   const trimmed = query.trim();
   const isEmpty = trimmed.length === 0;
 
   function submit() {
     setTouched(true);
-    if (isEmpty) return; // an empty search is refused here, never sent as ""
+    setShowSuggestions(false);
+    setSuggestions([]);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (isEmpty) return;
     onSearch(trimmed);
+  }
+
+  function onQueryChange(text: string) {
+    setQuery(text);
+    if (touched) setTouched(false);
+    fetchSuggestions(text);
+  }
+
+  function selectSuggestion(suggestion: string) {
+    setQuery(suggestion);
+    setShowSuggestions(false);
+    setSuggestions([]);
+    onSearch(suggestion);
   }
 
   return (
@@ -111,19 +167,36 @@ export function SearchScreen({
         ) : null}
 
         <Text style={styles.label} nativeID="search-label">Votre recherche</Text>
-        <TextInput
-          style={[styles.input, touched && isEmpty && styles.inputError]}
-          value={query}
-          onChangeText={(t) => { setQuery(t); if (touched) setTouched(false); }}
-          placeholder="ex. casque Sony WH-1000XM5"
-          placeholderTextColor={theme.color.textMuted}
-          onSubmitEditing={submit}
-          returnKeyType="search"
-          editable={!loading}
-          accessibilityLabel="Votre recherche"
-          accessibilityLabelledBy="search-label"
-          accessibilityHint="Saisissez un produit, puis validez pour lancer la recherche"
-        />
+        <View style={styles.searchInputWrapper}>
+          <TextInput
+            style={[styles.input, touched && isEmpty && styles.inputError]}
+            value={query}
+            onChangeText={onQueryChange}
+            placeholder="Ex: four professionnel pizza La Rochelle, friteuse CHR, casque Sony…"
+            placeholderTextColor={theme.color.textMuted}
+            onSubmitEditing={submit}
+            returnKeyType="search"
+            editable={!loading}
+            accessibilityLabel="Votre recherche"
+            accessibilityLabelledBy="search-label"
+            accessibilityHint="Saisissez un produit, puis validez pour lancer la recherche"
+          />
+          {showSuggestions && suggestions.length > 0 && (
+            <View style={styles.suggestionsDropdown} accessibilityLabel="Suggestions de recherche">
+              {suggestions.map((suggestion, idx) => (
+                <Pressable
+                  key={idx}
+                  onPress={() => selectSuggestion(suggestion)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Rechercher : ${suggestion}`}
+                  style={styles.suggestionItem}
+                >
+                  <Text style={styles.suggestionText} numberOfLines={1}>{suggestion}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </View>
         {touched && isEmpty ? (
           <Text style={styles.fieldError} accessibilityLiveRegion="polite">
             Saisissez un produit avant de lancer la recherche.
@@ -151,8 +224,25 @@ export function SearchScreen({
 
         {error ? (
           <View style={styles.errorBox} accessibilityLiveRegion="assertive">
-            <Text style={styles.errorTitle}>{error}</Text>
-            <Text style={styles.errorHint}>Vérifiez votre connexion, puis réessayez.</Text>
+            <View style={styles.errorIconWrapper}>
+              <Text style={styles.errorIcon}>⚠️</Text>
+            </View>
+            <View style={styles.errorContent}>
+              <Text style={styles.errorTitle}>Recherche indisponible</Text>
+              <Text style={styles.errorSubtitle}>Réessaie dans quelques instants.</Text>
+            </View>
+            <Pressable
+              onPress={onSearch.bind(null, query)}
+              disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Réessayer la recherche"
+              accessibilityState={{ disabled: loading, busy: loading }}
+              style={({ pressed }) => [styles.retryBtn, (pressed || loading) && styles.buttonPressed]}
+            >
+              {loading
+                ? <ActivityIndicator color={theme.color.accentText} />
+                : <Text style={styles.retryBtnText}>Réessayer</Text>}
+            </Pressable>
           </View>
         ) : null}
 
@@ -202,13 +292,27 @@ export function SearchScreen({
 
         <View style={styles.examples}>
           <Text style={styles.examplesTitle}>Exemples</Text>
-          {EXAMPLES.map((ex) => (
+{EXAMPLES.map((ex) => (
             <Pressable
               key={ex}
               onPress={() => { setQuery(ex); setTouched(false); }}
               disabled={loading}
               accessibilityRole="button"
-              accessibilityLabel={`Utiliser l’exemple : ${ex}`}
+              accessibilityLabel={`Utiliser l'exemple : ${ex}`}
+              style={({ pressed }) => [styles.example, pressed && styles.examplePressed]}
+            >
+              <Text style={styles.exampleText}>{ex}</Text>
+            </Pressable>
+          ))}
+
+          <Text style={styles.examplesTitle}>Matériel CHR</Text>
+          {CHR_EXAMPLES.map((ex) => (
+            <Pressable
+              key={ex}
+              onPress={() => { setQuery(ex); setTouched(false); }}
+              disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel={`Utiliser l'exemple : ${ex}`}
               style={({ pressed }) => [styles.example, pressed && styles.examplePressed]}
             >
               <Text style={styles.exampleText}>{ex}</Text>
@@ -284,8 +388,20 @@ const styles = StyleSheet.create({
   errorBox: {
     marginTop: theme.space(3), padding: theme.space(2), borderRadius: theme.radius,
     borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
+    flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(1.5),
+  },
+  errorIconWrapper: {
+    paddingTop: 2,
+  },
+  errorIcon: {
+    fontSize: theme.font.body,
+  },
+  errorContent: {
+    flex: 1,
+    marginTop: 1,
   },
   errorTitle: { color: theme.color.danger, fontWeight: '700', fontSize: theme.font.body },
+  errorSubtitle: { color: theme.color.textMuted, fontSize: theme.font.small, marginTop: theme.space(0.5) },
   errorHint: { color: theme.color.textMuted, fontSize: theme.font.small, marginTop: theme.space(1) },
   examples: { marginTop: theme.space(4) },
   examplesTitle: {
@@ -321,5 +437,36 @@ const styles = StyleSheet.create({
   profileLinkText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
   apiNote: {
     marginTop: theme.space(4), fontSize: 12, color: theme.color.textMuted, textAlign: 'center',
+  },
+  searchInputWrapper: {
+    position: 'relative',
+  },
+  suggestionsDropdown: {
+    position: 'absolute',
+    top: theme.minTouch + 14,
+    left: 0,
+    right: 0,
+    backgroundColor: theme.color.surface,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+    borderRadius: theme.radius,
+    marginTop: theme.space(0.5),
+    maxHeight: 200,
+    zIndex: 10,
+    shadowColor: '#2A2109',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    },
+    suggestionItem: {
+    paddingHorizontal: theme.space(2),
+    paddingVertical: theme.space(1.5),
+    borderBottomWidth: 1,
+    borderBottomColor: theme.color.border,
+  },
+  suggestionText: {
+    fontSize: theme.font.body,
+    color: theme.color.text,
   },
 });

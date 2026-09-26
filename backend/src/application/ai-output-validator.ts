@@ -185,10 +185,11 @@ export class AIOutputValidator {
     productDescription: string;
     extractedCriteria: ValidatedCriterion[];
     suggestedTerms: string[];
+    searchContext: string;
     confidence: number;
   }> {
     const errors: ValidationError[] = [];
-    const fallback = { productDescription: '', extractedCriteria: [], suggestedTerms: [], confidence: 0 };
+    const fallback = { productDescription: '', extractedCriteria: [], suggestedTerms: [], searchContext: 'consumer', confidence: 0 };
 
     if (typeof raw !== 'object' || raw === null) {
       errors.push({ field: 'root', code: 'WRONG_TYPE', message: 'Expected object' });
@@ -206,6 +207,13 @@ export class AIOutputValidator {
     const suggestedTerms = Array.isArray(obj.suggestedTerms)
       ? this.sanitizeTermArray(obj.suggestedTerms, 'suggestedTerms', errors)
       : [];
+
+    // searchContext — must be one of the valid values
+    const validSearchContexts = ['consumer', 'restaurant_equipment', 'restaurant_supply', 'b2b'];
+    let searchContext = 'consumer';
+    if (typeof obj.searchContext === 'string' && validSearchContexts.includes(obj.searchContext)) {
+      searchContext = obj.searchContext;
+    }
 
     // confidence — must be 0–1
     let confidence = 0.5;
@@ -228,7 +236,7 @@ export class AIOutputValidator {
 
     return {
       valid: errors.length === 0,
-      value: { productDescription, extractedCriteria, suggestedTerms, confidence },
+      value: { productDescription, extractedCriteria, suggestedTerms, searchContext, confidence },
       errors,
       usedFallback: false,
     };
@@ -316,7 +324,7 @@ export class AIOutputValidator {
     const c = raw as Record<string, unknown>;
 
     // id
-    const idResult = sanitizeString(c.id ?? '', 50);
+    const idResult = sanitizeString((c.id ?? c.suggestedId ?? '') as string, 50);
     if (!idResult.ok || !idResult.value) {
       errors.push({ field: `extractedCriteria[${index}].id`, code: 'MISSING_REQUIRED_FIELD', message: 'Criterion id is required' });
       return null;

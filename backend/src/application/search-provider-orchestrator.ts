@@ -240,14 +240,21 @@ export class SearchProviderOrchestrator {
     }
 
     // Execute with per-provider timeout
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     const result = await Promise.race([
       provider.search(params),
-      this.delay(this.config.timeoutPerProviderMs).then(() => {
+      this.delay(this.config.timeoutPerProviderMs, (timer) => { timeoutTimer = timer; }).then(() => {
         throw new Error(
           `Provider ${provider.adapterName} timeout (${this.config.timeoutPerProviderMs}ms)`
         );
       }),
     ]);
+
+    // The delay() timer must not outlive the race it participates in. When a
+    // provider wins, its pending timeout would otherwise keep the process
+    // alive until it fires (Jest flags it as an open handle after the suite).
+    // Clearing it is a no-op when the timeout already fired.
+    clearTimeout(timeoutTimer);
 
     return {
       output: result,
@@ -347,12 +354,18 @@ export class SearchProviderOrchestrator {
   }
 
   /**
-   * Sleep helper for timeouts.
+   * Sleep helper for timeouts. The caller may register the allocated timer so
+   * it can be cleared once the race it participates in is decided — a timer
+   * must not outlive the decision it was created to enforce.
    */
-  private delay(ms: number): Promise<never> {
-    return new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
-    );
+  private delay(
+    ms: number,
+    register?: (timer: ReturnType<typeof setTimeout>) => void
+  ): Promise<never> {
+    return new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+      register?.(timer);
+    });
   }
 }
 

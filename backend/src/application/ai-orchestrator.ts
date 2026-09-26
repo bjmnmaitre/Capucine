@@ -27,6 +27,7 @@ import { CurrentSearchRequirements, PreferenceCriterion, AIInterpretationResult 
 import { GenericCriterion } from '../domain/criterion';
 import { ModelRouter, AITaskType } from './model-router';
 import { aiOutputValidator } from './ai-output-validator';
+import { detectSearchContext } from './request-interpreter';
 
 // ============================================================================
 // AI PROVIDER ABSTRACTION (low-level)
@@ -118,6 +119,9 @@ export interface InterpretedQuery {
 
   /** Alternative terms / synonyms */
   synonyms: string[];
+
+  /** The search context: 'consumer', 'restaurant_equipment', 'restaurant_supply', 'b2b' */
+  searchContext: string;
 
   /** Things the AI is NOT sure about */
   uncertainties: string[];
@@ -450,6 +454,24 @@ Return JSON array: [{"criterionId": "", "question": "", "priority": "high|medium
 
   // ── Provider abstraction ───────────────────────────────────────────────────
 
+  // Per-provider cooldown tracking for rate limits (429)
+  private readonly providerCooldowns = new Map<string, number>();
+
+  private isInCooldown(providerName: string): boolean {
+    const until = this.providerCooldowns.get(providerName);
+    return until !== undefined && Date.now() < until;
+  }
+
+  private setCooldown(providerName: string, durationMs: number): void {
+    const until = Date.now() + durationMs;
+    this.providerCooldowns.set(providerName, until);
+    if (providerName === 'groq') {
+      (global as any).__groqCooldownUntil = until;
+    } else if (providerName === 'openrouter') {
+      (global as any).__openrouterCooldownUntil = until;
+    }
+  }
+
   private async callWithFallback(request: {
     prompt: string;
     capability: AICapability;
@@ -460,6 +482,7 @@ Return JSON array: [{"criterionId": "", "question": "", "priority": "high|medium
 
     for (const provider of this.providers) {
       if (!provider.capabilities.includes(request.capability)) continue;
+      if (this.isInCooldown(provider.name)) continue;
 
       const model = provider.selectModel(request.tier);
       if (!model) continue;
@@ -476,13 +499,33 @@ Return JSON array: [{"criterionId": "", "question": "", "priority": "high|medium
           const response = await provider.complete(aiRequest);
           return response;
         } catch (err) {
-          errors.push(err as Error);
+          const error = err as Error;
+          errors.push(error);
+
+          // Check for rate limit (429) — put provider in cooldown and try next
+          if (error.message.includes('HTTP 429')) {
+            this.setCooldown(provider.name, 60_000);
+            console.log(`[AI-FALLBACK] ${provider.name} → rate limited (429), cooldown 60s`);
+            break; // Break retry loop, try next provider
+          }
+
           if (!this.config.fallbackEnabled) throw err;
         }
       }
     }
 
-    throw new Error(`All AI providers failed: ${errors.map(e => e.message).join(', ')}`);
+    // If all providers failed or in cooldown, try MockAI as last resort
+    console.log(`[AI-FALLBACK] → MockAI (all providers failed or in cooldown)`);
+    const mockProvider = this.providers.find(p => p.name.includes('MockAI')) || new MockAIProvider();
+    const model = mockProvider.selectModel(request.tier);
+    if (!model) throw new Error(`MockAI has no model for tier ${request.tier}`);
+    const aiRequest: AIRequest = {
+      prompt: request.prompt,
+      model,
+      maxTokens: request.maxTokens || 1000,
+      temperature: request.tier === 'fast' ? 0.1 : 0.3,
+    };
+    return mockProvider.complete(aiRequest);
   }
 
   // ── Prompt builders ────────────────────────────────────────────────────────
@@ -501,16 +544,17 @@ Extract structured search criteria. Return valid JSON matching this schema:
   "extractedCriteria": [
     {
       "name": "Budget",
-      "suggestedId": "price",
-      "extractedValue": 500,
+      "id": "price",
+      "parameters": { "value": 500 },
       "confidence": "certain|likely|possible|uncertain",
-      "suggestedLevel": "required|very_important|important|preference|unknown",
+      "level": "required|very_important|important|preference|unknown",
       "origin": "explicit|inferred",
       "evidence": "quote from user message"
     }
   ],
   "suggestedTerms": ["search term 1"],
   "synonyms": ["alternative term"],
+  "searchContext": "consumer|restaurant_equipment|restaurant_supply|b2b",
   "uncertainties": ["what is unclear"],
   "clarificationOpportunities": [
     {
@@ -525,7 +569,8 @@ Extract structured search criteria. Return valid JSON matching this schema:
 
 CRITICAL: Only extract criteria that are ACTUALLY mentioned or strongly implied.
 Do NOT invent criteria the user didn't express.
-Mark inferred criteria with origin: "inferred" and confidence: "possible" or lower.`;
+Mark inferred criteria with origin: "inferred" and confidence: "possible" or lower.
+Determine searchContext: use "restaurant_equipment" for professional kitchen/restaurant equipment (fours, planchas, vitrines, fours à pizza, pianos de cuisson, chambres froides, friteuses professionnelles, lave-vaisselle professionnels, bains-marie, salamandres, trancheuses, hachoirs professionnels, cellules de refroidissement, matériel restaurant, équipement CHR), "restaurant_supply" for consumables (emballages, couverts jetables), "b2b" for wholesale/grossiste queries, otherwise "consumer".`;
   }
 
   private buildExplanationPrompt(request: ExplanationRequest): string {
@@ -555,6 +600,7 @@ Do not invent any information not present in the data above.`;
         extractedCriteria: [],
         suggestedTerms: [],
         synonyms: [],
+        searchContext: 'consumer',
         uncertainties: ['AI response could not be parsed'],
         clarificationOpportunities: [],
         confidence: 0,
@@ -573,6 +619,7 @@ Do not invent any information not present in the data above.`;
         extractedCriteria: [],
         suggestedTerms: [],
         synonyms: [],
+        searchContext: 'consumer',
         uncertainties: validation.errors.map(e => `${e.field}: ${e.message}`),
         clarificationOpportunities: [],
         confidence: 0,
@@ -602,6 +649,7 @@ Do not invent any information not present in the data above.`;
       })),
       suggestedTerms: v.suggestedTerms,
       synonyms: Array.isArray(obj.synonyms) ? (obj.synonyms as string[]).filter(s => typeof s === 'string').slice(0, 20) : [],
+      searchContext: typeof obj.searchContext === 'string' ? obj.searchContext : 'consumer',
       uncertainties: Array.isArray(obj.uncertainties) ? (obj.uncertainties as string[]).filter(s => typeof s === 'string').slice(0, 10) : [],
       clarificationOpportunities: Array.isArray(obj.clarificationOpportunities) ? obj.clarificationOpportunities as ClarificationOpportunity[] : [],
       confidence: v.confidence,
@@ -634,6 +682,10 @@ Do not invent any information not present in the data above.`;
 }
 
 // ============================================================================
+// SEARCH CONTEXT DETECTION
+// ============================================================================
+
+// ============================================================================
 // MOCK AI PROVIDER (for testing)
 // ============================================================================
 // MOCKED: This provider is used exclusively in tests and offline pipeline demos.
@@ -647,16 +699,115 @@ export class MockAIProvider implements AIProvider {
     return `mock-${tier}`;
   }
 
-  async complete(request: AIRequest): Promise<AIResponse> {
+async complete(request: AIRequest): Promise<AIResponse> {
     // Return a realistic-looking mock response based on prompt keywords
     const prompt = request.prompt.toLowerCase();
 
-    if (prompt.includes('search criteria') || prompt.includes('extract')) {
+    // Extract the actual user query from the prompt (strip system prompt)
+    // The prompt format is: "User query (locale: fr, currency: EUR):\n\"ordinateur portable\""
+    const userQueryMatch = request.prompt.match(/User query\s*\([^)]*\):\s*\n?"([^"]+)"/i) || request.prompt.match(/user\s*\([^)]*\):\s*\n?"([^"]+)"/i) || request.prompt.match(/"([^"]+)"\s*$/);
+    const query = userQueryMatch ? userQueryMatch[1].toLowerCase() : request.prompt.toLowerCase();
+
+    // Helper to build criteria based on query content
+    const buildCriteria = (query: string) => {
+      const criteria = [];
+      
+      // Detect category
+      if (query.includes('ordinateur') || query.includes('laptop') || query.includes('portable') || query.includes('macbook') || query.includes('thinkpad')) {
+        criteria.push({ id: 'category', name: 'Catégorie', level: 'required', parameters: { preferredValues: ['ordinateur_portable'] } });
+      } else if (query.includes('casque') || query.includes('headphone') || query.includes('airpod') || query.includes('sony xm') || query.includes('sony wh')) {
+        criteria.push({ id: 'category', name: 'Catégorie', level: 'required', parameters: { preferredValues: ['casque'] } });
+      } else if (query.includes('four professionnel') || query.includes('four pizza') || query.includes('four à pizza') || query.includes('pizza oven') || query.includes('professional oven') || query.includes('commercial oven')) {
+        criteria.push({ id: 'category', name: 'Catégorie', level: 'required', parameters: { preferredValues: ['four_professionnel'] } });
+      }
+      
+      // Detect brands
+      const chrBrands = ['rational', 'hobart', 'unox', 'giorik', 'fagor', 'zanussi', 'electrolux professional', 'welbilt', 'manitowoc'];
+      const consumerBrands = ['sony', 'samsung', 'apple', 'lg', 'bose', 'jbl', 'dyson', 'philips', 'bosch', 'siemens'];
+      const allBrands = [...chrBrands, ...consumerBrands];
+      for (const brand of allBrands) {
+        const brandRegex = new RegExp(`\\b${brand.replace(/\s+/g, '\\s+')}\\b`, 'i');
+        if (brandRegex.test(query)) {
+          criteria.push({ id: 'brand', name: 'Marque', level: 'required', parameters: { preferredValues: [brand] } });
+          break;
+        }
+      }
+      
+      // Detect location (French cities)
+      const locationPatterns = [
+        'paris', 'lyon', 'marseille', 'toulouse', 'nice', 'nantes', 'strasbourg', 'montpellier',
+        'bordeaux', 'lille', 'rennes', 'reims', 'saint-étienne', 'toulon', 'grenoble', 'dijon',
+        'angers', 'villeurbanne', 'le mans', 'aix-en-provence', 'clermont-ferrand', 'brest',
+        'limoges', 'tours', 'amiens', 'perpignan', 'besançon', 'orléans', 'mulhouse', 'rouen',
+        'caen', 'nancy', 'saint-étienne', 'dunkerque', 'tourcoing', 'nanterre', 'avignon',
+        'la rochelle', 'la roche sur yon', 'la rochellle', 'la roche sur yon'
+      ];
+      for (const city of locationPatterns) {
+        const cityRegex = new RegExp(`\\b${city.replace(/\s+/g, '\\s+')}\\b`, 'i');
+        if (cityRegex.test(query)) {
+          criteria.push({ id: 'location', name: 'Localisation', level: 'required', parameters: { city: city } });
+          break;
+        }
+      }
+      
+      // Detect color (use word boundaries to avoid matching substrings like "bluetooth" → "bleu")
+      const colorPatterns = [
+        { canonical: 'noir', values: ['noir', 'black'], regex: /\b(noir|black)\b/i },
+        { canonical: 'blanc', values: ['blanc', 'white'], regex: /\b(blanc|white)\b/i },
+        { canonical: 'gris', values: ['gris', 'grey', 'gray'], regex: /\b(gris|grey|gray)\b/i },
+        { canonical: 'bleu', values: ['bleu', 'blue'], regex: /\b(bleu|blue)\b/i },
+        { canonical: 'rouge', values: ['rouge', 'red'], regex: /\b(rouge|red)\b/i },
+      ];
+      for (const cp of colorPatterns) {
+        if (cp.regex.test(query)) {
+          criteria.push({ id: 'color', name: 'Couleur', level: 'required', parameters: { preferredValues: cp.values, canonical: cp.canonical } });
+          break;
+        }
+      }
+      
+      // Detect condition
+      if (query.includes('neuf') || query.includes('brand new') || query.includes('new')) {
+        criteria.push({ id: 'condition', name: 'État du produit', level: 'required', parameters: { preferredValues: ['new'] } });
+      } else if (query.includes('occasion') || query.includes('used') || query.includes('reconditionné') || query.includes('refurbished')) {
+        criteria.push({ id: 'condition', name: 'État du produit', level: 'required', parameters: { preferredValues: ['used'] } });
+      }
+      
+      // Detect RAM - match patterns like "16 Go RAM", "16 Go de RAM", "16GB RAM", "RAM 16 Go", "16 Go" (when likely RAM)
+      const ramMatch = query.match(/(\d+)\s*(?:go|gb)\s*(?:de\s*)?ram\b/i) || query.match(/ram\s*(?:de\s*)?(\d+)\s*(?:go|gb)\b/i) || query.match(/(?:^|\s)(\d+)\s*(?:go|gb)(?=\s|$|moins|sous|max|€)/i);
+      if (ramMatch) {
+        criteria.push({ id: 'ram', name: 'Mémoire RAM', level: 'required', parameters: { minValue: parseInt(ramMatch[1]), unit: 'GB', unknownPolicy: 'pass' } });
+      }
+      
+      // Detect budget
+      const budgetMatch = query.match(/(?:moins de|sous|max|maximum|budget)\s*(\d+)/i) || query.match(/(\d+)\s*€/i);
+      if (budgetMatch) {
+        criteria.push({ id: 'budget', name: 'Budget', level: 'required', parameters: { maxBudget: parseInt(budgetMatch[1]), currency: 'EUR' } });
+      }
+      
+      // Add search context
+      const searchContext = detectSearchContext(query);
+      criteria.push({ id: 'searchContext', name: 'Contexte de recherche', level: 'required', parameters: { value: searchContext } });
+      
+      return criteria;
+    };
+
+    if (prompt.includes('analyse cette requête') || prompt.includes('search criteria') || prompt.includes('extract')) {
+      const queryMatch = prompt.match(/Analyse cette requ[êe]te d'achat : "([^"]+)"/);
+      const actualQuery = queryMatch ? queryMatch[1].toLowerCase() : query;
+      const criteria = buildCriteria(actualQuery);
+      
+      // Extract brands from criteria for suggestedTerms
+      const brandCriterion = criteria.find(c => c.id === 'brand');
+      const brandTerms = brandCriterion?.parameters?.preferredValues?.[0] ? [brandCriterion.parameters.preferredValues[0]] : [];
+      
       return {
         content: JSON.stringify({
           productDescription: 'Mock product interpretation',
-          extractedCriteria: [],
-          suggestedTerms: ['mock product'],
+          extractedCriteria: criteria,
+          suggestedTerms: [
+            ...brandTerms,
+            ...actualQuery.split(/\s+/).filter(t => t.length > 2 && !['pour', 'avec', 'sans', 'cherche', 'trouve', 'veux', 'un', 'une', 'le', 'la', 'les', 'de', 'du', 'au', 'aux'].includes(t))
+          ],
           synonyms: [],
           uncertainties: [],
           clarificationOpportunities: [],
@@ -675,9 +826,9 @@ export class MockAIProvider implements AIProvider {
       // 'mock product' terms that match nothing.
       const descMatch = request.prompt.match(/Generate search terms for: "([^"]+)"/);
       const rawDesc = descMatch ? descMatch[1] : '';
-      // Use the actual words from the query as primary search terms
+      // Use the actual words from the query as primary search terms, filter out locale
       const primaryTerms = rawDesc.length > 0
-        ? rawDesc.split(/\s+/).filter(t => t.length > 2)
+        ? rawDesc.split(/\s+/).filter(t => t.length > 2 && t !== 'in' && t !== 'locale' && t !== 'fr' && t !== 'en')
         : ['mock product'];
 
       return {

@@ -17,6 +17,10 @@ import { OllamaProvider, detectAvailableProviders } from '../../src/application/
 const ENV_KEYS = [
   'OLLAMA_MODEL', 'OLLAMA_HOST', 'OLLAMA_MODEL_REASONING', 'OLLAMA_TIMEOUT_MS',
   'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+  // detectAvailableProviders() is what is under test here: the global
+  // USE_MOCK_AI switch (tests/setup-mock-ai.ts) would short-circuit it, and
+  // free-tier keys from the shell would shift the expected order.
+  'USE_MOCK_AI', 'GROQ_API_KEY', 'OPENROUTER_API_KEY',
 ];
 
 describe('OllamaProvider', () => {

@@ -82,6 +82,9 @@ export interface InterpretedRequest {
   // Product category
   category?: string;
 
+  // Detected location (city) from the query
+  location?: string;
+
   // State of interpretation
   ambiguities: QueryAmbiguity[];
   confidence: number; // 0-1, how confident is interpretation?
@@ -123,6 +126,12 @@ export interface InterpretedRequest {
    *   "aspirateur robot Roborock S8" → ['roborock', 's8', 'aspirateur', 'robot']
    */
   suggestedSearchTerms?: string[];
+
+  /**
+   * Search context: 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b'
+   * Determines which search strategies and sources are prioritized.
+   */
+  searchContext?: string;
 
   // Metadata
   createdAt: Date;

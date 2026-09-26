@@ -28,6 +28,7 @@
 
 import { UserProfile, PreferenceCriterion, UsageContext } from '../domain/types';
 import { merchantExclusionsFromProfile, rankingPreferenceFromProfile } from '../domain/profile';
+import { ProfileOverride } from '../domain/profile';
 import { mergeUsageContexts } from '../domain/usage-context-mapping';
 import { ClarificationItem } from './clarification-engine';
 import type { SearchEngineResult } from './capucine-engine';
@@ -636,5 +637,27 @@ export class ConversationManager {
     setTimeout(() => {
       this.sessions.delete(id);
     }, this.TTL_MS).unref();
+  }
+
+  /**
+   * Add a temporary override to a session.
+   * The override will be applied to subsequent searches in this session.
+   */
+  addOverride(sessionId: string, override: ProfileOverride): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    // Check if an override for this criterion already exists in the session
+    // For now, we'll just track it - the actual application happens in the engine
+    // via the session's overrides field if we add one
+    // For now, we store it in a way that can be retrieved
+    if (!('overrides' in session)) {
+      (session as any).overrides = [];
+    }
+    (session as any).overrides.push(override);
+    session.updatedAt = new Date();
+    session.expiresAt = new Date(Date.now() + this.TTL_MS);
+    this.sessions.set(sessionId, session);
+    return true;
   }
 }

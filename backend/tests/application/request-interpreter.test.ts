@@ -1040,6 +1040,41 @@ describe('extractDeliverabilityIntent', () => {
   });
 });
 
+describe('extractOriginIntent — "fabriqué en France / made in Europe"', () => {
+  const { extractOriginIntent } = require('../../src/application/request-interpreter');
+
+  it('"fabriqué en France" → soft (important) eu_origin criterion, France preferred, unknownPolicy pass — favour, never filter', () => {
+    const c = extractOriginIntent('je cherche un pull fabriqué en France');
+    expect(c?.id).toBe('eu_origin');
+    expect(c?.level).toBe('important');
+    expect(c?.parameters?.field).toBe('country_of_origin');
+    expect(c?.parameters?.preferredValues).toEqual(['FR', 'France']);
+    expect(c?.parameters?.unknownPolicy).toBe('pass');
+  });
+
+  it('"made in France" (English) is recognised too', () => {
+    expect(extractOriginIntent('an espresso machine made in France')?.id).toBe('eu_origin');
+  });
+
+  it('"uniquement fabriqué en France" → required : an EXPLICIT hard phrasing is the only case that filters', () => {
+    const c = extractOriginIntent('uniquement des chaussures fabriquées en France');
+    expect(c?.level).toBe('required');
+  });
+
+  it('"fabriqué en Europe" / "made in Europe" → Europe preferred (controlled EU list)', () => {
+    const c = extractOriginIntent('un produit fabriqué en Europe');
+    expect(c?.name).toBe('Fabriqué en Europe');
+    expect(Array.isArray(c?.parameters?.preferredValues)).toBe(true);
+    expect(c?.parameters?.preferredValues).toContain('FR');
+    expect(c?.parameters?.preferredValues?.length).toBeGreaterThan(10);
+  });
+
+  it('an unrelated request never fabricates an origin criterion', () => {
+    expect(extractOriginIntent('casque Sony bluetooth')).toBeNull();
+    expect(extractOriginIntent('uniquement du neuf')).toBeNull();
+  });
+});
+
 // ============================================================================
 // RETRY / RELAUNCH INTENT — SEARCH_AGAIN / SEARCH_ELSEWHERE / FIND_BETTER
 // (megaprompt PARTIE 3/4)

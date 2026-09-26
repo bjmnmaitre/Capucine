@@ -43,3 +43,7 @@ export * from './application';
 export * from './domain/criterion';
 export * from './domain/profile';
 export * from './domain/admissibility';
+export * from './domain/index';
+
+// Infrastructure (HTTP adapters, external fetchers)
+export * from './infrastructure';

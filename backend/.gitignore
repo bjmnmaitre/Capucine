@@ -17,3 +17,4 @@ coverage/
 
 # Persisted user profiles (local storage, never committed)
 .data/
+!tests/setup-profile-store.js

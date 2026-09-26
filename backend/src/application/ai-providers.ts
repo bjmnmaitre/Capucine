@@ -22,19 +22,20 @@
 
 import { AIProvider, AIRequest, AIResponse, AICapability, ModelTier, AIOrchestrator, MockAIProvider } from './ai-orchestrator';
 
+export { AIOrchestrator } from './ai-orchestrator';
+
 // ============================================================================
 // ANTHROPIC PROVIDER
 // ============================================================================
 
 /**
- * Anthropic Claude provider.
+ * Anthropic Claude provider — supports both official Anthropic API and
+ * compatible proxies (e.g., Free Claude Code) via ANTHROPIC_BASE_URL.
  *
- * Env var required: ANTHROPIC_API_KEY
- * Models used:
- *   fast      → claude-haiku-4-5-20251001
- *   balanced  → claude-sonnet-4-6  (or latest claude-sonnet)
- *   reasoning → claude-opus-5      (or latest claude-opus)
- *   vision    → claude-sonnet-4-6  (multimodal)
+ * Env vars:
+ *   ANTHROPIC_API_KEY          — required
+ *   ANTHROPIC_BASE_URL         — optional, defaults to official Anthropic API
+ *   MODEL                      — optional, model ID to use (overrides tier selection)
  *
  * NOT_EXECUTABLE without ANTHROPIC_API_KEY.
  */
@@ -53,6 +54,11 @@ export class AnthropicProvider implements AIProvider {
   }
 
   selectModel(tier: ModelTier): string {
+    // If MODEL env var is set, use it for all tiers (proxy mode)
+    const modelEnv = process.env['MODEL'];
+    if (modelEnv) return modelEnv;
+    
+    // Default Anthropic model names
     switch (tier) {
       case 'fast':      return 'claude-haiku-4-5-20251001';
       case 'balanced':  return 'claude-sonnet-4-6';
@@ -70,11 +76,12 @@ export class AnthropicProvider implements AIProvider {
       );
     }
 
+    const baseUrl = process.env['ANTHROPIC_BASE_URL'] ?? 'https://api.anthropic.com/v1/messages';
     const start = Date.now();
 
     const body = {
       model: request.model,
-      max_tokens: request.maxTokens ?? 1024,
+      max_tokens: request.maxTokens ?? 4096,
       temperature: request.temperature ?? 0.3,
       messages: [
         {
@@ -87,11 +94,11 @@ export class AnthropicProvider implements AIProvider {
         : {}),
     };
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(baseUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,           // key consumed here, never stored
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
@@ -120,6 +127,101 @@ export class AnthropicProvider implements AIProvider {
 }
 
 // ── Anthropic response shape (partial) ────────────────────────────────────────
+
+interface AnthropicResponse {
+  content?: Array<{ type: string; text: string }>;
+  usage?: { input_tokens: number; output_tokens: number };
+  error?: { type: string; message: string };
+}
+
+// ============================================================================
+// FREECC PROXY PROVIDER (Anthropic-compatible format for Free Claude Code proxy)
+// ============================================================================
+
+/**
+ * FreeCCProxyProvider — uses Free Claude Code proxy (Anthropic-compatible format).
+ *
+ * Env vars:
+ *   - ANTHROPIC_API_KEY (used as proxy key, default: 'freecc')
+ *   - ANTHROPIC_BASE_URL (proxy URL, default: 'http://localhost:8082')
+ *   - MODEL (model ID, default: 'claude-3-5-sonnet-20241022')
+ *
+ * The proxy at localhost:8082 expects Anthropic format at `/v1/messages`,
+ * NOT OpenAI format.
+ */
+export class FreeCCProxyProvider implements AIProvider {
+  readonly name = 'freecc-proxy';
+  readonly capabilities: AICapability[] = [
+    'text_generation',
+    'text_classification',
+    'structured_output',
+  ];
+
+  get isConfigured(): boolean {
+    return true; // Proxy is always available locally
+  }
+
+  selectModel(tier: ModelTier): string {
+    // Use the MODEL env var for all tiers, or fallback to default
+    const modelEnv = process.env['MODEL'];
+    if (modelEnv) return modelEnv;
+    return 'claude-3-5-sonnet-20241022';
+  }
+
+  async complete(request: AIRequest): Promise<AIResponse> {
+    const apiKey = process.env['ANTHROPIC_API_KEY'] ?? 'freecc';
+    const baseUrl = process.env['ANTHROPIC_BASE_URL'] ?? 'http://localhost:8082';
+    const start = Date.now();
+
+    const body = {
+      model: request.model,
+      max_tokens: request.maxTokens ?? 4096,
+      temperature: request.temperature ?? 0.3,
+      messages: [
+        {
+          role: 'user',
+          content: request.prompt,
+        },
+      ],
+      ...(request.systemPrompt
+        ? { system: request.systemPrompt }
+        : {}),
+    };
+
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '(no body)');
+      throw new Error(
+        `FreeCCProxyProvider: HTTP ${response.status} — ${errorText.slice(0, 200)}`
+      );
+    }
+
+    const data = await response.json() as AnthropicResponse;
+    const content = data.content?.[0]?.text ?? '';
+    const durationMs = Date.now() - start;
+
+    return {
+      content,
+      providerName: this.name,
+      model: request.model,
+      tokensUsed: (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0),
+      durationMs,
+    };
+  }
+}
+
+// ── Anthropic response shape (partial) ────────────────────────────────────────
+
 
 interface AnthropicResponse {
   content?: Array<{ type: string; text: string }>;
@@ -185,7 +287,7 @@ export class OpenAIProvider implements AIProvider {
 
     const body = {
       model: request.model,
-      max_tokens: request.maxTokens ?? 1024,
+      max_tokens: request.maxTokens ?? 4096,
       temperature: request.temperature ?? 0.3,
       messages,
     };
@@ -209,6 +311,8 @@ export class OpenAIProvider implements AIProvider {
 
     const data = await response.json() as OpenAIResponse;
     const content = data.choices?.[0]?.message?.content ?? '';
+    // Strip <think>…</think> from reasoning models (e.g. nemotron)
+    const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/gs, '').trim();
     const durationMs = Date.now() - start;
 
     return {
@@ -230,6 +334,153 @@ interface OpenAIResponse {
   }>;
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   error?: { message: string; type: string };
+}
+
+// ============================================================================
+// OPENROUTER PROVIDER
+// ============================================================================
+
+/**
+ * OpenRouter provider — unified API for multiple LLM providers.
+ * 
+ * Env vars:
+ *   - OPENROUTER_API_KEY  — required
+ *   - OPENROUTER_BASE_URL — optional, defaults to https://openrouter.ai/api/v1
+ *   - MODEL                 — optional, model ID to use (overrides tier selection)
+ * 
+ * NOT_EXECUTABLE without OPENROUTER_API_KEY.
+ */
+export class OpenRouterProvider implements AIProvider {
+  readonly name = 'openrouter';
+  readonly capabilities: AICapability[] = [
+    'text_generation',
+    'text_classification',
+    'structured_output',
+    'image_analysis',
+  ];
+
+  /** Check if this provider is executable (key present in env). */
+  get isConfigured(): boolean {
+    return Boolean(process.env['OPENROUTER_API_KEY']);
+  }
+
+  selectModel(tier: ModelTier): string {
+    // If MODEL env var is set, use it for all tiers (proxy mode)
+    const modelEnv = process.env['MODEL'];
+    if (modelEnv) return modelEnv;
+    
+    // Default OpenRouter model (free tier)
+    return 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  }
+
+  async complete(request: AIRequest): Promise<AIResponse> {
+    const apiKey = process.env['OPENROUTER_API_KEY'];
+    if (!apiKey) {
+      throw new Error(
+        'OpenRouterProvider is NOT_EXECUTABLE: OPENROUTER_API_KEY environment variable is not set.'
+      );
+    }
+
+    const baseUrl = process.env['OPENROUTER_BASE_URL'] ?? 'https://openrouter.ai/api/v1';
+    const start = Date.now();
+
+    const messages: Array<{ role: string; content: string }> = [];
+    if (request.systemPrompt) {
+      messages.push({ role: 'system', content: request.systemPrompt });
+    }
+    messages.push({ role: 'user', content: request.prompt });
+
+    const body = {
+      model: request.model,
+      max_tokens: request.maxTokens ?? 4096,
+      temperature: request.temperature ?? 0.3,
+      messages,
+    };
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://capucine.app',
+        'X-Title': 'Capucine Shopping Assistant',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '(no body)');
+      throw new Error(
+        `OpenRouterProvider: HTTP ${response.status} — ${errorText.slice(0, 200)}`
+      );
+    }
+
+    const data = await response.json() as OpenRouterResponse;
+    const content = data.choices?.[0]?.message?.content ?? '';
+    const durationMs = Date.now() - start;
+
+    return {
+      content,
+      providerName: this.name,
+      model: request.model,
+      tokensUsed: data.usage?.total_tokens ?? undefined,
+      durationMs,
+    };
+  }
+}
+
+
+// ============================================================================
+// GroqProvider — free tier, ultra-fast (qwen/qwen3.8-27b)
+// ============================================================================
+export class GroqProvider implements AIProvider {
+  readonly name = 'groq';
+  readonly capabilities: AICapability[] = ['text_generation', 'text_classification', 'structured_output'];
+  get isConfigured(): boolean { return !!process.env['GROQ_API_KEY']; }
+  getModel(): string { return 'qwen/qwen3.8-27b'; }
+  selectModel(tier: ModelTier): string { return 'qwen/qwen3.8-27b'; }
+  async complete(request: AIRequest): Promise<AIResponse> {
+    const apiKey = process.env['GROQ_API_KEY'];
+    if (!apiKey) throw new Error('GROQ_API_KEY not set');
+    const messages: Array<{ role: string; content: string }> = [];
+    if (request.systemPrompt) messages.push({ role: 'system', content: request.systemPrompt });
+    messages.push({ role: 'user', content: request.prompt });
+    const start = Date.now();
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: request.model ?? this.getModel(),
+        max_tokens: request.maxTokens ?? 1024,
+        temperature: request.temperature ?? 0.1,
+        messages,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      const e = await response.text().catch(() => '(no body)');
+      throw new Error(`GroqProvider: HTTP ${response.status} — ${e.slice(0, 200)}`);
+    }
+    const data = await response.json() as any;
+    const content = data.choices?.[0]?.message?.content ?? '';
+    return {
+      content,
+      providerName: this.name,
+      model: this.getModel(),
+      tokensUsed: data.usage?.total_tokens,
+      durationMs: Date.now() - start,
+    };
+  }
+}
+
+interface OpenRouterResponse {
+  choices?: Array<{
+    message?: { content?: string };
+    finish_reason?: string;
+  }>;
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  error?: { message: string; code: number };
 }
 
 // ============================================================================
@@ -386,13 +637,21 @@ export function detectAvailableProviders(): {
   configured: string[];
   blocked: string[];
 } {
+  // Force MockAI for deterministic tests (e.g. CI/CD) — avoids rate limits on real providers
+  if (process.env.USE_MOCK_AI === 'true') {
+    return { providers: [new MockAIProvider()], status: 'mock', configured: ['mock'], blocked: [] };
+  }
+
   const providers: AIProvider[] = [];
   const configured: string[] = [];
   const blocked: string[] = [];
 
-  // Ollama first: local model, no API key, nothing leaves the machine, no
-  // per-call cost. When it is set but down, its complete() throws and the
-  // orchestrator falls back to the next provider below.
+  // Priority order (PROVISIONAL, 2026-09-26):
+  //   1. Ollama — opt-in only (OLLAMA_MODEL), local, nothing leaves the machine,
+  //      no per-call cost. When set but down, complete() throws and the
+  //      orchestrator falls back to the next provider.
+  //   2. Groq, 3. OpenRouter — free tiers.
+  //   4. Anthropic, 5. OpenAI — paid, last before MockAI.
   const ollama = new OllamaProvider();
   if (ollama.isConfigured) {
     providers.push(ollama);
@@ -400,6 +659,26 @@ export function detectAvailableProviders(): {
   } else {
     blocked.push('ollama (OLLAMA_MODEL not set)');
   }
+
+  const groq = new GroqProvider();
+  if (groq.isConfigured) {
+    providers.push(groq);
+    configured.push('groq');
+  } else {
+    blocked.push('groq (GROQ_API_KEY not set)');
+  }
+
+  const openrouter = new OpenRouterProvider();
+  if (openrouter.isConfigured) {
+    providers.push(openrouter);
+    configured.push('openrouter');
+  } else {
+    blocked.push('openrouter (OPENROUTER_API_KEY not set)');
+  }
+
+  // FreeCC proxy (FreeCCProxyProvider) stays disabled: its key has no valid
+  // upstream credentials (401 from NIM/OpenRouter).
+  blocked.push('freecc-proxy (API key not valid for upstream providers)');
 
   const anthropic = new AnthropicProvider();
   if (anthropic.isConfigured) {

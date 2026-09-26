@@ -12,16 +12,13 @@ import {
   merchantNameOf, rankingPreferenceOf,
 } from '../profile';
 import { ApiError, PREFERENCE_LEVELS, PreferenceLevel, ProfileCriterion } from '../types';
-import { theme } from '../theme';
+import { theme, cardStyle, inputStyle, primaryButtonStyle, secondaryButtonStyle, textStyle } from '../theme';
 
 interface Props {
   userId: string;
-  onBack: () => void;
+  onOpenOnboarding?: () => void;
 }
 
-/** Formulations que le backend relie couramment à un critère produit
- *  (livraison / neuf-occasion / budget). Un point de départ fiable ; le champ
- *  libre reste possible pour le reste. */
 const PREFERENCE_SUGGESTIONS = ['Livraison en France', 'Produit neuf', 'Budget serré'];
 
 const LEVEL_LABEL: Record<PreferenceLevel, string> = {
@@ -35,15 +32,12 @@ const LEVEL_LABEL: Record<PreferenceLevel, string> = {
 };
 
 /**
- * Permanent preferences.
- *
- * These outlive any single search. What the user types in the search box
- * describes only the CURRENT search and may contradict a preference stored
- * here — the backend arbitrates that (a current requirement can take
- * precedence). This screen therefore never touches search state, and the
- * search screen never writes here.
+ * Permanent preferences — organized in clear sections.
+ * These outlive any single search. A current query can contradict a preference
+ * — the backend arbitrates (a current requirement can take precedence).
+ * This screen never touches search state, and the search screen never writes here.
  */
-export function ProfileScreen({ userId, onBack }: Props) {
+export function ProfileScreen({ userId, onOpenOnboarding }: Props) {
   const [criteria, setCriteria] = useState<ProfileCriterion[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -53,9 +47,6 @@ export function ProfileScreen({ userId, onBack }: Props) {
   const [level, setLevel] = useState<PreferenceLevel>('important');
   const [merchant, setMerchant] = useState('');
 
-  // Merchant exclusions and the ranking preference are distinct, first-class
-  // concepts with a real, immediate effect; the free-text preferences are
-  // best-effort attribute hints.
   const merchantExclusions = criteria.filter(isMerchantExclusion);
   const cheapestFirst = rankingPreferenceOf(criteria) === 'PRICE_LOWEST';
   const availabilityFirst = availabilityPreferenceOf(criteria);
@@ -174,222 +165,268 @@ export function ProfileScreen({ userId, onBack }: Props) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-      <Pressable
-        onPress={onBack}
-        accessibilityRole="button"
-        accessibilityLabel="Revenir à la recherche"
-        style={({ pressed }) => [styles.back, pressed && styles.pressed]}
-      >
-        <Text style={styles.backText}>‹ Recherche</Text>
-      </Pressable>
-
-      <Text style={styles.title} accessibilityRole="header">Vos préférences</Text>
+      {/* Header */}
+      <Text style={styles.title} accessibilityRole="header">Mon Capucine</Text>
       <Text style={styles.subtitle}>
         Ces préférences permanentes sont jointes à chaque recherche. Une demande ponctuelle
         qui les contredit reste prioritaire pour cette recherche-là.
       </Text>
 
-      {/* ── Marchands à éviter — effet CONCRET et immédiat sur les résultats ── */}
-      <Text style={styles.section} accessibilityRole="header">Marchands à éviter</Text>
-      <Text style={styles.sectionNote}>
-        Leurs offres sont masquées dès la prochaine recherche. Capucine vous indique
-        combien d’offres ont été retirées.
-      </Text>
-      <View style={styles.inlineRow}>
-        <TextInput
-          style={[styles.input, styles.inlineInput]}
-          value={merchant}
-          onChangeText={setMerchant}
-          placeholder="ex. Amazon"
-          placeholderTextColor={theme.color.textMuted}
-          editable={!busy}
-          onSubmitEditing={onAddMerchant}
-          returnKeyType="done"
-          accessibilityLabel="Nom du marchand à éviter"
-        />
+      {onOpenOnboarding ? (
         <Pressable
-          onPress={onAddMerchant}
-          disabled={busy || merchant.trim().length === 0}
+          onPress={onOpenOnboarding}
+          disabled={busy}
           accessibilityRole="button"
-          accessibilityLabel="Ajouter ce marchand à éviter"
-          accessibilityState={{ disabled: busy || merchant.trim().length === 0, busy }}
-          style={({ pressed }) => [
-            styles.inlineBtn,
-            (pressed || busy || merchant.trim().length === 0) && styles.buttonMuted,
-          ]}
+          accessibilityLabel="Revoir les questions de création de profil"
+          style={({ pressed }) => [styles.onboardingLink, pressed && styles.pressed]}
+          hitSlop={8}
         >
-          <Text style={styles.buttonText}>Éviter</Text>
+          <Text style={styles.onboardingLinkText}>Revoir les questions de profil</Text>
         </Pressable>
-      </View>
-      {merchantExclusions.length === 0 ? (
-        <Text style={styles.empty}>Aucun marchand exclu.</Text>
-      ) : (
-        merchantExclusions.map((c) => {
-          const mName = merchantNameOf(c) ?? c.name;
-          return (
-            <View key={c.id} style={styles.row}>
-              <Text style={styles.rowName}>{mName}</Text>
-              <Pressable
-                onPress={() => onRemoveMerchant(mName)}
-                disabled={busy}
-                accessibilityRole="button"
-                accessibilityLabel={`Ne plus éviter ${mName}`}
-                style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
-              >
-                <Text style={styles.removeText}>Retirer</Text>
-              </Pressable>
-            </View>
-          );
-        })
-      )}
-
-      {/* ── Ordre par défaut — effet immédiat et vérifiable ── */}
-      <Text style={styles.section} accessibilityRole="header">Ordre des résultats</Text>
-      <Pressable
-        onPress={onToggleCheapestFirst}
-        disabled={busy}
-        accessibilityRole="switch"
-        accessibilityLabel="Toujours trier par coût total le plus bas"
-        accessibilityState={{ checked: cheapestFirst, disabled: busy }}
-        style={({ pressed }) => [styles.toggleRow, pressed && styles.pressed]}
-      >
-        <View style={styles.rowText}>
-          <Text style={styles.rowName}>Toujours trier par coût total le plus bas</Text>
-          <Text style={styles.rowLevel}>
-            {cheapestFirst
-              ? 'Activé — appliqué dès la prochaine recherche'
-              : 'Désactivé — Capucine classe par correspondance'}
-          </Text>
-        </View>
-        <Text style={[styles.toggleState, cheapestFirst && styles.toggleStateOn]}>
-          {cheapestFirst ? 'ON' : 'OFF'}
-        </Text>
-      </Pressable>
-
-      {/* ── Disponibilité immédiate — axe distinct de l'ordre ci-dessus ── */}
-      <Text style={styles.section} accessibilityRole="header">Disponibilité</Text>
-      <Pressable
-        onPress={onToggleAvailabilityFirst}
-        disabled={busy}
-        accessibilityRole="switch"
-        accessibilityLabel="Privilégier la disponibilité immédiate"
-        accessibilityHint="À correspondance proche, une offre en stock confirmé passe devant. Ne pénalise jamais une disponibilité inconnue."
-        accessibilityState={{ checked: availabilityFirst, disabled: busy }}
-        style={({ pressed }) => [styles.toggleRow, pressed && styles.pressed]}
-      >
-        <View style={styles.rowText}>
-          <Text style={styles.rowName}>Privilégier la disponibilité immédiate</Text>
-          <Text style={styles.rowLevel}>
-            {availabilityFirst
-              ? 'Activé — une offre en stock confirmé est favorisée à correspondance proche'
-              : 'Désactivé — la disponibilité ne départage que les ex æquo'}
-          </Text>
-        </View>
-        <Text style={[styles.toggleState, availabilityFirst && styles.toggleStateOn]}>
-          {availabilityFirst ? 'ON' : 'OFF'}
-        </Text>
-      </Pressable>
-
-      <Text style={styles.section} accessibilityRole="header">Ajouter une préférence</Text>
-      <Text style={styles.sectionNote}>
-        Capucine les prend en compte lorsqu’elle sait relier votre formulation à un critère
-        du produit — sinon elle les conserve sans pouvoir les appliquer.
-      </Text>
-      <View style={styles.suggestions}>
-        {PREFERENCE_SUGGESTIONS.map((s) => (
-          <Pressable
-            key={s}
-            onPress={() => setName(s)}
-            disabled={busy}
-            accessibilityRole="button"
-            accessibilityLabel={`Pré-remplir : ${s}`}
-            style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}
-          >
-            <Text style={styles.suggestionText}>{s}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <TextInput
-        style={styles.input}
-        value={name}
-        onChangeText={setName}
-        placeholder="ex. Livraison en France"
-        placeholderTextColor={theme.color.textMuted}
-        editable={!busy}
-        accessibilityLabel="Nom de la préférence"
-      />
-
-      <Text style={styles.label}>Importance</Text>
-      <View style={styles.levels}>
-        {PREFERENCE_LEVELS.map((l) => (
-          <Pressable
-            key={l}
-            onPress={() => setLevel(l)}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: level === l }}
-            accessibilityLabel={`Importance : ${LEVEL_LABEL[l]}`}
-            style={({ pressed }) => [
-              styles.level, level === l && styles.levelActive, pressed && styles.pressed,
-            ]}
-          >
-            <Text style={[styles.levelText, level === l && styles.levelTextActive]}>
-              {LEVEL_LABEL[l]}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <Pressable
-        onPress={onAdd}
-        disabled={busy || name.trim().length === 0}
-        accessibilityRole="button"
-        accessibilityLabel="Enregistrer la préférence"
-        accessibilityState={{ disabled: busy || name.trim().length === 0, busy }}
-        style={({ pressed }) => [
-          styles.button,
-          (pressed || busy || name.trim().length === 0) && styles.buttonMuted,
-        ]}
-      >
-        {busy ? <ActivityIndicator color={theme.color.accentText} />
-              : <Text style={styles.buttonText}>Enregistrer</Text>}
-      </Pressable>
-
-      {error ? (
-        <View style={styles.errorBox} accessibilityLiveRegion="assertive">
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
       ) : null}
 
-      <Text style={styles.section} accessibilityRole="header">
-        Préférences enregistrées {loading ? '' : `(${otherCriteria.length})`}
-      </Text>
-
-      {loading ? (
-        <ActivityIndicator accessibilityLabel="Chargement du profil" />
-      ) : otherCriteria.length === 0 ? (
-        <Text style={styles.empty}>
-          Aucune préférence enregistrée. Capucine s’appuie alors uniquement sur ce que
-          vous demandez à chaque recherche.
+      {/* ── MERCHANTS À ÉVITER — concrete, immediate effect ── */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">Marchands à éviter</Text>
+        <Text style={styles.sectionNote}>
+          Leurs offres sont masquées dès la prochaine recherche. Capucine vous indique
+          combien d'offres ont été retirées.
         </Text>
-      ) : (
-        otherCriteria.map((c) => (
-          <View key={c.id} style={styles.row}>
-            <View style={styles.rowText}>
-              <Text style={styles.rowName}>{c.name}</Text>
-              <Text style={styles.rowLevel}>{LEVEL_LABEL[c.level] ?? c.level}</Text>
+
+        <View style={styles.inlineRow}>
+          <TextInput
+            style={[styles.input, styles.inlineInput]}
+            value={merchant}
+            onChangeText={setMerchant}
+            placeholder="ex. Amazon"
+            placeholderTextColor={theme.color.textMuted}
+            editable={!busy}
+            onSubmitEditing={onAddMerchant}
+            returnKeyType="done"
+            accessibilityLabel="Nom du marchand à éviter"
+          />
+          <Pressable
+            onPress={onAddMerchant}
+            disabled={busy || merchant.trim().length === 0}
+            accessibilityRole="button"
+            accessibilityLabel="Ajouter ce marchand à éviter"
+            accessibilityState={{ disabled: busy || merchant.trim().length === 0, busy }}
+            style={({ pressed }) => [
+              styles.inlineBtn,
+              (pressed || busy || merchant.trim().length === 0) && styles.buttonMuted,
+            ]}
+            hitSlop={8}
+          >
+            <Text style={styles.buttonText}>Éviter</Text>
+          </Pressable>
+        </View>
+
+        {merchantExclusions.length === 0 ? (
+          <Text style={styles.empty}>Aucun marchand exclu.</Text>
+        ) : (
+          merchantExclusions.map((c) => {
+            const mName = merchantNameOf(c) ?? c.name;
+            return (
+              <View key={c.id} style={styles.exclusionRow}>
+                <Text style={styles.exclusionName}>{mName}</Text>
+                <Pressable
+                  onPress={() => onRemoveMerchant(mName)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Ne plus éviter ${mName}`}
+                  style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
+                  hitSlop={8}
+                >
+                  <Text style={styles.removeText}>Retirer</Text>
+                </Pressable>
+              </View>
+            );
+          })
+        )}
+      </View>
+
+      {/* ── ORDRE PAR DÉFAUT — immediate, verifiable effect ── */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">Ordre des résultats</Text>
+        <Pressable
+          onPress={onToggleCheapestFirst}
+          disabled={busy}
+          accessibilityRole="switch"
+          accessibilityLabel="Toujours trier par coût total le plus bas"
+          accessibilityState={{ checked: cheapestFirst, disabled: busy }}
+          style={({ pressed }) => [styles.toggleCard, pressed && styles.pressed]}
+          hitSlop={8}
+        >
+          <View style={styles.toggleContent}>
+            <View style={styles.toggleTextCol}>
+              <Text style={styles.toggleName}>Toujours trier par coût total le plus bas</Text>
+              <Text style={styles.toggleDesc}>
+                {cheapestFirst
+                  ? 'Activé — appliqué dès la prochaine recherche'
+                  : 'Désactivé — Capucine classe par correspondance'}
+              </Text>
             </View>
+            <View style={[styles.toggleIndicator, cheapestFirst && styles.toggleIndicatorOn]} />
+          </View>
+        </Pressable>
+      </View>
+
+      {/* ── DISPONIBILITÉ — distinct axis from ordering above ── */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">Disponibilité</Text>
+        <Pressable
+          onPress={onToggleAvailabilityFirst}
+          disabled={busy}
+          accessibilityRole="switch"
+          accessibilityLabel="Privilégier la disponibilité immédiate"
+          accessibilityHint="À correspondance proche, une offre en stock confirmé passe devant. Ne pénalise jamais une disponibilité inconnue."
+          accessibilityState={{ checked: availabilityFirst, disabled: busy }}
+          style={({ pressed }) => [styles.toggleCard, pressed && styles.pressed]}
+          hitSlop={8}
+        >
+          <View style={styles.toggleContent}>
+            <View style={styles.toggleTextCol}>
+              <Text style={styles.toggleName}>Privilégier la disponibilité immédiate</Text>
+              <Text style={styles.toggleDesc}>
+                {availabilityFirst
+                  ? 'Activé — une offre en stock confirmé est favorisée à correspondance proche'
+                  : 'Désactivé — la disponibilité ne départage que les ex æquo'}
+              </Text>
+            </View>
+            <View style={[styles.toggleIndicator, availabilityFirst && styles.toggleIndicatorOn]} />
+          </View>
+        </Pressable>
+      </View>
+
+      {/* ── PRÉFÉRENCES LIBRES ── */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">Ajouter une préférence</Text>
+        <Text style={styles.sectionNote}>
+          Capucine les prend en compte lorsqu'elle sait relier votre formulation à un critère
+          du produit — sinon elle les conserve sans pouvoir les appliquer.
+        </Text>
+
+        <View style={styles.suggestions}>
+          {PREFERENCE_SUGGESTIONS.map((s) => (
             <Pressable
-              onPress={() => onRemove(c.id)}
+              key={s}
+              onPress={() => setName(s)}
               disabled={busy}
               accessibilityRole="button"
-              accessibilityLabel={`Supprimer la préférence ${c.name}`}
-              style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
+              accessibilityLabel={`Pré-remplir : ${s}`}
+              style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}
+              hitSlop={8}
             >
-              <Text style={styles.removeText}>Supprimer</Text>
+              <Text style={styles.suggestionText}>{s}</Text>
             </Pressable>
+          ))}
+        </View>
+
+        <TextInput
+          style={styles.input}
+          value={name}
+          onChangeText={setName}
+          placeholder="ex. Livraison en France"
+          placeholderTextColor={theme.color.textMuted}
+          editable={!busy}
+          accessibilityLabel="Nom de la préférence"
+        />
+
+        <Text style={styles.label}>Importance</Text>
+        <View style={styles.levels}>
+          {PREFERENCE_LEVELS.map((l) => (
+            <Pressable
+              key={l}
+              onPress={() => setLevel(l)}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: level === l }}
+              accessibilityLabel={`Importance : ${LEVEL_LABEL[l]}`}
+              style={({ pressed }) => [
+                styles.levelBtn, level === l && styles.levelBtnActive, pressed && styles.pressed,
+              ]}
+              hitSlop={6}
+            >
+              <Text style={[styles.levelBtnText, level === l && styles.levelBtnTextActive]}>
+                {LEVEL_LABEL[l]}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <Pressable
+          onPress={onAdd}
+          disabled={busy || name.trim().length === 0}
+          accessibilityRole="button"
+          accessibilityLabel="Enregistrer la préférence"
+          accessibilityState={{ disabled: busy || name.trim().length === 0, busy }}
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            (pressed || busy || name.trim().length === 0) && styles.buttonMuted,
+          ]}
+          hitSlop={8}
+        >
+          {busy ? <ActivityIndicator color={theme.color.accentText} /> : <Text style={styles.buttonText}>Enregistrer</Text>}
+        </Pressable>
+
+        {error ? (
+          <View style={styles.errorBox} accessibilityLiveRegion="assertive">
+            <Text style={styles.errorText}>{error}</Text>
           </View>
-        ))
-      )}
+        ) : null}
+      </View>
+
+      {/* ── PRÉFÉRENCES ENREGISTRÉES ── */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">
+          Préférences enregistrées {loading ? '' : `(${otherCriteria.length})`}
+        </Text>
+
+        {loading ? (
+          <View style={styles.loadingCenter}>
+            <ActivityIndicator accessibilityLabel="Chargement du profil" />
+          </View>
+        ) : otherCriteria.length === 0 ? (
+          <Text style={styles.empty}>
+            Aucune préférence enregistrée. Capucine s'appuie alors uniquement sur ce que
+            vous demandez à chaque recherche.
+          </Text>
+        ) : (
+          otherCriteria.map((c) => (
+            <View key={c.id} style={styles.prefRow}>
+              <View style={styles.prefInfo}>
+                <Text style={styles.prefName}>{c.name}</Text>
+                <Text style={styles.prefLevel}>{LEVEL_LABEL[c.level] ?? c.level}</Text>
+              </View>
+              <Pressable
+                onPress={() => onRemove(c.id)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel={`Supprimer la préférence ${c.name}`}
+                style={({ pressed }) => [styles.removeBtn, pressed && styles.pressed]}
+                hitSlop={8}
+              >
+                <Text style={styles.removeText}>Supprimer</Text>
+              </Pressable>
+            </View>
+          ))
+        )}
+      </View>
+
+      {/* ── COMPTES MARCHANDS — placeholder architecture ── */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">Comptes marchands</Text>
+        <Text style={styles.sectionNote}>
+          L'association de comptes marchands (OAuth, sessions officielles) n'est pas encore
+          disponible. Cette section est préparée pour une future intégration respectueuse
+          de la vie privée — Capucine ne stockera jamais vos mots de passe.
+        </Text>
+        <View style={styles.comingSoon}>
+          <Text style={styles.comingSoonText}>Bientôt disponible</Text>
+        </View>
+      </View>
+
+      {/* Version / debug — subtle */}
+      <Text style={styles.version}>Capucine • version 0.1.0</Text>
     </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -397,88 +434,130 @@ export function ProfileScreen({ userId, onBack }: Props) {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  container: { padding: theme.space(2), paddingBottom: theme.space(6) },
-  back: { minHeight: theme.minTouch, justifyContent: 'center' },
-  backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
-  pressed: { opacity: 0.75 },
-  title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
+  container: { padding: theme.space(2), paddingBottom: theme.space(8) },
+  title: { fontSize: theme.font.title + 2, fontWeight: '700', color: theme.color.text },
   subtitle: {
     fontSize: theme.font.small, color: theme.color.textMuted,
-    marginTop: theme.space(1), lineHeight: 21,
+    marginTop: theme.space(1), marginBottom: theme.space(4), lineHeight: 21,
   },
-  section: {
+  section: { marginBottom: theme.space(4) },
+  sectionTitle: {
     fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text,
-    marginTop: theme.space(3), marginBottom: theme.space(0.5),
+    marginBottom: theme.space(1),
   },
   sectionNote: {
     fontSize: theme.font.small, color: theme.color.textMuted,
-    marginBottom: theme.space(1), lineHeight: 19,
+    marginBottom: theme.space(2), lineHeight: 19,
   },
   inlineRow: { flexDirection: 'row', gap: theme.space(1), alignItems: 'stretch' },
   inlineInput: { flex: 1, minHeight: theme.minTouch },
   inlineBtn: {
-    minHeight: theme.minTouch, borderRadius: theme.radius, backgroundColor: theme.color.accent,
+    minHeight: theme.minTouch, borderRadius: theme.radii.md, backgroundColor: theme.color.accent,
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: theme.space(2),
+    ...theme.shadow.subtle,
   },
-  toggleRow: {
-    flexDirection: 'row', alignItems: 'center', gap: theme.space(1), minHeight: theme.minTouch + 6,
-    backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
-    borderColor: theme.color.border, padding: theme.space(1.5),
+  toggleCard: {
+    backgroundColor: theme.color.surface,
+    borderRadius: theme.radii.md,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+    padding: theme.space(2),
+    ...theme.shadow.subtle,
   },
-  toggleState: {
-    fontSize: theme.font.small, fontWeight: '700', color: theme.color.textMuted,
-    borderWidth: 1, borderColor: theme.color.border, borderRadius: 6,
-    paddingHorizontal: theme.space(1), paddingVertical: 2, overflow: 'hidden',
+  toggleContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  toggleTextCol: { flex: 1 },
+  toggleName: { fontSize: theme.font.body, fontWeight: '600', color: theme.color.text },
+  toggleDesc: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, lineHeight: 18 },
+  toggleIndicator: {
+    width: 48, height: 28, borderRadius: 14,
+    backgroundColor: theme.color.border, alignItems: 'flex-start', justifyContent: 'center',
+    paddingHorizontal: 2,
   },
-  toggleStateOn: {
-    color: theme.color.accentText, backgroundColor: theme.color.accent, borderColor: theme.color.accent,
-  },
+  toggleIndicatorOn: { backgroundColor: theme.color.accent, alignItems: 'flex-end' },
+
   label: {
     fontSize: theme.font.small, fontWeight: '600',
-    color: theme.color.text, marginTop: theme.space(2), marginBottom: theme.space(1),
+    color: theme.color.text, marginTop: theme.space(3), marginBottom: theme.space(1),
   },
   input: {
     minHeight: theme.minTouch + 6, borderWidth: 1, borderColor: theme.color.border,
-    borderRadius: theme.radius, paddingHorizontal: theme.space(2),
+    borderRadius: theme.radii.md, paddingHorizontal: theme.space(2),
     fontSize: theme.font.body, color: theme.color.text, backgroundColor: theme.color.surface,
   },
-  suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginBottom: theme.space(1) },
+  suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginBottom: theme.space(1.5) },
   suggestion: {
     minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
-    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
+    borderRadius: theme.radii.pill, borderWidth: 1, borderColor: theme.color.border,
     backgroundColor: theme.color.background,
   },
   suggestionText: { fontSize: theme.font.small, color: theme.color.text },
-  levels: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1) },
-  level: {
+  levels: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginBottom: theme.space(1.5) },
+  levelBtn: {
     minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
-    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
+    borderRadius: theme.radii.pill, borderWidth: 1, borderColor: theme.color.border,
     backgroundColor: theme.color.surface,
   },
-  levelActive: { borderColor: theme.color.accent, backgroundColor: '#EAF0FE' },
-  levelText: { fontSize: theme.font.small, color: theme.color.text },
-  levelTextActive: { color: theme.color.accent, fontWeight: '700' },
-  button: {
-    minHeight: theme.minTouch + 6, borderRadius: theme.radius,
+  levelBtnActive: { borderColor: theme.color.accent, backgroundColor: theme.color.accentSoft },
+  levelBtnText: { fontSize: theme.font.small, color: theme.color.text },
+  levelBtnTextActive: { color: theme.color.accent, fontWeight: '700' },
+
+  primaryBtn: {
+    minHeight: theme.minTouch + 6, borderRadius: theme.radii.md,
     backgroundColor: theme.color.accent, alignItems: 'center',
     justifyContent: 'center', marginTop: theme.space(2),
+    ...theme.shadow.card,
   },
-  buttonMuted: { opacity: 0.6 },
+  buttonMuted: { opacity: theme.opacity.disabled },
   buttonText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
+
   errorBox: {
-    marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
+    marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radii.md,
+    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: theme.color.dangerSoft,
   },
   errorText: { color: theme.color.danger, fontSize: theme.font.body, fontWeight: '600' },
-  empty: { fontSize: theme.font.body, color: theme.color.textMuted, lineHeight: 22 },
-  row: {
-    flexDirection: 'row', alignItems: 'center', gap: theme.space(1),
-    backgroundColor: theme.color.surface, borderRadius: theme.radius, borderWidth: 1,
+
+  empty: { fontSize: theme.font.body, color: theme.color.textMuted, lineHeight: 22, textAlign: 'center', paddingVertical: theme.space(2) },
+
+  exclusionRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: theme.color.surface, borderRadius: theme.radii.md, borderWidth: 1,
     borderColor: theme.color.border, padding: theme.space(1.5), marginBottom: theme.space(1),
+    ...theme.shadow.subtle,
   },
-  rowText: { flex: 1 },
-  rowName: { fontSize: theme.font.body, color: theme.color.text, fontWeight: '600' },
-  rowLevel: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
-  remove: { minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1) },
+  exclusionName: { fontSize: theme.font.body, color: theme.color.text, fontWeight: '600' },
+  removeBtn: { minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1) },
   removeText: { color: theme.color.danger, fontSize: theme.font.small, fontWeight: '600' },
+
+  prefRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: theme.color.surface, borderRadius: theme.radii.md, borderWidth: 1,
+    borderColor: theme.color.border, padding: theme.space(1.5), marginBottom: theme.space(1),
+    ...theme.shadow.subtle,
+  },
+  prefInfo: { flex: 1 },
+  prefName: { fontSize: theme.font.body, color: theme.color.text, fontWeight: '600' },
+  prefLevel: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
+
+  loadingCenter: { paddingVertical: theme.space(3), alignItems: 'center' },
+
+  onboardingLink: {
+    minHeight: theme.minTouch, justifyContent: 'center', alignItems: 'center',
+    borderRadius: theme.radii.md, borderWidth: 1, borderColor: theme.color.accent,
+    backgroundColor: theme.color.accentSoft, marginBottom: theme.space(2),
+    ...theme.shadow.subtle,
+  },
+  onboardingLinkText: { color: theme.color.accentInk, fontSize: theme.font.body, fontWeight: '700' },
+
+  comingSoon: {
+    padding: theme.space(3), borderRadius: theme.radii.md,
+    backgroundColor: theme.color.surfaceAlt, borderWidth: 1, borderColor: theme.color.border,
+    alignItems: 'center',
+  },
+  comingSoonText: { color: theme.color.textMuted, fontSize: theme.font.body },
+
+  version: {
+    marginTop: theme.space(6), fontSize: theme.font.micro,
+    color: theme.color.textFaint, textAlign: 'center',
+  },
+  pressed: { opacity: theme.opacity.pressed },
 });

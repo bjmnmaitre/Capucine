@@ -903,3 +903,90 @@ describe('Priority Engine — unified admissibility decision (consumes Admissibi
     expect(rankedIds).toEqual(admissibleIds); // exact same verdict, both engines agree
   });
 });
+
+// ---- 16. CHR query: generalist merchants get malus, specialists get boost ----
+describe('CHR searchContext: malus for generalist merchants, boost for specialists', () => {
+  it('CHR query: Amazon receives malus -15, specialist CHR keeps +10 boost', () => {
+    const chrSpecialist = createMerchant('chr-specialist', 'CHR Equipement Pro', 'FR');
+    const generalist = createMerchant('amazon', 'Amazon', 'FR');
+    const generalist2 = createMerchant('cdiscount', 'Cdiscount', 'FR');
+    const generalist3 = createMerchant('fnac', 'Fnac', 'FR');
+    const generalist4 = createMerchant('darty', 'Darty', 'FR');
+    const generalist5 = createMerchant('boulanger', 'Boulanger', 'FR');
+    const generalist6 = createMerchant('rakuten', 'Rakuten', 'FR');
+    const generalist7 = createMerchant('ebay', 'eBay', 'FR');
+    const generalist8 = createMerchant('leboncoin', 'LeBonCoin', 'FR');
+
+    const chrOffer = createOffer('chr-offer', createMerchant('chr-specialist', 'CHR Equipement Pro', 'FR'), 2000);
+    chrOffer.executionUrl = 'https://chr-equipement-pro.fr/four-professionnel';
+
+    const amazonOffer = createOffer('amazon-offer', createMerchant('amazon', 'Amazon', 'FR'), 2000);
+    amazonOffer.executionUrl = 'https://www.amazon.fr/four-professionnel';
+
+    const cdiscountOffer = createOffer('cdiscount-offer', createMerchant('cdiscount', 'Cdiscount', 'FR'), 2000);
+    cdiscountOffer.executionUrl = 'https://www.cdiscount.com/four-professionnel';
+
+    const fnacOffer = createOffer('fnac-offer', createMerchant('fnac', 'Fnac', 'FR'), 2000);
+    fnacOffer.executionUrl = 'https://www.fnac.com/four-professionnel';
+
+    const dartyOffer = createOffer('darty-offer', createMerchant('darty', 'Darty', 'FR'), 2000);
+    dartyOffer.executionUrl = 'https://www.darty.com/four-professionnel';
+
+    const boulangerOffer = createOffer('boulanger-offer', createMerchant('boulanger', 'Boulanger', 'FR'), 2000);
+    boulangerOffer.executionUrl = 'https://www.boulanger.com/four-professionnel';
+
+    const rakutenOffer = createOffer('rakuten-offer', createMerchant('rakuten', 'Rakuten', 'FR'), 2000);
+    rakutenOffer.executionUrl = 'https://www.rakuten.com/four-professionnel';
+
+    const ebayOffer = createOffer('ebay-offer', createMerchant('ebay', 'eBay', 'FR'), 2000);
+    ebayOffer.executionUrl = 'https://www.ebay.fr/four-professionnel';
+
+    const leboncoinOffer = createOffer('leboncoin-offer', createMerchant('leboncoin', 'LeBonCoin', 'FR'), 2000);
+    leboncoinOffer.executionUrl = 'https://www.leboncoin.fr/four-professionnel';
+
+    const criteria = [
+      createCriterion('category', 'Catégorie', 'required', { preferredValues: ['four_professionnel'], unknownPolicy: 'pass' }),
+    ];
+
+    // Test with CHR search context
+    const request: RankingRequest = {
+      offers: [chrOffer, amazonOffer, cdiscountOffer, fnacOffer, dartyOffer, boulangerOffer, rakutenOffer, ebayOffer, leboncoinOffer],
+      effectiveCriteria: criteria,
+      requestId: 'test-chr-malus',
+      timestamp: new Date(),
+      searchContext: 'restaurant_equipment',
+    };
+
+    const { rankedOffers } = rankOffers(request);
+
+    // Find the offers in the ranking
+    const chrOfferRank = rankedOffers.find(r => r.offer.id === 'chr-offer');
+    const amazonRank = rankedOffers.find(r => r.offer.id === 'amazon-offer');
+    const cdiscountRank = rankedOffers.find(r => r.offer.id === 'cdiscount-offer');
+    const fnacRank = rankedOffers.find(r => r.offer.id === 'fnac-offer');
+    const dartyRank = rankedOffers.find(r => r.offer.id === 'darty-offer');
+    const boulangerRank = rankedOffers.find(r => r.offer.id === 'boulanger-offer');
+    const rakutenRank = rankedOffers.find(r => r.offer.id === 'rakuten-offer');
+    const ebayRank = rankedOffers.find(r => r.offer.id === 'ebay-offer');
+    const leboncoinRank = rankedOffers.find(r => r.offer.id === 'leboncoin-offer');
+
+    // All offers should be ranked (none rejected since no constraints violated)
+    expect(rankedOffers.length).toBe(9);
+
+    // CHR specialist should rank higher than generalist merchants
+    // The CHR specialist has +10 boost, generalists have -15 malus
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(amazonRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(cdiscountRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(fnacRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(dartyRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(boulangerRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(rakutenRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(ebayRank!.overallScore);
+    expect(chrOfferRank!.overallScore).toBeGreaterThan(leboncoinRank!.overallScore);
+
+    // Score should never go below 0
+    rankedOffers.forEach(r => {
+      expect(r.overallScore).toBeGreaterThanOrEqual(0);
+    });
+  });
+});

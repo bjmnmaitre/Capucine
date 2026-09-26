@@ -196,6 +196,15 @@ export interface SearchResponse {
   } | null;
   interpretation?: { productTerms?: string[]; [k: string]: unknown } | null;
   effectiveCriteria?: unknown;
+  searchPlan?: {
+    rarityLevel: string;
+    estimatedAvailability: string;
+    escalationLevel: number;
+    attemptedLevels: number[];
+    primaryTerms: string[];
+    alternativeTerms?: string[];
+    searchContext?: string;
+  };
   /**
    * Pourquoi aucune offre n'est retenue.
    *
@@ -249,6 +258,46 @@ export interface ProfileCriterion {
   parameters?: Record<string, unknown> | null;
 }
 
+/** Adresse d'expédition stockée au profil pour PRÉ-REMPLIR la commande — elle
+ *  n'est jamais utilisée comme critère de recherche. Chaque champ est
+ *  optionnel : « décliner » l'adresse reste un profil valide. */
+export interface ShippingProfile {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  street?: string;
+  city?: string;
+  postalCode?: string;
+  country?: string;
+  preferredDeliveryMode?: string;
+}
+
+/** Un compte marchand existant que l'utilisateur a consenti à partager avec
+ *  Capucine pour pré-remplir les étapes de commande. La présence d'une entrée
+ *  DANS CETTE LISTE est le consentement — rien n'est stocké sinon. */
+export interface MerchantAccount {
+  merchantName: string;
+  note?: string | null;
+  grantedAt: string;
+}
+
+/** Réponses du wizard de création de profil (POST /profile/:userId/onboarding).
+ *  Chaque champ est nullable : décliner chaque question est un profil valide. */
+export interface OnboardingAnswers {
+  preferredLanguage?: string;
+  /** Budget P RÉFÉRÉ — favorise au classement, n'exclut jamais (invariant
+   *  cardinal : « Capucine ne limite jamais ses recherches »). */
+  budget?: { maxAmount: number; currency: string } | null;
+  condition?: 'new' | 'used' | 'any' | null;
+  freeShipping?: 'very_important' | 'important' | 'preference' | 'off';
+  origin?: 'france' | 'europe' | 'any' | null;
+  /** Marchands à éviter définitivement — appliqué au moment de la présentation
+   *  (offres masquées + signalées), jamais en filtre silencieux. */
+  excludedMerchants?: string[];
+  shipping?: ShippingProfile | null;
+  merchantAccounts?: Array<{ merchantName: string }> | null;
+}
+
 export type PreferenceLevel =
   | 'forbidden' | 'required' | 'very_important'
   | 'important' | 'preference' | 'low' | 'none';
@@ -261,6 +310,12 @@ export interface ProfileResponse {
   userId: string;
   criteria: ProfileCriterion[];
   updatedAt: string;
+  /** `true` une fois le wizard de création de profil terminé. */
+  onboardingCompleted?: boolean;
+  /** Données de pré-remplissage de commande (null tant que non fournies). */
+  shipping?: ShippingProfile | null;
+  /** Comptes marchands consentis (vide si non fournis). */
+  merchantAccounts?: MerchantAccount[];
 }
 
 /** Anything that went wrong between the tap and a parsed response. */
@@ -273,3 +328,61 @@ export class ApiError extends Error {
     this.detail = detail;
   }
 }
+
+/**
+ * Types de déclaration quotidienne
+ */
+export type DailyLogType = 'respected' | 'expense_avoided' | 'expense_made' | 'no_declaration';
+
+/**
+ * Une entrée de journal quotidien pour un challenge
+ */
+export interface DailyLog {
+  id: string;
+  challengeId: string;
+  date: string; // ISO date string YYYY-MM-DD
+  type: DailyLogType;
+  amountCents?: number; // en centimes, optionnel pour dépense évitée/faite
+  comment?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+}
+
+/**
+ * Un challenge utilisateur
+ */
+export interface Challenge {
+  id: string;
+  userId: string;
+  name: string;
+  description?: string;
+  startDate: string; // ISO date YYYY-MM-DD
+  endDate: string; // ISO date YYYY-MM-DD
+  goal?: string; // ex: "Ne pas dépenser plus de 50€/semaine en non-essentiel"
+  isActive: boolean;
+  isCompleted: boolean;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+}
+
+/**
+ * Résumé de progression d'un challenge
+ */
+export interface ChallengeProgress {
+  challengeId: string;
+  totalDays: number;
+  daysElapsed: number;
+  daysRemaining: number;
+  daysRespected: number;
+  daysExpenseAvoided: number;
+  daysExpenseMade: number;
+  daysNoDeclaration: number;
+  currentStreak: number;
+  bestStreak: number;
+  totalExpensesAvoidedCents: number;
+  completionRate: number; // 0-100
+  isCompleted: boolean;
+  isActive: boolean;
+}
+
+

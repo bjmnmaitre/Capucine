@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { BackHandler, StatusBar, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, BackHandler, StatusBar, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { checkHealth, HealthStatus, refine, search } from './src/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { checkHealth, HealthStatus, loadProfile, refine, search } from './src/api';
 import { recordSearch } from './src/history';
 import { recordActivity } from './src/activity';
 import { ApiError, RankedOffer, SearchResponse } from './src/types';
@@ -12,6 +13,7 @@ import { ProfileScreen } from './src/screens/ProfileScreen';
 import { CompareScreen } from './src/screens/CompareScreen';
 import { SearchesScreen } from './src/screens/SearchesScreen';
 import { ActivityScreen } from './src/screens/ActivityScreen';
+import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { TabBar, TabKey } from './src/components/TabBar';
 import { theme } from './src/theme';
 
@@ -32,12 +34,24 @@ type HomeStack =
 
 const USER_ID = 'expo-user';
 
+/** Flag local « l'utilisateur a déjà décidé du profil » pour ne pas re-poser la
+ *  création de profil à chaque lancement. Distinct de l'état serveur
+ *  (onboardingCompleted) : posé aussi quand l'utilisateur « passe ». */
+const ONBOARDING_DONE_KEY = `capucine.onboarding.${USER_ID}.decided`;
+
+/** 'checking' — profil en cours de lecture au premier lancement.
+ *  'onboarding' — wizard de création de profil affiché plein écran.
+ *  'ready' — l'app tourne normalement. */
+type EntryGate = 'checking' | 'onboarding' | 'ready';
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>('home');
   const [homeStack, setHomeStack] = useState<HomeStack>({ name: 'home' });
   // A query pre-filled into the Home input (from a 0-result "reformuler", or a
   // re-run from the Recherches tab). Consumed on the next Home render.
   const [prefillQuery, setPrefillQuery] = useState<string | undefined>(undefined);
+
+  const [entryGate, setEntryGate] = useState<EntryGate>('checking');
 
   const [query, setQuery] = useState('');
   const [response, setResponse] = useState<SearchResponse | null>(null);
@@ -74,6 +88,50 @@ export default function App() {
   }, []);
 
   useEffect(() => { void recheckHealth(); }, [recheckHealth]);
+
+  // Premier lancement : décider si le wizard de création de profil s'affiche.
+  // 1. Si l'utilisateur a déjà décidé (flag local), on ne re-ouvre jamais la
+  //    question. 2. Sinon, on interroge le serveur : profil déjà complété ?
+  // 3. Backend injoignable → on laisse tourner l'app plutôt que de bloquer
+  //    tout le premier lancement derrière un service éteint.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let decided = false;
+      try {
+        decided = (await AsyncStorage.getItem(ONBOARDING_DONE_KEY)) === '1';
+      } catch { decided = false; }
+      if (cancelled) return;
+      if (decided) { setEntryGate('ready'); return; }
+
+      try {
+        const profile = await loadProfile(USER_ID);
+        if (cancelled) return;
+        if (profile.onboardingCompleted === true) {
+          try { await AsyncStorage.setItem(ONBOARDING_DONE_KEY, '1'); } catch { /* non fatal */ }
+          setEntryGate('ready');
+          return;
+        }
+        setEntryGate('onboarding');
+      } catch {
+        // Aucune certitude (réseau) : ne pas re-questionner au prochain lancement
+        // de toute façon serait trompeur — on laisse entrer.
+        if (cancelled) return;
+        try { await AsyncStorage.setItem(ONBOARDING_DONE_KEY, '1'); } catch { /* non fatal */ }
+        setEntryGate('ready');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  function onOnboardingComplete() {
+    void AsyncStorage.setItem(ONBOARDING_DONE_KEY, '1').catch(() => undefined);
+    setEntryGate('ready');
+  }
+  function onOnboardingSkip() {
+    void AsyncStorage.setItem(ONBOARDING_DONE_KEY, '1').catch(() => undefined);
+    setEntryGate('ready');
+  }
 
   // Android hardware back: walk the current context backwards rather than
   // leaving the app. Non-home tab → home. Journey → one step back.
@@ -193,6 +251,17 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="dark-content" backgroundColor={theme.color.background} />
+      {entryGate === 'checking' ? (
+        <View style={styles.centered}>
+          <ActivityIndicator accessibilityLabel="Préparation de Capucine" />
+        </View>
+      ) : entryGate === 'onboarding' ? (
+        <OnboardingScreen
+          userId={USER_ID}
+          onComplete={onOnboardingComplete}
+          onSkip={onOnboardingSkip}
+        />
+      ) : (
       <View style={styles.root}>
         <View style={styles.body}>
           {tab === 'home' && homeStack.name === 'home' ? (
@@ -256,11 +325,15 @@ export default function App() {
           ) : tab === 'activity' ? (
             <ActivityScreen />
           ) : (
-            <ProfileScreen userId={USER_ID} />
+            <ProfileScreen
+              userId={USER_ID}
+              onOpenOnboarding={() => setEntryGate('onboarding')}
+            />
           )}
         </View>
         <TabBar active={tab} onChange={onTabPress} compareCount={compareOffers?.length ?? 0} />
       </View>
+      )}
     </SafeAreaProvider>
   );
 }
@@ -268,4 +341,5 @@ export default function App() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.color.background },
   body: { flex: 1 },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.color.background },
 });

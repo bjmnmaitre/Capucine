@@ -94,6 +94,20 @@ export interface DiscoveryCriteria {
    * same phase-3 mechanism — no second international-search system.
    */
   internationalLanguages?: SupportedLanguage[];
+
+  /**
+   * Optional city for geo-targeted search (e.g., "Toulouse").
+   * When set, web search adapters (Serper, Brave) will add location
+   * parameters to their API requests for localized results.
+   */
+  location?: string;
+
+  /**
+   * Search context: 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b'
+   * Determines which search strategies and sources are prioritized.
+   * Passed from SearchPlan to influence RealWebDiscoveryStrategy and InMemoryDiscoveryStrategy.
+   */
+  searchContext?: string;
 }
 
 // ============================================================================

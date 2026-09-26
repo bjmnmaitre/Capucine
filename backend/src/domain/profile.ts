@@ -88,6 +88,7 @@ export interface EffectiveCriteriaSet {
   // Conflicts between profile and request (user chose explicitly)
   resolvedConflicts: ConflictResolution[];
   usageContext?: UsageContext;
+  searchContext?: string;
 
   // Metadata
   resolvedAt: Date;
@@ -360,6 +361,7 @@ export class ProfileEngine {
       appliedOverrides,
       resolvedConflicts,
       usageContext: request.usageContext,
+      searchContext: request.searchContext,
       resolvedAt: new Date(),
       searchId,
     };

@@ -1,43 +1,30 @@
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { RankedOffer } from '../types';
 import {
   bestRankedIndex, compareTakeaway, costLabel, lowestKnownCostIndex,
   priceLabel, shippingValueLabel, stockConfirmedIndexes, stockLabel,
 } from '../presentation';
-import { displayText, theme } from '../theme';
-import { Screen, ScreenTitle, EmptyState } from '../components/Screen';
-import { Button } from '../components/Button';
+import { displayText, formatMoney, theme, cardStyle, textStyle } from '../theme';
 
 interface Props {
   offers: RankedOffer[];
   onBack: () => void;
-  /** Clears the selection so the Comparer tab returns to its empty state. */
   onClear: () => void;
 }
 
 /**
- * Comparaison côte à côte de 2 ou 3 offres déjà classées.
- *
- * N'introduit AUCUN calcul : chaque ligne réutilise les mêmes règles de
- * présentation que les autres écrans (coût inconnu reste inconnu, livraison
- * inconnue n'est jamais « offerte »). La seule chose calculée ici est
- * cosmétique : quelle cellule d'une ligne est la plus avantageuse, pour la
- * mettre en gras — et uniquement quand la comparaison est licite (même
- * devise, valeurs connues).
+ * Comparaison côte à côte de 2 ou 3 offres — basé sur des CARTES, pas un tableau.
+ * Chaque offre est une carte verticale, facile à lire sur mobile.
+ * L'oeil compare naturellement : coût total, prix, livraison, dispo.
  */
 
-type RowSpec = {
+type CompareRow = {
   label: string;
   value: (o: RankedOffer) => string;
-  /** index(es) de la ou des offres les plus avantageuses sur cette ligne —
-   *  PLUSIEURS en cas d'égalité réelle, [] si on ne peut pas trancher
-   *  honnêtement. Jamais un gagnant unique choisi arbitrairement. */
   best?: (offers: RankedOffer[]) => number[];
 };
 
-/** Toutes les offres dont `readiness.ready` est vrai — égalité assumée
- *  plutôt qu'un seul gagnant arbitraire quand plusieurs le sont. */
 function readyIndexes(offers: RankedOffer[]): number[] {
   return offers.reduce<number[]>((acc, o, i) => {
     if (o.readiness?.ready) acc.push(i);
@@ -45,9 +32,6 @@ function readyIndexes(offers: RankedOffer[]): number[] {
   }, []);
 }
 
-/** Fiabilité de la source (0–1) telle que rapportée par le backend —
- *  jamais estimée ici. La ou les offres à la fiabilité connue la plus
- *  haute gagnent la ligne ; une fiabilité inconnue ne gagne jamais. */
 function mostReliableIndexes(offers: RankedOffer[]): number[] {
   const known = offers
     .map((o, i) => ({ i, r: o.provenance?.reliability }))
@@ -57,40 +41,34 @@ function mostReliableIndexes(offers: RankedOffer[]): number[] {
   return known.filter((k) => Math.abs(k.r - max) < 0.005).map((k) => k.i);
 }
 
-/**
- * Certitude du coût, en un mot — les libellés complets de CERTAINTY_LABEL
- * (« Coût partiellement connu ») débordaient et se coupaient en milieu de mot
- * dans une colonne de comparaison à 3 offres sur petit écran. La ligne est
- * juste sous « Coût total », le contexte est donc conservé.
- */
 const CERTAINTY_SHORT: Record<string, string> = {
   known: 'connu',
   partially_known: 'partiel',
   unknown: 'inconnu',
 };
 
-const ROWS: RowSpec[] = [
+const ROWS: CompareRow[] = [
   { label: 'Rang', value: (o) => `#${o.rank}` },
   { label: 'Prix produit', value: priceLabel },
   { label: 'Livraison', value: (o) => shippingValueLabel(o) },
   { label: 'Coût total', value: costLabel, best: lowestKnownCostIndex },
   {
-    label: 'Certitude du coût',
+    label: "Certitude du coût",
     value: (o) => CERTAINTY_SHORT[o.cost?.certainty] ?? 'inconnu',
   },
   {
-    label: 'Disponibilité (stock)',
+    label: "Disponibilité (stock)",
     value: stockLabel,
     best: stockConfirmedIndexes,
   },
   {
-    label: 'Prêt à l’achat',
+    label: "Prêt à l'achat",
     value: (o) =>
       o.readiness?.ready ? 'oui' : o.readiness ? 'à confirmer' : 'inconnu',
     best: readyIndexes,
   },
   {
-    label: 'Fiabilité de la source',
+    label: "Fiabilité source",
     value: (o) =>
       typeof o.provenance?.reliability === 'number'
         ? `${Math.round(o.provenance.reliability * 100)} %`
@@ -98,11 +76,11 @@ const ROWS: RowSpec[] = [
     best: mostReliableIndexes,
   },
   {
-    label: 'Correspondance',
+    label: "Correspondance",
     value: (o) => displayText(o.matchQuality, 'non évaluée'),
   },
   {
-    label: 'Lien d’achat',
+    label: "Lien d'achat",
     value: (o) => (o.offerUrl ? 'disponible' : 'non vérifié'),
   },
 ];
@@ -113,44 +91,54 @@ export function CompareScreen({ offers, onBack, onClear }: Props) {
 
   if (offers.length < 2) {
     return (
-      <Screen>
-        <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-          <ScreenTitle eyebrow="Décider" title="Comparer" />
-          <EmptyState
-            title="Aucune comparaison en cours"
-            body="Depuis vos résultats, touchez « Comparer », choisissez 2 ou 3 offres, et elles s’afficheront ici côte à côte."
-            action={
-              offers.length === 1
-                ? <Button label="Voir les résultats" onPress={onBack} />
-                : undefined
-            }
-          />
-        </ScrollView>
-      </Screen>
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        <View style={styles.emptyState} accessible accessibilityLiveRegion="polite">
+          <Text style={styles.emptyTitle}>Aucune comparaison en cours</Text>
+          <Text style={styles.emptyBody}>
+            Depuis vos résultats, touchez « Comparer », choisissez 2 ou 3 offres,
+            et elles s'afficheront ici côte à côte.
+          </Text>
+          {offers.length === 1 && (
+            <Pressable
+              onPress={onBack}
+              accessibilityRole="button"
+              accessibilityLabel="Revoir les résultats"
+              style={({ pressed }) => [styles.actionButton, pressed && styles.pressed]}
+              hitSlop={8}
+            >
+              <Text style={styles.actionButtonText}>Voir les résultats</Text>
+            </Pressable>
+          )}
+        </View>
+      </ScrollView>
     );
   }
 
   return (
-    <Screen>
     <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-      <ScreenTitle
-        eyebrow="Décider"
-        title={`Comparer ${offers.length} offres`}
-        trailing={
-          <Pressable onPress={onClear} accessibilityRole="button" accessibilityLabel="Vider la comparaison" hitSlop={8}>
-            <Text style={styles.clear}>Vider</Text>
-          </Pressable>
-        }
-      />
-      <Pressable
-        onPress={onBack}
-        accessibilityRole="button"
-        accessibilityLabel="Revenir aux résultats"
-        style={({ pressed }) => [styles.back, pressed && styles.backPressed]}
-      >
-        <Text style={styles.backText}>‹ Retour aux résultats</Text>
-      </Pressable>
+      {/* Header */}
+      <View style={styles.header}>
+        <Pressable
+          onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel="Revenir aux résultats"
+          style={({ pressed }) => [styles.back, pressed && styles.pressed]}
+          hitSlop={8}
+        >
+          <Text style={styles.backText}>‹ Retour aux résultats</Text>
+        </Pressable>
+        <Text style={styles.title}>Comparer {offers.length} offres</Text>
+        <Pressable
+          onPress={onClear}
+          accessibilityRole="button"
+          accessibilityLabel="Vider la comparaison"
+          hitSlop={8}
+        >
+          <Text style={styles.clear}>Vider</Text>
+        </Pressable>
+      </View>
 
+      {/* Takeaway — honest, not promotional */}
       {takeaway ? (
         <View style={styles.takeaway} accessible accessibilityLabel={takeaway}>
           <Text style={styles.takeawayText}>{takeaway}</Text>
@@ -162,105 +150,240 @@ export function CompareScreen({ offers, onBack, onClear }: Props) {
         inconnue reste affichée comme inconnue.
       </Text>
 
-      <View style={styles.grid}>
-        {/* En-tête : marchands. Lu comme une seule annonce ; les lignes qui
-            suivent répètent chaque nom de marchand, donc on ne le détaille
-            pas cellule par cellule ici. */}
-        <View
-          style={styles.headRow}
-          accessible
-          accessibilityRole="header"
-          accessibilityLabel={
-            `Offres comparées : ${offers.map((o, i) =>
-              displayText(o.merchant?.name, 'marchand inconnu') + (i === topIdx ? ', recommandée par Capucine' : '')
-            ).join(', ')}`
-          }
-        >
-          <View style={styles.labelCell} />
-          {offers.map((o, i) => (
-            <View key={o.offerId} style={styles.headCell}>
-              <Text style={styles.merchant} numberOfLines={2}>
-                {displayText(o.merchant?.name, 'Marchand inconnu')}
-              </Text>
-              {i === topIdx ? <Text style={styles.headBadge}>★ Recommandée</Text> : null}
-            </View>
-          ))}
-        </View>
-
-        {ROWS.map((row) => {
-          const bestIdxs = row.best ? row.best(offers) : [];
-          const tied = bestIdxs.length > 1;
-          const spoken = `${row.label} : ` + offers
-            .map((o, i) =>
-              `${displayText(o.merchant?.name, 'offre ' + (i + 1))} ${row.value(o)}`
-              + (bestIdxs.includes(i) ? (tied ? ', à égalité' : ', meilleure valeur') : '')
-            )
-            .join(' ; ');
-          return (
-            <View
-              key={row.label}
-              style={styles.row}
-              accessible
-              accessibilityLabel={spoken}
-            >
-              <View style={styles.labelCell}>
-                <Text style={styles.labelText}>{row.label}</Text>
+      {/* Offer cards — vertical, side-by-side on wide screens, stacked on mobile */}
+      <View style={styles.cardsContainer}>
+        {offers.map((offer, i) => (
+          <View key={offer.offerId} style={styles.offerCard} accessible accessibilityLabel={`${displayText(offer.merchant?.name, 'Marchand inconnu')}, offre n°${offer.rank}`}>
+            {/* Card header — merchant + rank */}
+            <View style={styles.offerCardHead}>
+              <View style={styles.rankPill}>
+                <Text style={styles.rankPillText}>#{offer.rank}</Text>
               </View>
-              {offers.map((o, i) => (
-                <View key={o.offerId} style={styles.cell}>
-                  <Text style={[styles.cellText, bestIdxs.includes(i) && styles.cellBest]}>
-                    {row.value(o)}
-                    {bestIdxs.includes(i) ? (tied ? '  ≈' : '  ✓') : ''}
-                  </Text>
+              <Text style={styles.offerMerchant} numberOfLines={2}>
+                {displayText(offer.merchant?.name, 'Marchand inconnu')}
+              </Text>
+              {i === topIdx ? (
+                <View style={styles.recommendedBadge}>
+                  <Text style={styles.recommendedBadgeText}>★ Recommandée</Text>
                 </View>
-              ))}
+              ) : null}
             </View>
-          );
-        })}
+
+            {/* Cost total — THE dominant number */}
+            <View style={styles.offerCostHero}>
+              <Text style={styles.offerCostLabel}>Coût total</Text>
+              <Text style={[styles.offerCostValue, offer.cost.certainty !== 'known' && styles.offerCostUnknown]}>
+                {offer.cost.certainty === 'unknown' || offer.cost.totalKnown == null ? 'inconnu' : costLabel(offer)}
+              </Text>
+              <View style={[styles.offerCertaintyBadge, offer.cost.certainty === 'known' ? styles.offerCertaintyKnown : styles.offerCertaintyUnknown]}>
+                <Text style={[styles.offerCertaintyText, offer.cost.certainty === 'known' ? styles.offerCertaintyKnownText : styles.offerCertaintyUnknownText]}>
+                  {offer.cost.certainty === 'known' ? 'connu' : offer.cost.certainty === 'partially_known' ? 'partiel' : 'inconnu'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Detail rows — clean, no table */}
+            <View style={styles.detailRows}>
+              {ROWS.map((row) => {
+                const bestIdxs = row.best ? row.best(offers) : [];
+                const isBest = bestIdxs.includes(i);
+                return (
+                  <View key={row.label} style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>{row.label}</Text>
+                    <Text style={[styles.detailValue, isBest && styles.detailBest]}>
+                      {row.value(offer)}
+                      {isBest ? (bestIdxs.length > 1 ? ' ≈' : ' ✓') : ''}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* Action — open merchant page */}
+            <Pressable
+              onPress={() => {
+                const url = offer.offerUrl;
+                if (url && /^https?:\/\//i.test(url)) {
+                  Linking.openURL(url).catch(() => {
+                    // Fallback: if opening fails, we can't show a toast here easily,
+                    // but the error will be logged in dev mode.
+                    if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test') {
+                      console.warn('[Capucine] Failed to open URL:', url);
+                    }
+                  });
+                }
+              }}
+              disabled={!offer.offerUrl || !/^https?:\/\//i.test(offer.offerUrl || '')}
+              accessibilityRole="link"
+              accessibilityLabel={`Voir l'offre chez ${displayText(offer.merchant?.name, 'ce marchand')}`}
+              style={({ pressed }) => [styles.offerAction, pressed && styles.pressed, (!offer.offerUrl || !/^https?:\/\//i.test(offer.offerUrl || '')) && styles.offerActionDisabled]}
+              hitSlop={8}
+            >
+              <Text style={[styles.offerActionText, (!offer.offerUrl || !/^https?:\/\//i.test(offer.offerUrl || '')) && styles.offerActionTextDisabled]}>
+                {offer.offerUrl ? 'Voir chez le marchand' : 'Lien non vérifié'}
+              </Text>
+            </Pressable>
+          </View>
+        ))}
       </View>
+
+      {/* Footer note */}
+      <Text style={styles.footerNote}>
+        Capucine ne prend jamais le paiement. Vous validez l'achat vous-même chez le marchand.
+      </Text>
     </ScrollView>
-    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: theme.space(2), paddingTop: theme.space(2), paddingBottom: theme.space(4) },
+  container: {
+    paddingHorizontal: theme.space(2),
+    paddingTop: theme.space(2),
+    paddingBottom: theme.space(6),
+  },
+  emptyState: {
+    paddingVertical: theme.space(6),
+    paddingHorizontal: theme.space(3),
+    alignItems: 'center',
+  },
+  emptyTitle: {
+    fontSize: theme.font.heading,
+    fontWeight: '700',
+    color: theme.color.text,
+    textAlign: 'center',
+  },
+  emptyBody: {
+    fontSize: theme.font.body,
+    color: theme.color.textMuted,
+    marginTop: theme.space(1),
+    lineHeight: 22,
+    textAlign: 'center',
+    maxWidth: 300,
+  },
+  actionButton: {
+    marginTop: theme.space(2.5),
+    paddingHorizontal: theme.space(3),
+    paddingVertical: theme.space(1),
+    backgroundColor: theme.color.accent,
+    borderRadius: theme.radii.md,
+    ...theme.shadow.subtle,
+  },
+  actionButtonText: {
+    color: theme.color.accentText,
+    fontSize: theme.font.body,
+    fontWeight: '700',
+  },
+  pressed: { opacity: theme.opacity.pressed },
+
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: theme.space(2),
+    paddingHorizontal: theme.space(0.5),
+  },
+  back: { minHeight: theme.minTouch, justifyContent: 'center' },
+  backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
+  title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text, flex: 1, textAlign: 'center' },
   clear: { fontSize: theme.font.small, fontWeight: theme.weight.semibold, color: theme.color.accent },
-  back: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: theme.space(0.5) },
-  backPressed: { opacity: 0.7 },
-  backText: { color: theme.color.accent, fontSize: theme.font.small, fontWeight: '600' },
-  title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
+
   takeaway: {
-    marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radius,
-    backgroundColor: theme.color.accentSoft, borderWidth: 1, borderColor: theme.color.accent,
+    marginTop: theme.space(1),
+    padding: theme.space(2),
+    borderRadius: theme.radii.md,
+    backgroundColor: theme.color.accentSoft,
+    borderWidth: 1,
+    borderColor: theme.color.accent,
   },
   takeawayText: { fontSize: theme.font.small, color: theme.color.text, lineHeight: 20 },
+
   note: {
     fontSize: theme.font.small, color: theme.color.textMuted,
     marginTop: theme.space(1), marginBottom: theme.space(2), lineHeight: 20,
   },
-  headBadge: {
-    fontSize: 11, color: theme.color.accent, fontWeight: '700', marginTop: 2,
+
+  cardsContainer: { gap: theme.space(2) },
+  offerCard: {
+    backgroundColor: theme.color.surface,
+    borderRadius: theme.radii.lg,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+    padding: theme.space(2),
+    ...theme.shadow.card,
   },
-  grid: {
-    borderWidth: 1, borderColor: theme.color.border, borderRadius: theme.radius,
-    overflow: 'hidden', backgroundColor: theme.color.surface,
+  offerCardHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.space(1.5),
+    marginBottom: theme.space(2),
+    flexWrap: 'wrap',
   },
-  headRow: { flexDirection: 'row', backgroundColor: theme.color.background },
-  headCell: {
-    flex: 1, padding: theme.space(1), borderLeftWidth: 1, borderLeftColor: theme.color.border,
+  rankPill: {
+    minWidth: 36, height: 36, borderRadius: theme.radii.pill,
+    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
   },
-  merchant: { fontSize: theme.font.small, fontWeight: '700', color: theme.color.text },
-  row: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: theme.color.border },
-  labelCell: {
-    width: 116, padding: theme.space(1), backgroundColor: theme.color.background,
+  rankPillText: { color: theme.color.accentText, fontSize: theme.font.small, fontWeight: '700' },
+  offerMerchant: { fontSize: theme.font.body, fontWeight: '600', color: theme.color.text, flex: 1 },
+  recommendedBadge: {
+    paddingHorizontal: theme.space(1), paddingVertical: 2,
+    borderRadius: theme.radii.pill, backgroundColor: theme.color.accentSoft,
+  },
+  recommendedBadgeText: { fontSize: theme.font.micro, fontWeight: '700', color: theme.color.accent },
+
+  offerCostHero: {
+    marginBottom: theme.space(2),
+    paddingBottom: theme.space(2),
+    borderBottomWidth: 1,
+    borderBottomColor: theme.color.border,
+  },
+  offerCostLabel: { fontSize: theme.font.small, color: theme.color.textMuted, marginBottom: 2 },
+  offerCostValue: {
+    fontSize: theme.font.display + 2, fontWeight: '700', color: theme.color.text,
+    letterSpacing: -0.3,
+  },
+  offerCostUnknown: { color: theme.color.unknown },
+  offerCertaintyBadge: {
+    marginTop: theme.space(1), alignSelf: 'flex-start',
+    paddingHorizontal: theme.space(1.5), paddingVertical: 4,
+    borderRadius: theme.radii.sm,
+  },
+  offerCertaintyKnown: { backgroundColor: theme.color.knownSoft },
+  offerCertaintyUnknown: { backgroundColor: theme.color.unknownSoft },
+  offerCertaintyText: { fontSize: theme.font.micro, fontWeight: '700' },
+  offerCertaintyKnownText: { color: theme.color.known },
+  offerCertaintyUnknownText: { color: theme.color.unknown },
+
+  detailRows: { gap: theme.space(1), marginTop: theme.space(1) },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: theme.space(0.75),
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.color.border,
+  },
+  detailLabel: { fontSize: theme.font.small, color: theme.color.textMuted, fontWeight: '600', flexShrink: 1, paddingRight: theme.space(2) },
+  detailValue: { fontSize: theme.font.body, color: theme.color.text, fontWeight: '500', textAlign: 'right', flexShrink: 1 },
+  detailBest: { fontWeight: '700', color: theme.color.known },
+
+  offerAction: {
+    marginTop: theme.space(2.5),
+    paddingVertical: theme.space(1.25),
+    borderRadius: theme.radii.md,
+    backgroundColor: theme.color.accent,
+    alignItems: 'center',
     justifyContent: 'center',
+    ...theme.shadow.subtle,
   },
-  labelText: { fontSize: theme.font.small, color: theme.color.textMuted, fontWeight: '600' },
-  cell: {
-    flex: 1, padding: theme.space(1),
-    borderLeftWidth: 1, borderLeftColor: theme.color.border, justifyContent: 'center',
+  offerActionDisabled: { backgroundColor: theme.color.border, opacity: theme.opacity.disabled },
+  offerActionText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
+  offerActionTextDisabled: { color: theme.color.textFaint },
+
+  footerNote: {
+    marginTop: theme.space(3),
+    fontSize: theme.font.micro,
+    color: theme.color.textFaint,
+    textAlign: 'center',
+    lineHeight: 16,
   },
-  cellText: { fontSize: theme.font.small, color: theme.color.text, lineHeight: 18 },
-  cellBest: { fontWeight: '700', color: theme.color.known },
 });

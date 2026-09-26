@@ -31,6 +31,7 @@ import { SupportedCountry } from './i18n';
 import { extractAttributes } from './attribute-extraction';
 import { attributeToCriterion, ExtractedAttribute } from '../domain/attributes';
 import { RankingPreference } from './ranking-preference';
+import { EU_COUNTRY_CODES } from '../domain/onboarding';
 
 // ============================================================================
 // CATEGORY VOCABULARY
@@ -52,13 +53,14 @@ import { RankingPreference } from './ranking-preference';
 // building a new ontology.
 // ============================================================================
 
-const DOMAIN_CATEGORY_PATTERNS: Record<string, string[]> = {
+export const DOMAIN_CATEGORY_PATTERNS: Record<string, string[]> = {
   smartphone: ['smartphone', 'téléphone', 'telephone', 'iphone', 'android', 'mobile', 'pixel', 'galaxy', 'fairphone'],
   ordinateur_portable: ['ordinateur', 'laptop', 'pc portable', 'macbook', 'thinkpad', 'notebook', 'ultrabook'],
   casque: ['casque', 'écouteur', 'ecouteur', 'headphone', 'airpod', 'earphone', 'audio', 'bluetooth'],
   aspirateur_robot: ['aspirateur', 'robot aspirateur', 'vacuum', 'roomba', 'roborock'],
   clavier: ['clavier', 'keyboard', 'keychron', 'mécanique', 'mecanique'],
   livre: ['livre', 'roman', 'book', 'manga', 'bd', 'bande dessinée'],
+  four_professionnel: ['four', 'four professionnel', 'four à pizza', 'four pizza', 'pizza oven', 'professional oven', 'commercial oven'],
 };
 
 const GENERIC_CATEGORY_PATTERNS: Record<string, string[]> = {
@@ -609,6 +611,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     track(this.extractRAM(text, interpretation));
     track(this.extractStorage(text, interpretation));
     track(this.extractCondition(text, interpretation));
+    track(this.extractLocation(text, interpretation));
     this.extractColor(text, interpretation);
     for (const span of this.extractUsageContext(text, interpretation)) track(span);
 
@@ -1188,6 +1191,53 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
     return null;
   }
 
+  /**
+   * Extract location (city) from text — "à Paris", "sur Lyon", "à Toulouse", "in Paris".
+   * Returns the matched substring (for span-stripping), or null.
+   */
+  private extractLocation(text: string, interpretation: InterpretedRequest): string | null {
+    // Common French cities
+    const cities = [
+      'paris', 'lyon', 'marseille', 'toulouse', 'nice', 'nantes', 'strasbourg', 'montpellier',
+      'bordeaux', 'lille', 'rennes', 'reims', 'saint-étienne', 'toulon', 'grenoble', 'dijon',
+      'angers', 'villeurbanne', 'le mans', 'aix-en-provence', 'clermont-ferrand', 'brest',
+      'limoges', 'tours', 'amiens', 'perpignan', 'besançon', 'orléans', 'mulhouse', 'rouen',
+      'caen', 'nancy', 'saint-étienne', 'dunkerque', 'tourcoing', 'nanterre', 'avignon',
+      'la rochelle', 'la roche-sur-yon', 'la roche sur yon'
+    ];
+
+    // Patterns: "à Paris", "sur Lyon", "à Toulouse", "in Paris", "on Lyon", "Toulouse" (at end)
+    const patterns = [
+      /\b(?:à|sur|dans|au|en)\s+([a-zà-ÿ\s-]+)(?=\s|$|[.,;:!?])/gi,
+      /\b(?:in|on|at)\s+([a-z\s-]+)(?=\s|$|[.,;:!?])/gi,
+      // City name at the end of query (without preposition)
+      new RegExp(`\\b(${cities.join('|')})(?=\\s|$|[.,;:!?])`, 'gi'),
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const potentialCity = match[1]?.toLowerCase().trim() || match[0]?.toLowerCase().trim();
+        // Check if the matched text contains a known city
+        for (const city of cities) {
+          if (potentialCity.includes(city)) {
+            if (!interpretation.extractedCriteria.some(c => c.id === 'location')) {
+              interpretation.extractedCriteria.push({
+                id: 'location',
+                name: 'Localisation',
+                level: 'required',
+                parameters: { city: city },
+              });
+            }
+            interpretation.location = city;
+            return match[0];
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   private extractStorage(text: string, interpretation: InterpretedRequest): string | null {
     const patterns: Array<{ re: RegExp; isTeraUnit: boolean }> = [
       { re: /(\d+)\s*go\s*ssd\b/i, isTeraUnit: false },
@@ -1760,6 +1810,43 @@ export function extractDeliverabilityIntent(text: string, destinationCountry: st
 }
 
 /**
+ * Extract "fabriqué en France" / "made in France" / "produit en France" intent.
+ * This is a standalone intent (same shape as extractFreeShippingIntent) —
+ * folded into the FIRST turn too, not only follow-ups, so a first search
+ * can express it directly.
+ */
+export function extractOriginIntent(text: string): PreferenceCriterion | null {
+  // "fabriqué / fabriquée / fabriqués / fabriquées", "made in", "produit en",
+  // "origine" — France or Europe only (controlled scope, same as onboarding).
+  const MADE = String.raw`(?:fabriqu[ée]e?s?|made\s+in|produite?s?\s+en|con[çc]ue?s?\s+en|origine|origin)`;
+  const FRANCE = new RegExp(String.raw`\b${MADE}\s+(?:en\s+)?france\b`, 'i');
+  const EUROPE = new RegExp(String.raw`\b${MADE}\s+(?:en\s+|dans\s+l'|in\s+)?(?:europe|l'union\s+europ[ée]enne|the\s+eu|eu|ue)\b`, 'i');
+
+  const isFrance = FRANCE.test(text);
+  const isEurope = !isFrance && EUROPE.test(text);
+  if (!isFrance && !isEurope) return null;
+
+  // Soft by default: an origin wish FAVOURS matching offers, it never filters.
+  // Only an explicit exclusive phrasing ("uniquement", "only", …) makes it a
+  // hard constraint — and even then unknownPolicy 'pass' keeps offers whose
+  // origin is simply not published.
+  const HARD = /\b(?:uniquement|seulement|exclusivement|obligatoirement|imp[ée]rativement|que\s+du|que\s+des|only|exclusively|must\s+be)\b/i;
+  const level: PreferenceLevel = HARD.test(text) ? 'required' : 'important';
+
+  return {
+    id: 'eu_origin',
+    name: isFrance ? 'Fabriqué en France' : 'Fabriqué en Europe',
+    level,
+    parameters: {
+      field: 'country_of_origin',
+      preferredValues: isFrance ? ['FR', 'France'] : [...EU_COUNTRY_CODES],
+      originScope: isFrance ? 'france' : 'europe',
+      unknownPolicy: 'pass',
+    },
+  };
+}
+
+/**
  * Country-name recognition — small, controlled, FR/EN (extensible), NOT a
  * general translator. Scoped to the countries CATEGORY_TRANSLATIONS in
  * search-strategy-planner.ts already has query vocabulary for (de/es/it),
@@ -1885,3 +1972,57 @@ export function extractRetryIntent(text: string): RetryIntent | null {
 
   return null;
 }
+
+// ============================================================================
+// SEARCH CONTEXT DETECTION
+// ============================================================================
+
+/**
+ * Detect the search context from a query string.
+ * Returns one of: 'consumer', 'restaurant_equipment', 'restaurant_supply', 'b2b'
+ */
+export const detectSearchContext = (query: string): string => {
+  // Restaurant equipment keywords
+  const equipmentKeywords = [
+    'four professionnel', 'four à pizza', 'piano de cuisson', 'chambre froide',
+    'friteuse professionnelle', 'lave-vaisselle professionnel', 'bain-marie',
+    'four', 'plancha', 'vitrine', 'frigo pro', 'salamandre',
+    'trancheuse', 'hachoir professionnel', 'cellule de refroidissement',
+    'hotte', 'plonge', 'caisse', 'cuisson', 'mélangeur',
+    'pétrin', 'abat-jour', 'réfrigéré', 'congélateur', 'professionnel',
+    'chr', 'horeca', 'matériel', 'resto', 'cuisine pro', 'cuisine professionnelle',
+    'matériel restaurant', 'équipement chr',
+    'occasion chr', 'matériel professionnel', 'restaurant', 'bar', 'brasserie'
+  ];
+
+  // Restaurant supply keywords
+  const supplyKeywords = [
+    'emballage', 'emballages', 'couverts jetables', 'contenants', 'serviettes',
+    'sacs alimentaires', 'gobelets', 'assiettes jetables', 'pailles',
+    'film alimentaire', 'sous-vide', 'barquettes', 'professionnel', 'grossiste'
+  ];
+
+  // B2B keywords
+  const b2bKeywords = [
+    'fournisseur', 'fournisseurs', 'grossiste', 'grossistes', 'livraison pro',
+    'livraison professionnelle', 'volume', 'en gros', 'achat en gros',
+    'b2b', 'business to business', 'vente pro', 'tarif pro'
+  ];
+
+  // Check equipment
+  for (const kw of equipmentKeywords) {
+    if (query.includes(kw)) return 'restaurant_equipment';
+  }
+
+  // Check supply
+  for (const kw of supplyKeywords) {
+    if (query.includes(kw)) return 'restaurant_supply';
+  }
+
+  // Check B2B
+  for (const kw of b2bKeywords) {
+    if (query.includes(kw)) return 'b2b';
+  }
+
+  return 'consumer';
+};

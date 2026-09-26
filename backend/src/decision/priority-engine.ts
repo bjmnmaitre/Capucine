@@ -690,20 +690,49 @@ export function rankOffers(
         : undefined;
       // Readiness adds points for CONFIRMED availability facts only — never
       // subtracts for unknown ones, exactly like the contextual bonus.
-      const readiness = readinessByOfferId?.get(offer.id);
+const readiness = readinessByOfferId?.get(offer.id);
       const readinessScore = readiness
         ? scoreReadiness(readiness, { emphasis: request.prioritizeAvailability === true })
         : undefined;
 
-      const bonus = (contextualRelevance?.bonus ?? 0) + (readinessScore?.bonus ?? 0);
-      const finalScore = bonus > 0
-        ? Math.min(100, Math.round(overallScore + bonus))
+      // CHR merchant boost/malus for professional queries
+      // Adds points for specialized CHR merchants, subtracts for generalist merchants
+      let chrMerchantBonus = 0;
+      const sc = request.searchContext;
+      if (sc === 'restaurant_equipment' || sc === 'restaurant_supply' || sc === 'b2b') {
+        const merchantName = offer.merchant?.name?.toLowerCase() ?? '';
+        const merchantUrl = offer.executionUrl?.toLowerCase() ?? '';
+        const chrKeywords = ['chr', 'pro', 'professionnel', 'restaurant', 'cuisine', 'horeca', 'matériel', 'equipement', 'fournisseur', 'grossiste'];
+        // Only check merchant NAME for CHR keywords — URLs may contain "professionnel"
+        // because generalists also sell professional equipment
+        const hasChrKeyword = chrKeywords.some(kw => merchantName.includes(kw));
+        const hasKnownPrice = offer.price?.value !== null && offer.price?.value !== undefined && offer.price?.value > 0;
+        const hasDirectUrl = offer.executionUrl && offer.executionUrl.length > 0;
+        
+        if (hasChrKeyword) chrMerchantBonus += 10;
+        if (hasKnownPrice) chrMerchantBonus += 5;
+        if (hasDirectUrl) chrMerchantBonus += 5;
+
+        // MALUS for generalist merchants on CHR queries
+        const generalistDomains = ['amazon.fr', 'cdiscount.com', 'fnac.com', 'darty.com', 'boulanger.com', 'ldlc.com', 'rue-du-commerce.com'];
+        const isGeneralist = generalistDomains.some(d => merchantUrl.includes(d));
+        if (isGeneralist) chrMerchantBonus -= 15;
+
+        // Cap the bonus at 20 points, floor at -20
+        chrMerchantBonus = Math.max(-20, Math.min(20, chrMerchantBonus));
+      }
+
+      const bonus = (contextualRelevance?.bonus ?? 0) + (readinessScore?.bonus ?? 0) + chrMerchantBonus;
+      // NOTE: bonus !== 0 (not > 0) so that negative values (CHR generalist malus)
+      // are also applied — a malus of -15 must actually reduce the score.
+      const finalScore = bonus !== 0
+        ? Math.max(0, Math.min(100, Math.round(overallScore + bonus)))
         : overallScore;
       // The exact counterpart of finalScore, kept unrounded for ordering. The
       // bonus is added at full precision here for the same reason the base
       // score is: rounding before comparing loses real differences.
-      const finalScoreExact = bonus > 0
-        ? Math.min(100, overallScoreExact + bonus)
+      const finalScoreExact = bonus !== 0
+        ? Math.max(0, Math.min(100, overallScoreExact + bonus))
         : overallScoreExact;
 
       rankedOffers.push({

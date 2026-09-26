@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import {
-  ApiError, PreferenceLevel, PrepareCartResponse, ProfileResponse, SearchResponse,
+  ApiError, OnboardingAnswers, PreferenceLevel, PrepareCartResponse, ProfileResponse, SearchResponse,
 } from './types';
 import {
   AVAILABILITY_PREFERENCE_CRITERION_ID, availabilityPreferenceCriterion,
@@ -167,24 +167,22 @@ export function networkErrorMessage(): string {
  */
 const REQUEST_TIMEOUT_MS = 45000;
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function requestJson<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      method: 'POST',
-      headers: { ...BASE_HEADERS, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      method,
+      headers: body === undefined
+        ? BASE_HEADERS
+        : { ...BASE_HEADERS, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
   } catch {
-    // Unreachable backend, DNS failure, timeout, phone off Wi-Fi. We say so
-    // plainly instead of rendering an empty result list, which would read as
-    // "no offers exist" — a claim we have no basis for. The address tried is
-    // a developer detail (logged), never surfaced to the user.
-    if (IS_DEV) console.warn(`[Capucine] ${path} unreachable at ${API_BASE_URL}`);
+    if (IS_DEV) console.warn(`[Capucine] ${method} ${path} unreachable at ${API_BASE_URL}`);
     throw new ApiError('network', networkErrorMessage(), undefined);
   } finally {
     clearTimeout(timer);
@@ -210,6 +208,27 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   }
 
   return parsed as T;
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  return requestJson<T>('POST', path, body);
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  return requestJson<T>('GET', path);
+}
+
+/**
+ * Fetch search suggestions for autocomplete.
+ * Returns up to 5 suggestions based on known domain categories.
+ * No AI call, no web search — pure pattern matching, <10ms.
+ */
+export interface SuggestResponse {
+  suggestions: string[];
+}
+
+export function suggest(query: string): Promise<SuggestResponse> {
+  return getJson<SuggestResponse>(`/suggest?q=${encodeURIComponent(query)}`);
 }
 
 export function search(query: string, userId: string): Promise<SearchResponse> {
@@ -292,7 +311,7 @@ export function prepareCart(
   return postJson<PrepareCartResponse>('/prepare-cart', { sessionId, offerId, quantity });
 }
 
-async function request<T>(method: 'GET' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
+async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
@@ -338,6 +357,20 @@ async function request<T>(method: 'GET' | 'PUT' | 'DELETE', path: string, body?:
 /** Permanent preferences. Never mixed with the current search's requirements. */
 export function loadProfile(userId: string): Promise<ProfileResponse> {
   return request<ProfileResponse>('GET', `/profile/${encodeURIComponent(userId)}`);
+}
+
+/**
+ * Complete (or re-run) the profile-creation wizard. Sends the whole answer set
+ * once — the backend owns the merge (it replaces ITS OWN criteria categories,
+ * keeps whatever else the user added since, stores shipping + consented
+ * merchant accounts). Returns the same shape as GET /profile, with
+ * `onboardingCompleted: true`.
+ */
+export function submitOnboarding(
+  userId: string,
+  answers: OnboardingAnswers
+): Promise<ProfileResponse> {
+  return request<ProfileResponse>('POST', `/profile/${encodeURIComponent(userId)}/onboarding`, answers);
 }
 
 export function saveCriterion(

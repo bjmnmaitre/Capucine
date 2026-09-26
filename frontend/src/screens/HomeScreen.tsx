@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, Pressable,
-  ScrollView, StyleSheet, Text, TextInput, View,
+  StyleSheet, Text, TextInput, View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { HealthStatus } from '../api';
 import { Screen } from '../components/Screen';
-import { Button } from '../components/Button';
-import { theme } from '../theme';
+import { theme, cardStyle, inputStyle, primaryButtonStyle, textStyle } from '../theme';
 
 interface Props {
   loading: boolean;
@@ -24,16 +24,15 @@ interface Props {
 }
 
 const SUGGESTIONS = [
-  'Casque Sony WH-1000XM5',
-  'MacBook Air M4 16 Go',
-  'Chaussures de running homme',
-  'Enceinte portable la meilleure autonomie',
-];
+  { text: 'Trouver le moins cher', icon: '💰' },
+  { text: 'Comparer plusieurs offres', icon: '⚖️' },
+  { text: 'Rechercher un produit', icon: '🔍' },
+] as const;
 
 /**
- * The home of Capucine — a conversation opener, not a form. One dominant
- * input: the user says what they want in a full sentence, Capucine does the
- * rest. Everything else on this screen is deliberately quiet.
+ * Capucine's Home — an AI shopping assistant opener.
+ * One dominant input: the user describes what they want naturally.
+ * Everything else stays deliberately quiet.
  */
 export function HomeScreen({
   loading, error, health, checkingHealth, onRecheckHealth,
@@ -42,6 +41,8 @@ export function HomeScreen({
   const [text, setText] = useState(initialQuery ?? '');
   const [touched, setTouched] = useState(false);
   const inputRef = useRef<TextInput>(null);
+  const [focused, setFocused] = useState(false);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (initialQuery !== undefined) {
@@ -68,67 +69,82 @@ export function HomeScreen({
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
       >
-        <ScrollView
-          contentContainerStyle={styles.container}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          showsVerticalScrollIndicator={false}
-        >
-          <Text style={styles.wordmark}>Capucine</Text>
+        <View style={styles.container}>
+          {/* Header — wordmark only, subtle */}
+          <View style={styles.header}>
+            <Text style={styles.wordmark}>Capucine</Text>
+          </View>
 
+          {/* Hero greeting — conversational, human */}
           <View style={styles.hero}>
             <Text style={styles.greeting} accessibilityRole="header">Bonjour.</Text>
             <Text style={styles.prompt}>Que puis-je trouver pour vous ?</Text>
           </View>
 
-          <Pressable
-            style={[styles.field, touched && empty && styles.fieldError]}
-            onPress={() => inputRef.current?.focus()}
-            accessibilityRole="none"
-          >
-            <TextInput
-              ref={inputRef}
-              style={styles.input}
-              value={text}
-              onChangeText={(t) => { setText(t); if (touched) setTouched(false); }}
-              placeholder="Décrivez ce que vous cherchez…"
-              placeholderTextColor={theme.color.textFaint}
-              onSubmitEditing={submit}
-              returnKeyType="search"
-              editable={!loading}
-              multiline
-              blurOnSubmit
-              accessibilityLabel="Votre demande"
-              accessibilityHint="Écrivez une phrase, par exemple : trouve-moi le casque Sony le moins cher"
-            />
-            <Button
-              label={loading ? '…' : 'Chercher'}
-              onPress={submit}
-              loading={loading}
-              disabled={empty}
-              accessibilityHint="Lance la recherche"
-              style={styles.go}
-            />
-          </Pressable>
+          {/* Search input area — the hero component */}
+          <View style={styles.searchArea}>
+            <View style={[
+              styles.fieldWrapper,
+              focused && styles.fieldFocused,
+              touched && empty && styles.fieldError,
+              loading && styles.fieldLoading,
+            ]}>
+              {loading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={theme.color.accent} size="small" />
+                  <Text style={styles.loadingText}>Capucine cherche…</Text>
+                </View>
+              ) : (
+                <TextInput
+                  ref={inputRef}
+                  style={styles.input}
+                  value={text}
+                  onChangeText={(t) => { setText(t); if (touched) setTouched(false); }}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
+                  placeholder="Trouvez-moi le Sony WH-1000XM5 le moins cher…"
+                  placeholderTextColor={theme.color.textFaint}
+                  onSubmitEditing={submit}
+                  returnKeyType="search"
+                  multiline
+                  maxLength={500}
+                  blurOnSubmit
+                  accessibilityLabel="Votre demande"
+                  accessibilityHint="Décrivez ce que vous cherchez, par exemple : trouve-moi le casque Sony le moins cher"
+                />
+              )}
+            </View>
 
-          {touched && empty ? (
-            <Text style={styles.fieldHint} accessibilityLiveRegion="polite">
-              Dites d’abord ce que vous cherchez.
-            </Text>
-          ) : null}
+            {!loading && (
+              <Pressable
+                style={[styles.goButton, empty && styles.goButtonDisabled]}
+                onPress={submit}
+                disabled={empty}
+                accessibilityRole="button"
+                accessibilityLabel="Lancer la recherche"
+                android_ripple={{ color: theme.color.accentText }}
+              >
+                <Text style={[styles.goText, empty && styles.goTextDisabled]}>Chercher</Text>
+              </Pressable>
+            )}
+          </View>
 
-          {loading ? (
-            <Text style={styles.working} accessibilityLiveRegion="polite">
-              Capucine cherche : elle interprète, consulte les sources, calcule le coût réel,
-              puis classe.
-            </Text>
-          ) : null}
-
+          {/* Error / status messages — honest, actionable, no technical details */}
           {error ? (
             <View style={styles.notice} accessibilityLiveRegion="assertive">
-              <Text style={styles.noticeTitle}>{error}</Text>
-              <Text style={styles.noticeBody}>Vérifiez votre connexion, puis réessayez.</Text>
+              <Text style={styles.noticeTitle}>Capucine rencontre un problème de connexion.</Text>
+              <Text style={styles.noticeBody}>Vérifiez votre connexion puis réessayez.</Text>
+              <Pressable
+                onPress={() => onRecheckHealth?.()}
+                disabled={!!checkingHealth}
+                accessibilityRole="button"
+                accessibilityLabel="Réessayer"
+                style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.retryText}>Réessayer</Text>
+              </Pressable>
             </View>
           ) : null}
 
@@ -139,66 +155,82 @@ export function HomeScreen({
               </Text>
               <Text style={styles.noticeBody}>
                 {health?.configured
-                  ? 'Capucine ne parvient pas à joindre son service pour l’instant.'
+                  ? 'Capucine ne parvient pas à joindre son service pour l\'instant.'
                   : 'Sur cet appareil, Capucine ne sait pas encore où joindre son service.'}
               </Text>
               {health?.configured ? (
-                <Button
-                  label="Réessayer"
-                  variant="secondary"
+                <Pressable
                   onPress={() => onRecheckHealth?.()}
-                  loading={!!checkingHealth}
-                  style={styles.retry}
-                />
+                  disabled={!!checkingHealth}
+                  accessibilityRole="button"
+                  accessibilityLabel="Réessayer"
+                  style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+                >
+                  {checkingHealth ? (
+                    <ActivityIndicator color={theme.color.accent} size="small" />
+                  ) : (
+                    <Text style={styles.retryText}>Réessayer</Text>
+                  )}
+                </Pressable>
               ) : null}
             </View>
           ) : null}
 
           {!loading && !error && !unreachable && webUnavailable ? (
-            <View style={styles.notice}>
+            <View style={[styles.notice, styles.noticeWarn]}>
               <Text style={styles.noticeTitle}>Recherche Web indisponible</Text>
               <Text style={styles.noticeBody}>
-                Le service répond, mais aucune source Web n’est configurée : les recherches
-                ne remonteront pas d’offres réelles.
+                Le service répond, mais aucune source Web n'est configurée. Les recherches
+                ne remonteront pas d'offres réelles.
               </Text>
             </View>
           ) : null}
 
-          {lastQuery ? (
+          {/* Resume previous search — subtle card */}
+          {lastQuery && !loading && !error ? (
             <Pressable
               onPress={onResume}
               accessibilityRole="button"
               accessibilityLabel={`Reprendre : ${lastQuery}`}
-              style={({ pressed }) => [styles.resume, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.resumeCard, pressed && styles.pressed]}
             >
-              <Text style={styles.resumeEyebrow}>Reprendre</Text>
-              <Text style={styles.resumeQuery} numberOfLines={1}>{lastQuery}</Text>
+              <View style={styles.resumeIcon} accessible importantForAccessibility="no-hide-descendants">
+                <Text style={styles.resumeIconText}>↩️</Text>
+              </View>
+              <View style={styles.resumeContent}>
+                <Text style={styles.resumeLabel}>Reprendre la recherche</Text>
+                <Text style={styles.resumeQuery} numberOfLines={1}>{lastQuery}</Text>
+              </View>
             </Pressable>
           ) : null}
 
-          <View style={styles.suggestions}>
-            <Text style={styles.suggestionsTitle}>Idées de recherche</Text>
-            {SUGGESTIONS.map((s) => (
-              <Pressable
-                key={s}
-                onPress={() => { setText(s); setTouched(false); inputRef.current?.focus(); }}
-                disabled={loading}
-                accessibilityRole="button"
-                accessibilityLabel={`Utiliser : ${s}`}
-                style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}
-              >
-                <Text style={styles.suggestionText}>{s}</Text>
-                <Text style={styles.suggestionArrow}>↗</Text>
-              </Pressable>
-            ))}
-          </View>
+          {/* Suggestions — chips with icons, not dense list */}
+          {!loading && !error && (
+            <View style={styles.suggestions}>
+              <Text style={styles.suggestionsTitle}>Suggestions</Text>
+              <View style={styles.suggestionGrid}>
+                {SUGGESTIONS.map((s) => (
+                  <Pressable
+                    key={s.text}
+                    onPress={() => { setText(s.text); setTouched(false); inputRef.current?.focus(); }}
+                    disabled={loading}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rechercher : ${s.text}`}
+                    style={({ pressed }) => [styles.suggestionChip, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.suggestionIcon} importantForAccessibility="no-hide-descendants">{s.icon}</Text>
+                    <Text style={styles.suggestionText}>{s.text}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          )}
 
-          {health?.reachable ? (
-            <Text style={styles.foot}>
-              {`Service connecté${health.webSearch === 'configured' ? ' · recherche Web active' : ''}`}
-            </Text>
-          ) : null}
-        </ScrollView>
+          {/* Bottom trust note */}
+          <Text style={styles.foot}>
+            Capucine compare le coût total réel — pas le prix affiché.
+          </Text>
+        </View>
       </KeyboardAvoidingView>
     </Screen>
   );
@@ -209,16 +241,20 @@ const styles = StyleSheet.create({
   container: {
     paddingHorizontal: theme.space(3),
     paddingTop: theme.space(2),
-    paddingBottom: theme.space(4),
+    paddingBottom: theme.space(5),
+    flexGrow: 1,
+  },
+  header: {
+    marginBottom: theme.space(4),
   },
   wordmark: {
-    fontSize: theme.font.small,
+    fontSize: theme.font.micro,
     fontWeight: theme.weight.bold,
-    letterSpacing: 2,
+    letterSpacing: 1.5,
     textTransform: 'uppercase',
     color: theme.color.accent,
   },
-  hero: { marginTop: theme.space(5), marginBottom: theme.space(3) },
+  hero: { marginTop: theme.space(6), marginBottom: theme.space(4) },
   greeting: {
     fontSize: theme.font.mega,
     lineHeight: theme.leading.mega,
@@ -233,42 +269,70 @@ const styles = StyleSheet.create({
     marginTop: theme.space(1),
     letterSpacing: -0.2,
   },
-  field: {
+
+  searchArea: {
+    marginTop: theme.space(2),
+  },
+  fieldWrapper: {
     backgroundColor: theme.color.surface,
     borderRadius: theme.radii.lg,
     borderWidth: 1,
     borderColor: theme.color.border,
     padding: theme.space(1.5),
+    ...theme.shadow.subtle,
+  },
+  fieldFocused: {
+    borderColor: theme.color.accent,
+    borderWidth: 2,
     ...theme.shadow.card,
   },
   fieldError: { borderColor: theme.color.danger, borderWidth: 1.5 },
+  fieldLoading: { opacity: 0.7 },
   input: {
     fontSize: theme.font.body,
     lineHeight: theme.leading.body,
     color: theme.color.text,
-    minHeight: theme.minTouch,
+    minHeight: theme.minTouch + 8,
     paddingHorizontal: theme.space(1),
     paddingTop: theme.space(1),
     textAlignVertical: 'top',
   },
-  go: { marginTop: theme.space(1) },
-  fieldHint: {
-    color: theme.color.danger,
-    fontSize: theme.font.small,
-    marginTop: theme.space(1),
-    marginLeft: theme.space(1),
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.space(1),
   },
-  working: {
-    fontSize: theme.font.small,
-    lineHeight: theme.leading.small,
+  loadingText: {
     color: theme.color.textMuted,
-    marginTop: theme.space(2),
+    fontSize: theme.font.body,
   },
+  goButton: {
+    marginTop: theme.space(1.5),
+    paddingHorizontal: theme.space(3),
+    paddingVertical: theme.space(1),
+    backgroundColor: theme.color.accent,
+    borderRadius: theme.radii.md,
+    ...theme.shadow.subtle,
+  },
+  goButtonDisabled: { opacity: theme.opacity.disabled },
+  goText: {
+    color: theme.color.accentText,
+    fontSize: theme.font.body,
+    fontWeight: theme.weight.bold,
+  },
+  goTextDisabled: { color: theme.color.unknown },
+
   notice: {
     marginTop: theme.space(2.5),
-    padding: theme.space(2),
+    padding: theme.space(2.5),
     borderRadius: theme.radii.md,
     backgroundColor: theme.color.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+  },
+  noticeWarn: {
+    backgroundColor: theme.color.unknownSoft,
+    borderColor: theme.color.unknown,
   },
   noticeTitle: {
     fontSize: theme.font.body,
@@ -281,14 +345,36 @@ const styles = StyleSheet.create({
     color: theme.color.textMuted,
     marginTop: theme.space(0.5),
   },
-  retry: { marginTop: theme.space(1.5), alignSelf: 'flex-start' },
-  resume: {
+  retryButton: {
+    marginTop: theme.space(1.5),
+    alignSelf: 'flex-start',
+    paddingHorizontal: theme.space(2),
+    paddingVertical: theme.space(0.75),
+    backgroundColor: theme.color.accent,
+    borderRadius: theme.radii.md,
+  },
+  retryText: {
+    color: theme.color.accentText,
+    fontSize: theme.font.small,
+    fontWeight: theme.weight.bold,
+  },
+
+  resumeCard: {
     marginTop: theme.space(3),
-    padding: theme.space(2),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.space(2),
+    padding: theme.space(2.5),
     borderRadius: theme.radii.md,
     backgroundColor: theme.color.accentSoft,
+    borderWidth: 1,
+    borderColor: theme.color.accent,
+    ...theme.shadow.subtle,
   },
-  resumeEyebrow: {
+  resumeIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center' },
+  resumeIconText: { fontSize: 18 },
+  resumeContent: { flex: 1 },
+  resumeLabel: {
     fontSize: theme.font.label,
     fontWeight: theme.weight.semibold,
     letterSpacing: 0.6,
@@ -299,9 +385,11 @@ const styles = StyleSheet.create({
     fontSize: theme.font.body,
     fontWeight: theme.weight.semibold,
     color: theme.color.text,
-    marginTop: 3,
+    marginTop: 2,
   },
-  suggestions: { marginTop: theme.space(4) },
+  pressed: { opacity: theme.opacity.pressed },
+
+  suggestions: { marginTop: theme.space(5) },
   suggestionsTitle: {
     fontSize: theme.font.label,
     fontWeight: theme.weight.semibold,
@@ -310,27 +398,37 @@ const styles = StyleSheet.create({
     color: theme.color.textFaint,
     marginBottom: theme.space(1.5),
   },
-  suggestion: {
+  suggestionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.space(1.5),
+    marginTop: theme.space(1.5),
+  },
+  suggestionChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: theme.space(1),
     minHeight: theme.minTouch + 4,
+    paddingHorizontal: theme.space(2),
     paddingVertical: theme.space(1),
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.color.border,
+    borderRadius: theme.radii.pill,
+    borderWidth: 1,
+    borderColor: theme.color.border,
+    backgroundColor: theme.color.background,
+    ...theme.shadow.subtle,
   },
+  suggestionIcon: { fontSize: 16 },
   suggestionText: {
-    fontSize: theme.font.body,
+    fontSize: theme.font.small,
     color: theme.color.text,
     flexShrink: 1,
-    paddingRight: theme.space(1),
   },
-  suggestionArrow: { fontSize: theme.font.body, color: theme.color.textFaint },
-  pressed: { opacity: 0.6 },
+
   foot: {
-    marginTop: theme.space(4),
-    fontSize: theme.font.label,
+    marginTop: theme.space(6),
+    fontSize: theme.font.micro,
     color: theme.color.textFaint,
     textAlign: 'center',
+    lineHeight: 16,
   },
 });
