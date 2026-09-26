@@ -904,9 +904,9 @@ describe('Priority Engine — unified admissibility decision (consumes Admissibi
   });
 });
 
-// ---- 16. CHR query: generalist merchants get malus, specialists get boost ----
-describe('CHR searchContext: malus for generalist merchants, boost for specialists', () => {
-  it('CHR query: Amazon receives malus -15, specialist CHR keeps +10 boost', () => {
+// ---- 16. CHR query: specialists get a boost, no merchant is penalised for its identity ----
+describe('CHR searchContext: boost for specialists, no identity-based malus', () => {
+  it('CHR query: specialist CHR outranks generalists through its +10 boost, without any generalist malus', () => {
     const chrSpecialist = createMerchant('chr-specialist', 'CHR Equipement Pro', 'FR');
     const generalist = createMerchant('amazon', 'Amazon', 'FR');
     const generalist2 = createMerchant('cdiscount', 'Cdiscount', 'FR');
@@ -973,8 +973,11 @@ describe('CHR searchContext: malus for generalist merchants, boost for specialis
     // All offers should be ranked (none rejected since no constraints violated)
     expect(rankedOffers.length).toBe(9);
 
-    // CHR specialist should rank higher than generalist merchants
-    // The CHR specialist has +10 boost, generalists have -15 malus
+    // Source neutrality (INVARIANT 3): Amazon (formerly on a hardcoded
+    // "generalist" malus list) scores exactly like Rakuten, which never was.
+    expect(amazonRank!.overallScore).toBe(rakutenRank!.overallScore);
+
+    // CHR specialist ranks higher through its own positive signal (+10)
     expect(chrOfferRank!.overallScore).toBeGreaterThan(amazonRank!.overallScore);
     expect(chrOfferRank!.overallScore).toBeGreaterThan(cdiscountRank!.overallScore);
     expect(chrOfferRank!.overallScore).toBeGreaterThan(fnacRank!.overallScore);

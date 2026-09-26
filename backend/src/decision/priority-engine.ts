@@ -695,13 +695,12 @@ const readiness = readinessByOfferId?.get(offer.id);
         ? scoreReadiness(readiness, { emphasis: request.prioritizeAvailability === true })
         : undefined;
 
-      // CHR merchant boost/malus for professional queries
+      // CHR merchant boost for professional queries (positive signals only)
       // Adds points for specialized CHR merchants, subtracts for generalist merchants
       let chrMerchantBonus = 0;
       const sc = request.searchContext;
       if (sc === 'restaurant_equipment' || sc === 'restaurant_supply' || sc === 'b2b') {
         const merchantName = offer.merchant?.name?.toLowerCase() ?? '';
-        const merchantUrl = offer.executionUrl?.toLowerCase() ?? '';
         const chrKeywords = ['chr', 'pro', 'professionnel', 'restaurant', 'cuisine', 'horeca', 'matériel', 'equipement', 'fournisseur', 'grossiste'];
         // Only check merchant NAME for CHR keywords — URLs may contain "professionnel"
         // because generalists also sell professional equipment
@@ -715,18 +714,17 @@ const readiness = readinessByOfferId?.get(offer.id);
         if (hasKnownPrice) chrMerchantBonus += 5;
         if (hasDirectUrl) chrMerchantBonus += 5;
 
-        // MALUS for generalist merchants on CHR queries
-        const generalistDomains = ['amazon.fr', 'cdiscount.com', 'fnac.com', 'darty.com', 'boulanger.com', 'ldlc.com', 'rue-du-commerce.com'];
-        const isGeneralist = generalistDomains.some(d => merchantUrl.includes(d));
-        if (isGeneralist) chrMerchantBonus -= 15;
+        // No malus keyed on a merchant's identity/domain (DECIDED 2026-09-26):
+        // a hardcoded "generalist" list broke source neutrality (INVARIANT 3).
+        // Specialists still rank higher through the positive signals above.
 
-        // Cap the bonus at 20 points, floor at -20
-        chrMerchantBonus = Math.max(-20, Math.min(20, chrMerchantBonus));
+        // Cap the bonus at 20 points
+        chrMerchantBonus = Math.min(20, chrMerchantBonus);
       }
 
       const bonus = (contextualRelevance?.bonus ?? 0) + (readinessScore?.bonus ?? 0) + chrMerchantBonus;
-      // NOTE: bonus !== 0 (not > 0) so that negative values (CHR generalist malus)
-      // are also applied — a malus of -15 must actually reduce the score.
+      // NOTE: bonus !== 0 (not > 0) so that a negative contextual bonus is
+      // applied too, not silently dropped.
       const finalScore = bonus !== 0
         ? Math.max(0, Math.min(100, Math.round(overallScore + bonus)))
         : overallScore;
