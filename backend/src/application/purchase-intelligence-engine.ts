@@ -225,7 +225,8 @@ export class PurchaseIntelligenceEngine {
 
     // Extract base price
     const basePrice = offer.price.value !== null ? offer.price.value : 0;
-    const currency = offer.currency ?? 'EUR';
+    // Never guess the currency: absent stays 'unknown' (DECIDED 2026-09-26).
+    const currency = offer.currency ?? 'unknown';
 
     // Calculate shipping cost
     let shippingCost: number | null = 0;
@@ -589,7 +590,7 @@ export class PurchaseIntelligenceEngine {
     }
 
     explanationParts.push(`Score de confiance: ${(trust.score * 100).toFixed(0)}%`);
-    explanationParts.push(`Coût total estimé: ${trueCost.finalTotal.toFixed(2)} ${trueCost.currency}`);
+    explanationParts.push(`Coût total estimé: ${trueCost.finalTotal.toFixed(2)} ${/^[A-Z]{3}$/.test(trueCost.currency) ? trueCost.currency : '(devise non précisée)'}`);
 
     const explanation = explanationParts.join('. ');
 

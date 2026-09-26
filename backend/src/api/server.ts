@@ -1118,7 +1118,7 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
         seller: (getValue(rankedOffer.offer.characteristics.seller) as string | null) ?? null,
         availability: (getValue(rankedOffer.offer.characteristics.availability) as string | null) ?? null,
         price: rankedOffer.offer.price.value ?? null,
-        currency: rankedOffer.offer.currency ?? 'EUR',
+        currency: rankedOffer.offer.currency ?? 'unknown',
         productUrl: (getValue(rankedOffer.offer.characteristics.productUrl) as string | null) ?? null,
         executionUrl: rankedOffer.offer.executionUrl ?? null,
         capturedAt: new Date()
@@ -1167,7 +1167,7 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
         serviceFees: null, // Not available in current Offer type
         promotionSavings: capturedSavings,
         totalCost: costBreakdown.certainty === 'known' ? costBreakdown.totalKnown : null,
-        currency: rankedOffer.offer.currency ?? 'EUR',
+        currency: rankedOffer.offer.currency ?? 'unknown',
         confidence: 0, // Would be calculated based on data quality
         source: 'offer_data',
         capturedAt: new Date()

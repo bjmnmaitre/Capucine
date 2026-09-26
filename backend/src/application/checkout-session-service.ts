@@ -152,7 +152,7 @@ export class CheckoutSessionService {
         serviceFees: null,
         promotionSavings: null,
         totalCost: null,
-        currency: 'EUR',
+        currency: 'unknown',
         confidence: 0,
         source: 'not_captured',
         capturedAt: now

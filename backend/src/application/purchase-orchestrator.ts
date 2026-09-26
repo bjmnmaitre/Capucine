@@ -158,7 +158,7 @@ export class PurchaseOrchestrator {
       serviceFees: null,
       promotionSavings: promotionSnapshot.reduce((sum, pr) => sum + pr.savingsAmount, 0),
       totalCost: costBreakdown.certainty === 'known' ? costBreakdown.totalKnown : null,
-      currency: offer.currency ?? 'EUR',
+      currency: offer.currency ?? 'unknown',
       confidence: 0,
       source: 'offer_data',
       capturedAt: new Date()
@@ -179,7 +179,7 @@ export class PurchaseOrchestrator {
       seller: getValue<string>(offer.characteristics.seller as DataPoint<string>) ?? null,
       availability: getValue<string>(offer.characteristics.availability as DataPoint<string>) ?? null,
       price: getValue(offer.price) ?? null,
-      currency: offer.currency ?? 'EUR',
+      currency: offer.currency ?? 'unknown',
       productUrl: getValue<string>(offer.characteristics.productUrl as DataPoint<string>) ?? null,
       executionUrl: offer.executionUrl ?? null,
       capturedAt: new Date()

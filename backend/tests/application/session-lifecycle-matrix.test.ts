@@ -216,6 +216,8 @@ describe('MESURE — faut-il persister les sessions ?', () => {
     expect(s.priceSnapshot.productPrice).toBeNull();
     expect(s.priceSnapshot.totalCost).toBeNull();
     expect(s.priceSnapshot.source).toBe('not_captured');
+    // Pas de devise devinée : une devise non capturée reste 'unknown', jamais 'EUR'.
+    expect(s.priceSnapshot.currency).toBe('unknown');
     // Et aucune promotion n'est inventée.
     expect(s.promotionSnapshot).toEqual([]);
   });
