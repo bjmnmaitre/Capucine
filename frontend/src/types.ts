@@ -164,6 +164,14 @@ export interface SearchResponse {
    * « 2 offres de Amazon masquées » plutôt que d'avoir une liste
    * silencieusement plus courte.
    */
+  /** Préférences permanentes suspendues pour CETTE conversation uniquement
+   *  (« exceptionnellement Amazon ça va »). Le profil stocké est inchangé. */
+  temporaryOverrides?: Array<{
+    criterionId: string;
+    temporaryLevel: string;
+    originalLevel: string | null;
+    reason: string;
+  }>;
   merchantExclusions?: {
     requested: string[];
     hiddenOfferCount: number;

@@ -32,7 +32,8 @@ import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator, AIOrchestrator } from '../application/ai-providers';
 import { isProviderInCooldown } from '../application/ai-orchestrator';
 import { FileProfileStore } from '../application/profile-store';
-import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, availabilityPreferenceFromProfile } from '../domain/profile';
+import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, availabilityPreferenceFromProfile, ProfileOverride } from '../domain/profile';
+import { extractOverridesFromAnswer } from '../application/override-extractor';
 import { describeUsageContext } from '../domain/usage-context-mapping';
 import { ConversationManager, FOLLOWUP_QUESTION_ID } from '../application/conversation-manager';
 import { PreferenceCriterion, SearchMatchQuality, Cart, OfferSnapshot, MerchantSnapshot, PromotionSnapshot, PriceSnapshot, DataPoint } from '../domain/types';
@@ -783,7 +784,13 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           // turn 2 — merged into the session so turns 3, 4… still know it.
           usageContext: followUp.usageContext ?? undefined,
         });
-        const updatedSession = followUpResult.updatedSession;
+        // MEGAPROMPT #6 — "exceptionnellement Amazon ça va": a temporary
+        // exception to a PERMANENT profile preference, kept for this
+        // conversation only (the stored profile is never touched).
+        for (const override of extractOverridesFromAnswer(answer, session.profile.preferences.criteria).overrides) {
+          conversationManager.addOverride(sessionId, override);
+        }
+        const updatedSession = conversationManager.getSession(sessionId) ?? followUpResult.updatedSession;
 
         // targetCountries → search languages (COUNTRY_TO_SEARCH_LANGUAGE),
         // minus the language already used for phase 1-2 — a "cherche aussi
@@ -817,6 +824,7 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           // text. Everything the user has said about usage so far, in one place.
           usageContext: updatedSession.usageContext,
           destinationCountry: updatedSession.destinationCountry,
+          overrides: updatedSession.overrides ?? [],
         };
 
         const result = await engine.search(searchRequest);
@@ -838,6 +846,7 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
           resultLimit: updatedSession.resultLimit,
           excludedMerchantNames: updatedSession.excludedMerchantNames,
           excludedOfferIds: updatedSession.excludedOfferIds,
+          temporaryOverrides: updatedSession.overrides ?? [],
           // Permanent preference — read from the session's profile snapshot,
           // survives every follow-up turn.
           availabilityEmphasis: availabilityPreferenceFromProfile(session.profile),
@@ -855,6 +864,11 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
         });
       }
 
+      for (const override of extractOverridesFromAnswer(answer, session.profile.preferences.criteria).overrides) {
+        conversationManager.addOverride(sessionId, override);
+      }
+      const answeredSession = conversationManager.getSession(sessionId) ?? applyResult.updatedSession;
+
       // Re-run the full search pipeline with the enriched query
       const searchRequest: SearchRequest = {
         queryText: applyResult.enrichedQuery,
@@ -862,6 +876,7 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
         profile: session.profile,
         preInterpretedCriteria: [],
         skipAIInterpretation: false,
+        overrides: answeredSession.overrides ?? [],
       };
 
       const result = await engine.search(searchRequest);
@@ -880,10 +895,11 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
         })),
         remainingQuestions: applyResult.updatedSession.unansweredQuestions.length,
       }, {
-        rankingPreference: applyResult.updatedSession.rankingPreference,
-        targetCountries: applyResult.updatedSession.targetCountries,
-        destinationCountry: applyResult.updatedSession.destinationCountry,
-        excludedMerchantNames: applyResult.updatedSession.excludedMerchantNames,
+        rankingPreference: answeredSession.rankingPreference,
+        targetCountries: answeredSession.targetCountries,
+        destinationCountry: answeredSession.destinationCountry,
+        excludedMerchantNames: answeredSession.excludedMerchantNames,
+        temporaryOverrides: answeredSession.overrides ?? [],
         availabilityEmphasis: availabilityPreferenceFromProfile(session.profile),
       }));
 
@@ -1556,6 +1572,8 @@ function serializeResult(
     resultLimit?: number;
     excludedMerchantNames?: string[];
     excludedOfferIds?: string[];
+    /** Session-scoped exceptions to permanent profile preferences (MEGAPROMPT #6). */
+    temporaryOverrides?: ProfileOverride[];
     /** The user's permanent "prioritise availability" preference was active
      *  for this search — it raised the confirmed-availability ranking bonus.
      *  Informational: lets the client explain why ready offers rank higher. */
@@ -1652,6 +1670,16 @@ function serializeResult(
     // bonus). Lets a client explain why an in-stock offer outranks a slightly
     // better match. `false` when the preference is off.
     availabilityEmphasis: sessionState?.availabilityEmphasis === true,
+
+    // Permanent preferences the user suspended FOR THIS CONVERSATION ONLY
+    // ("exceptionnellement Amazon ça va"). Empty when none. The stored profile
+    // is unchanged; a new search starts without these exceptions.
+    temporaryOverrides: (sessionState?.temporaryOverrides ?? []).map((o) => ({
+      criterionId: o.criterionId,
+      temporaryLevel: o.temporaryLevel,
+      originalLevel: o.originalLevel ?? null,
+      reason: o.reason,
+    })),
 
     // destination: where the user would receive the product (FR by default)
     // vs. which countries Capucine actually searched IN this turn — kept

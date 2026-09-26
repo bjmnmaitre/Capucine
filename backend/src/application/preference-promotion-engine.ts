@@ -30,7 +30,9 @@ export type TemporarinessLevel = 'explicit' | 'likely' | 'unlikely' | 'unknown';
  * Pure function — no side effects, no external dependencies. Can be stubbed in tests.
  */
 export function detectTemporariness(text: string): TemporarinessLevel {
-  const normalized = text.toLowerCase().trim();
+  // Typographic apostrophes (iOS / macOS keyboards: « aujourd’hui ») must
+  // match the ASCII signals below.
+  const normalized = text.toLowerCase().replace(/[\u2019\u2018`]/g, "'").trim();
 
   if (!normalized) {
     return 'unknown';

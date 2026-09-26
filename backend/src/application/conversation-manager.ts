@@ -27,7 +27,7 @@
  */
 
 import { UserProfile, PreferenceCriterion, UsageContext } from '../domain/types';
-import { merchantExclusionsFromProfile, rankingPreferenceFromProfile } from '../domain/profile';
+import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, merchantNameOfExclusion, RANKING_PREFERENCE_CRITERION_ID } from '../domain/profile';
 import { ProfileOverride } from '../domain/profile';
 import { mergeUsageContexts } from '../domain/usage-context-mapping';
 import { ClarificationItem } from './clarification-engine';
@@ -643,18 +643,38 @@ export class ConversationManager {
   }
 
   /**
-   * Add a temporary override to a session.
-   * The override will be applied to subsequent searches in this session.
+   * Add a temporary, session-scoped exception to a PERMANENT profile
+   * preference (MEGAPROMPT #6). Replayed as SearchRequest.overrides on every
+   * later turn of this conversation; the stored profile is never modified.
+   *
+   * Two profile preferences act on session state rather than on criteria, so
+   * an override lifts them here too:
+   *  - merchant exclusion ("Ne pas acheter chez Amazon") → the merchant is
+   *    removed from excludedMerchantNames for this session;
+   *  - permanent ranking preference → back to the default order.
+   * One override per criterion: a newer one replaces the older.
    */
   addOverride(sessionId: string, override: ProfileOverride): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    // Check if an override for this criterion already exists in the session
-    // For now, we'll just track it - the actual application happens in the engine
-    // via the session's overrides field if we add one
-    // For now, we store it in a way that can be retrieved
-    session.overrides = [...(session.overrides ?? []), override];
+    session.overrides = [
+      ...(session.overrides ?? []).filter((o) => o.criterionId !== override.criterionId),
+      override,
+    ];
+
+    if (override.temporaryLevel === 'disabled') {
+      const criterion = session.profile.preferences.criteria.find((c) => c.id === override.criterionId);
+      const merchant = criterion ? merchantNameOfExclusion(criterion) : null;
+      if (merchant) {
+        const lifted = merchant.toLowerCase();
+        session.excludedMerchantNames = session.excludedMerchantNames.filter((n) => n.toLowerCase() !== lifted);
+      }
+      if (override.criterionId === RANKING_PREFERENCE_CRITERION_ID) {
+        session.rankingPreference = DEFAULT_RANKING_PREFERENCE;
+      }
+    }
+
     session.updatedAt = new Date();
     session.expiresAt = new Date(Date.now() + this.TTL_MS);
     this.sessions.set(sessionId, session);
