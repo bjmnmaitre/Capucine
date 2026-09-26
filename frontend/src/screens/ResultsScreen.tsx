@@ -7,7 +7,7 @@ import {
   availabilityEmphasisLabel, costLabel, explainOfferRanking, rankingPreferenceLabel,
   usageContextLabel,
 } from '../presentation';
-import { CERTAINTY_LABEL, displayText, formatMoney, theme, cardStyle, inputStyle, textStyle } from '../theme';
+import { CERTAINTY_LABEL, displayText, formatMoney, priceLabel, theme, cardStyle, inputStyle, textStyle } from '../theme';
 
 interface Props {
   query: string;
@@ -41,17 +41,9 @@ function shippingLabel(offer: RankedOffer): { text: string; style: any } {
 
 function priceDisplay(offer: RankedOffer): { text: string; style: any } {
   const p = offer.price;
-  if (!p || p.amount === null || p.amount === undefined || p.amount === 0) {
-    return { text: 'Prix non communiqué', style: styles.priceOnRequest };
-  }
-  // currency 'unknown' → prix approximatif avec tilde
-  if (!p.currency || p.currency === 'unknown') {
-    const n = p.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return { text: `~${n} €`, style: styles.priceApprox };
-  }
-  // Format FR : toLocaleString + " €" suffix (pas Intl.NumberFormat avec style:'currency')
-  const n = p.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return { text: `${n} €`, style: styles.priceValue };
+  const label = priceLabel(p?.amount, p?.currency);
+  const style = label.kind === 'none' ? styles.priceOnRequest : label.kind === 'approximate' ? styles.priceApprox : styles.priceValue;
+  return { text: label.text, style };
 }
 
 function certaintyBadgeStyle(certainty: string) {

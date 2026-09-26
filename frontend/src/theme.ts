@@ -168,6 +168,24 @@ export function formatMoney(amount: number | null | undefined, currency: string 
 }
 
 /**
+ * Offer price label for the results list. Never invents a currency: an
+ * unknown / non-ISO currency is said so (via formatMoney), a foreign ISO
+ * currency keeps its own symbol. `approximate` flags the non-ISO case.
+ * A missing or zero amount is "Prix non communiqué", never "0,00 €".
+ */
+export function priceLabel(
+  amount: number | null | undefined,
+  currency: string | null | undefined,
+): { text: string; kind: 'none' | 'approximate' | 'exact' } {
+  if (amount === null || amount === undefined || !Number.isFinite(amount) || amount === 0) {
+    return { text: 'Prix non communiqué', kind: 'none' };
+  }
+  const raw = typeof currency === 'string' ? currency.trim() : '';
+  const approximate = raw.length > 0 && !/^[A-Za-z]{3}$/.test(raw);
+  return { text: formatMoney(amount, currency), kind: approximate ? 'approximate' : 'exact' };
+}
+
+/**
  * Renders a score for display. Missing/non-finite → explicit label.
  */
 export function formatScore(score: number | null | undefined): string {

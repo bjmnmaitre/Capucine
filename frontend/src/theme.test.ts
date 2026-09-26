@@ -3,7 +3,7 @@
  * « undefined » ni « null » sur son écran. Ces trois fonctions sont le dernier
  * point de passage entre une valeur venue du backend et le texte affiché.
  */
-import { displayText, formatMoney, formatScore } from './theme';
+import { displayText, formatMoney, formatScore, priceLabel } from './theme';
 
 describe('formatMoney — un montant absent ne devient jamais un prix', () => {
   it('formate un montant réel', () => {
@@ -84,5 +84,25 @@ describe('displayText — aucun « undefined » ne parvient à l’écran', () =
       expect(out).not.toBe('undefined');
       expect(out).not.toBe('null');
     }
+  });
+});
+
+describe('priceLabel — l\'écran Résultats n\'invente jamais une devise', () => {
+  it('devise inconnue → jamais « € », signalée comme approximative', () => {
+    const l = priceLabel(34.9, 'unknown');
+    expect(l.text).not.toMatch(/€/);
+    expect(l.text).toContain('34,90');
+    expect(l.kind).toBe('approximate');
+  });
+  it('devise étrangère connue → son propre symbole, pas « € »', () => {
+    const l = priceLabel(10, 'USD');
+    expect(l.text).not.toMatch(/€/);
+    expect(l.text).toMatch(/\$|USD/);
+    expect(l.kind).toBe('exact');
+  });
+  it('EUR → « € » ; montant absent ou 0 → « Prix non communiqué »', () => {
+    expect(priceLabel(329, 'EUR').text).toMatch(/€/);
+    expect(priceLabel(null, 'EUR').kind).toBe('none');
+    expect(priceLabel(0, 'EUR').text).toBe('Prix non communiqué');
   });
 });
