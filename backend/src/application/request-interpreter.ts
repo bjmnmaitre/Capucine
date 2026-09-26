@@ -1818,7 +1818,9 @@ export function extractDeliverabilityIntent(text: string, destinationCountry: st
 export function extractOriginIntent(text: string): PreferenceCriterion | null {
   // "fabriqué / fabriquée / fabriqués / fabriquées", "made in", "produit en",
   // "origine" — France or Europe only (controlled scope, same as onboarding).
-  const MADE = String.raw`(?:fabriqu[ée]e?s?|made\s+in|produite?s?\s+en|con[çc]ue?s?\s+en|origine|origin)`;
+  // "produit en" only as a participle: after a determiner ("un produit en
+  // France") "produit" is the NOUN and says nothing about origin.
+  const MADE = String.raw`(?:fabriqu[ée]e?s?|made\s+in|(?<!\b(?:un|une|des|le|la|les|ce|ces|cet|du|mon|ma|mes|ton|ta|tes|son|sa|ses|notre|votre|leur|leurs)\s+)produite?s?\s+en|con[çc]ue?s?\s+en|origine|origin)`;
   const FRANCE = new RegExp(String.raw`\b${MADE}\s+(?:en\s+)?france\b`, 'i');
   const EUROPE = new RegExp(String.raw`\b${MADE}\s+(?:en\s+|dans\s+l'|in\s+)?(?:europe|l'union\s+europ[ée]enne|the\s+eu|eu|ue)\b`, 'i');
 

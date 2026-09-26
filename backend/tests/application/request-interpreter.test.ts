@@ -1069,6 +1069,12 @@ describe('extractOriginIntent — "fabriqué en France / made in Europe"', () =>
     expect(c?.parameters?.preferredValues?.length).toBeGreaterThan(10);
   });
 
+  it('"produit" as a NOUN ("un produit en France") is not an origin; as a participle it is', () => {
+    expect(extractOriginIntent('je cherche un produit en France')).toBeNull();
+    expect(extractOriginIntent('des produits en Europe pas chers')).toBeNull();
+    expect(extractOriginIntent('un savon produit en France')?.id).toBe('eu_origin');
+  });
+
   it('an unrelated request never fabricates an origin criterion', () => {
     expect(extractOriginIntent('casque Sony bluetooth')).toBeNull();
     expect(extractOriginIntent('uniquement du neuf')).toBeNull();
