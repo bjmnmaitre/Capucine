@@ -33,9 +33,11 @@ describe('formatMoney — un montant absent ne devient jamais un prix', () => {
     expect(formatMoney(42, 'PAS-UNE-DEVISE')).toContain('42');
   });
 
-  it('devise vide → défaut euros (destination France)', () => {
-    expect(formatMoney(42, null)).toMatch(/€/);
-    expect(formatMoney(42, '')).toMatch(/€/);
+  // DÉCIDÉ 2026-09-26 : une devise absente n'est plus devinée en euros.
+  it('devise vide ou absente → jamais « € », « devise non précisée »', () => {
+    expect(formatMoney(42, null)).not.toMatch(/€/);
+    expect(formatMoney(42, '')).not.toMatch(/€/);
+    expect(formatMoney(42, null)).toContain('devise non précisée');
   });
 
   it('devise explicitement « unknown » → montant conservé, devise signalée, jamais « 42 unknown » ni « € »', () => {

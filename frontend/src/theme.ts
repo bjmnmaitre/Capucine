@@ -154,12 +154,14 @@ export function formatMoney(amount: number | null | undefined, currency: string 
   const raw = typeof currency === 'string' ? currency.trim() : '';
   const isIsoCode = /^[A-Za-z]{3}$/.test(raw);
 
-  if (raw.length > 0 && !isIsoCode) {
+  // Absent, empty or non-ISO currency: the amount is shown, the currency is
+  // never guessed (DECIDED 2026-09-26 - no silent "€" default).
+  if (!isIsoCode) {
     const n = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
     return `${n} (devise non précisée)`;
   }
 
-  const code = isIsoCode ? raw.toUpperCase() : 'EUR';
+  const code = raw.toUpperCase();
   try {
     return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: code }).format(amount);
   } catch {
@@ -181,7 +183,7 @@ export function priceLabel(
     return { text: 'Prix non communiqué', kind: 'none' };
   }
   const raw = typeof currency === 'string' ? currency.trim() : '';
-  const approximate = raw.length > 0 && !/^[A-Za-z]{3}$/.test(raw);
+  const approximate = !/^[A-Za-z]{3}$/.test(raw);
   return { text: formatMoney(amount, currency), kind: approximate ? 'approximate' : 'exact' };
 }
 
