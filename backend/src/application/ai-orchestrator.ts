@@ -720,7 +720,8 @@ async complete(request: AIRequest): Promise<AIResponse> {
       const criteria = [];
       
       // Detect category
-      if (query.includes('ordinateur') || query.includes('laptop') || query.includes('portable') || query.includes('macbook') || query.includes('thinkpad')) {
+      // 'portable' alone is NOT enough ("enceinte portable", "batterie portable"): a computer word is required.
+      if (/\b(?:ordinateur|laptop|notebook|macbook|thinkpad|pc\s+portable)\b/i.test(query)) {
         criteria.push({ id: 'category', name: 'Catégorie', level: 'required', parameters: { preferredValues: ['ordinateur_portable'] } });
       } else if (query.includes('casque') || query.includes('headphone') || query.includes('airpod') || query.includes('sony xm') || query.includes('sony wh')) {
         criteria.push({ id: 'category', name: 'Catégorie', level: 'required', parameters: { preferredValues: ['casque'] } });
@@ -773,9 +774,10 @@ async complete(request: AIRequest): Promise<AIResponse> {
       }
       
       // Detect condition
-      if (query.includes('neuf') || query.includes('brand new') || query.includes('new')) {
+      // Word boundaries: 'new' must not match "news" / "renew".
+      if (/\b(?:neuf|neuve|neufs|neuves|brand\s+new|new)\b/i.test(query)) {
         criteria.push({ id: 'condition', name: 'État du produit', level: 'required', parameters: { preferredValues: ['new'] } });
-      } else if (query.includes('occasion') || query.includes('used') || query.includes('reconditionné') || query.includes('refurbished')) {
+      } else if (/\b(?:occasion|used|reconditionn[ée]e?s?|refurbished)(?![\wÀ-ÿ])/i.test(query)) {
         criteria.push({ id: 'condition', name: 'État du produit', level: 'required', parameters: { preferredValues: ['used'] } });
       }
       
