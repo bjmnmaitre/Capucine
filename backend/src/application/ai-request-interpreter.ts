@@ -14,22 +14,19 @@ import {
   InterpretedRequest,
   QueryAnalysis,
   QueryValidationResult,
-  QueryValidationError,
-  QueryValidationWarning,
 } from './request';
-import { PreferenceCriterion, PreferenceLevel, UsageContext } from '../domain/types';
+import { PreferenceCriterion } from '../domain/types';
 import { AIOrchestrator, InterpretedQuery } from './ai-orchestrator';
-import { detectSearchContext } from './request-interpreter';
+import { BasicPatternInterpreter, detectSearchContext } from './request-interpreter';
 
 interface IntentExtractionResult {
-  productType: string | null;
+  category: string | null;
   location: string | null;
   ingredients: string[];
   budget: { max: number | null; currency: 'EUR' | null };
   temporalConstraint: string | null;
   fulfillmentMode: 'delivery' | 'pickup' | 'dine-in' | null;
   dietaryConstraints: string[];
-  category: string | null;
   ram: { minValue: number; unit: string } | null;
   color: { values: string[]; canonical: string } | null;
   searchContext: 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b' | string | null;
@@ -64,18 +61,15 @@ const AI_MERGEABLE_IDS = new Set<string>([
 ]);
 
 export class AIRequestInterpreter {
-  private readonly aiOrchestrator: any; // AIOrchestrator type
-  private fallbackInterpreter: any; // BasicPatternInterpreter
+  private readonly aiOrchestrator: AIOrchestrator;
+  private fallbackInterpreter: BasicPatternInterpreter | null = null;
 
-  constructor(aiOrchestrator: any) {
+  constructor(aiOrchestrator: AIOrchestrator) {
     this.aiOrchestrator = aiOrchestrator;
-    this.fallbackInterpreter = null;
   }
 
-  private getFallbackInterpreter() {
+  private getFallbackInterpreter(): BasicPatternInterpreter {
     if (!this.fallbackInterpreter) {
-      // Lazy load to avoid circular dependency
-      const { BasicPatternInterpreter } = require('./request-interpreter');
       this.fallbackInterpreter = new BasicPatternInterpreter();
     }
     return this.fallbackInterpreter;
@@ -84,23 +78,19 @@ export class AIRequestInterpreter {
   /**
    * Deterministic baseline FIRST, AI as an additive proposal.
    *
-   * The BasicPatternInterpreter result is always computed and is the
-   * interpretation that reaches the engine. The LLM may only ADD criteria for
-   * intents the deterministic interpreter cannot read (AI_MERGEABLE_IDS), and
-   * only when that id is absent from the baseline — it never overrides,
-   * duplicates or tightens a deterministic criterion.
+   * The BasicPatternInterpreter result is always computed and is what reaches
+   * the engine. The LLM may only ADD criteria for intents the deterministic
+   * interpreter cannot read (AI_MERGEABLE_IDS), and only when that id is
+   * absent - it never overrides, duplicates or tightens a deterministic value.
    *
-   * productType / searchContext are metadata, NOT criteria: no offer carries a
-   * "productType" or "searchContext" characteristic, so as `required`
-   * criteria they rejected every offer (0 results on every search).
-   * searchContext is already threaded separately via detectSearchContext().
+   * productType / searchContext are metadata, NOT criteria: no offer carries
+   * those characteristics, so as `required` criteria they rejected every offer.
    */
-  async interpret(query: any): Promise<any> {
-    const interpretation: any = await this.getFallbackInterpreter().interpret(query);
+  async interpret(query: UserQuery): Promise<InterpretedRequest> {
+    const interpretation: InterpretedRequest = await this.getFallbackInterpreter().interpret(query);
 
     if (!query.text) return interpretation;
 
-    const startMs = Date.now();
     let intentResult: IntentExtractionResult | null = null;
     try {
       intentResult = await this.extractIntentWithLLM(query.text ?? '');
@@ -110,29 +100,23 @@ export class AIRequestInterpreter {
     }
 
     if (intentResult) {
-      const proposal: any = { extractedCriteria: [] };
+      const proposal = { extractedCriteria: [] as PreferenceCriterion[] };
       this.applyIntentResult(intentResult, proposal);
-      const present = new Set<string>(interpretation.extractedCriteria.map((c: { id: string }) => c.id));
+      const present = new Set<string>(interpretation.extractedCriteria.map((c) => c.id));
       for (const c of proposal.extractedCriteria) {
         if (AI_MERGEABLE_IDS.has(c.id) && !present.has(c.id)) {
           interpretation.extractedCriteria.push(c);
           present.add(c.id);
         }
       }
-      // Metadata only — never criteria.
-      interpretation.productType = intentResult.productType;
-      interpretation.searchContext = intentResult.searchContext;
+      if (!interpretation.category && intentResult.category) interpretation.category = intentResult.category;
+      interpretation.searchContext = intentResult.searchContext ?? interpretation.searchContext;
       if (!interpretation.location && intentResult.location) interpretation.location = intentResult.location;
-      if (intentResult.ingredients.length > 0) interpretation.ingredients = intentResult.ingredients;
-      if (intentResult.fulfillmentMode) interpretation.fulfillmentMode = intentResult.fulfillmentMode;
-      if (intentResult.temporalConstraint) interpretation.temporalConstraint = intentResult.temporalConstraint;
-      if (intentResult.dietaryConstraints.length > 0) interpretation.dietaryConstraints = intentResult.dietaryConstraints;
-      if ((interpretation.suggestedSearchTerms?.length ?? 0) === 0 && intentResult.suggestedSearchTerms.length > 0) {
+      if (intentResult.suggestedSearchTerms.length > 0 && (interpretation.suggestedSearchTerms?.length ?? 0) === 0) {
         interpretation.suggestedSearchTerms = intentResult.suggestedSearchTerms;
       }
     }
 
-    interpretation.interpretationMs = Date.now() - startMs;
     return interpretation;
   }
 
@@ -147,72 +131,91 @@ export class AIRequestInterpreter {
     });
 
     if (response.validationErrors?.length) {
-      throw new Error(`AI validation errors: ${response.validationErrors.map((e: { message: string }) => e.message).join(', ')}`);
+      throw new Error(`AI validation errors: ${response.validationErrors.map((e) => e.message).join(', ')}`);
     }
 
-    // Use the AI orchestrator's interpreted result directly (it already has validated, parsed data)
-    const interpreted = response;
+    const interpreted: InterpretedQuery = response;
     
-    // Extract all criteria from extractedCriteria array (AI orchestrator format)
     let category: string | null = null;
     let ram: { minValue: number; unit: string } | null = null;
     let budget: { max: number | null; currency: 'EUR' | null } = { max: null, currency: 'EUR' };
-    let color = null;
+    let color: { values: string[]; canonical: string } | null = null;
     let location = null;
+    const ingredients: string[] = [];
+    let temporalConstraint: string | null = null;
+    let fulfillmentMode: 'delivery' | 'pickup' | 'dine-in' | null = null;
+    const dietaryConstraints: string[] = [];
     
     if (Array.isArray(interpreted.extractedCriteria)) {
       for (const c of interpreted.extractedCriteria) {
-        const criterionId = c.id ?? c.suggestedId;
+        const criterionId = c.suggestedId;
+        const params = (c.extractedValue ?? {}) as Record<string, unknown>;
+        
         if (criterionId === 'category') {
-          const values = c.parameters?.preferredValues ?? c.extractedValue?.preferredValues;
+          const values = params.preferredValues;
           if (Array.isArray(values) && values.length > 0) {
             category = values[0];
           }
         } else if (criterionId === 'ram') {
-          const minValue = c.parameters?.minValue ?? c.extractedValue?.minValue;
-          const unit = c.parameters?.unit ?? c.extractedValue?.unit ?? 'GB';
+          const minValue = params.minValue;
+          const unit = (params.unit as string) ?? 'GB';
           if (typeof minValue === 'number') {
             ram = { minValue, unit };
           }
         } else if (criterionId === 'budget') {
-          const maxBudget = c.parameters?.maxBudget ?? c.extractedValue?.maxBudget;
-          const currency = (c.parameters?.currency ?? c.extractedValue?.currency) === 'EUR' ? 'EUR' : null;
+          const maxBudget = params.maxBudget;
+          const currency = params.currency === 'EUR' ? 'EUR' : null;
           if (typeof maxBudget === 'number') {
             budget = { max: maxBudget, currency };
           }
         } else if (criterionId === 'color') {
-          const values = c.parameters?.preferredValues ?? c.extractedValue?.preferredValues;
-          const canonical = c.parameters?.canonical ?? c.extractedValue?.canonical;
+          const values = params.preferredValues;
+          const canonical = params.canonical;
           if (Array.isArray(values) && values.length > 0) {
             color = { values, canonical: canonical ?? values[0] };
           }
         } else if (criterionId === 'location') {
-          const city = c.parameters?.city ?? c.parameters?.value ?? c.extractedValue?.city ?? c.extractedValue?.value;
+          const city = params.city ?? params.value;
           if (typeof city === 'string' && city.length > 0) {
             location = city;
           }
-        } else if (criterionId === 'searchContext') {
-          const value = c.parameters?.value ?? c.parameters?.value ?? null;
+        } else if (criterionId === 'ingredients') {
+          const values = params.values;
+          if (Array.isArray(values)) {
+            ingredients.push(...values.filter((v): v is string => typeof v === 'string'));
+          }
+        } else if (criterionId === 'temporalConstraint') {
+          const value = params.value;
           if (typeof value === 'string') {
-            // This will be handled by the searchContext extraction below
+            temporalConstraint = value;
+          }
+        } else if (criterionId === 'fulfillmentMode') {
+          const value = params.value;
+          if (['delivery', 'pickup', 'dine-in'].includes(value as string)) {
+            fulfillmentMode = value as 'delivery' | 'pickup' | 'dine-in';
+          }
+        } else if (criterionId === 'dietaryConstraints') {
+          const values = params.values;
+          if (Array.isArray(values)) {
+            dietaryConstraints.push(...values.filter((v): v is string => typeof v === 'string'));
           }
         }
       }
     }
     
-    // Extract search context from criteria
     let searchContext: 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b' | null = null;
     if (Array.isArray(interpreted.extractedCriteria)) {
       for (const c of interpreted.extractedCriteria) {
-        if ((c.id ?? c.suggestedId) === 'searchContext') {
-          const value = c.parameters?.value ?? c.parameters?.value ?? null;
+        if (c.suggestedId === 'searchContext') {
+          const params = (c.extractedValue ?? {}) as Record<string, unknown>;
+          const value = params.value;
           if (typeof value === 'string') {
             searchContext = value as 'consumer' | 'restaurant_equipment' | 'restaurant_supply' | 'b2b';
           }
         }
       }
+    }
     
-    // Filter out budget/constraint words from suggested terms (same logic as BasicPatternInterpreter)
     const BUDGET_STOP = new Set([
       'budget', 'euros', 'euro', 'maximum', 'minimum', 'maxi', 'moins', 'plus',
       'cherche', 'cherches', 'cherchez', 'cherchons',
@@ -235,169 +238,130 @@ export class AIRequestInterpreter {
       : [];
     
     return {
-      productType: interpreted.productDescription ?? null,
       location,
-      ingredients: Array.isArray(interpreted.ingredients) ? interpreted.ingredients : [],
-      budget: interpreted.budget ?? { max: null, currency: 'EUR' },
-      temporalConstraint: interpreted.temporalConstraint ?? null,
-      fulfillmentMode: ['delivery', 'pickup', 'dine-in'].includes(interpreted.fulfillmentMode) ? interpreted.fulfillmentMode : null,
-      dietaryConstraints: Array.isArray(interpreted.dietaryConstraints) ? interpreted.dietaryConstraints : [],
+      ingredients,
+      budget,
+      temporalConstraint,
+      fulfillmentMode,
+      dietaryConstraints,
       category,
       ram,
       color,
       searchContext: detectSearchContext(text),
       suggestedSearchTerms,
-confidence: interpreted.confidence ?? 0.5,
+      confidence: interpreted.confidence ?? 0.5,
     };
-  } // All paths return or throw - satisfies TypeScript control flow analysis
-  // The following line is never reached but satisfies TypeScript control flow analysis
-  
-  throw new Error('Unreachable: all paths in extractIntentWithLLM should return or throw');
-}
+  }
 
-  private applyIntentResult(intent: IntentExtractionResult, interpretation: any): void {
-    if (intent.productType) {
-      interpretation.extractedCriteria.push({
-        id: 'productType',
-        name: 'Type de produit',
-        level: 'required',
-        parameters: { value: intent.productType },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
-    if (intent.location) {
-      interpretation.extractedCriteria.push({
-        id: 'location',
-        name: 'Localisation',
-        level: 'required',
-        parameters: { city: intent.location },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
-    if (intent.ingredients.length > 0) {
-      interpretation.extractedCriteria.push({
-        id: 'ingredients',
-        name: 'Ingrédients',
-        level: 'preference',
-        parameters: { values: intent.ingredients },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
-    if (intent.budget.max !== null) {
-      interpretation.extractedCriteria.push({
-        id: 'budget',
-        name: 'Budget',
-        level: 'required',
-        parameters: { maxBudget: intent.budget.max, currency: intent.budget.currency ?? 'EUR' },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
-    if (intent.temporalConstraint) {
-      interpretation.extractedCriteria.push({
-        id: 'temporalConstraint',
-        name: 'Contrainte temporelle',
-        level: 'preference',
-        parameters: { value: intent.temporalConstraint },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
-    if (intent.fulfillmentMode) {
-      interpretation.extractedCriteria.push({
-        id: 'fulfillmentMode',
-        name: 'Mode de fulfillment',
-        level: 'preference',
-        parameters: { value: intent.fulfillmentMode },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
-    if (intent.dietaryConstraints.length > 0) {
-      interpretation.extractedCriteria.push({
-        id: 'dietaryConstraints',
-        name: 'Contraintes alimentaires',
-        level: 'preference',
-        parameters: { values: intent.dietaryConstraints },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
-      });
-    }
-
+  private applyIntentResult(intent: IntentExtractionResult, proposal: { extractedCriteria: PreferenceCriterion[] }): void {
     if (intent.category) {
-      interpretation.extractedCriteria.push({
+      proposal.extractedCriteria.push({
         id: 'category',
         name: 'Catégorie',
         level: 'required',
         parameters: { preferredValues: [intent.category], unknownPolicy: 'pass' },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
+      });
+    }
+
+    if (intent.location) {
+      proposal.extractedCriteria.push({
+        id: 'location',
+        name: 'Localisation',
+        level: 'required',
+        parameters: { city: intent.location },
+      });
+    }
+
+    if (intent.ingredients.length > 0) {
+      proposal.extractedCriteria.push({
+        id: 'ingredients',
+        name: 'Ingrédients',
+        level: 'preference',
+        parameters: { values: intent.ingredients },
+      });
+    }
+
+    if (intent.budget.max !== null) {
+      proposal.extractedCriteria.push({
+        id: 'budget',
+        name: 'Budget',
+        level: 'required',
+        parameters: { maxBudget: intent.budget.max, currency: intent.budget.currency ?? 'EUR' },
+      });
+    }
+
+    if (intent.temporalConstraint) {
+      proposal.extractedCriteria.push({
+        id: 'temporalConstraint',
+        name: 'Contrainte temporelle',
+        level: 'preference',
+        parameters: { value: intent.temporalConstraint },
+      });
+    }
+
+    if (intent.fulfillmentMode) {
+      proposal.extractedCriteria.push({
+        id: 'fulfillmentMode',
+        name: 'Mode de fulfillment',
+        level: 'preference',
+        parameters: { value: intent.fulfillmentMode },
+      });
+    }
+
+    if (intent.dietaryConstraints.length > 0) {
+      proposal.extractedCriteria.push({
+        id: 'dietaryConstraints',
+        name: 'Contraintes alimentaires',
+        level: 'preference',
+        parameters: { values: intent.dietaryConstraints },
       });
     }
 
     if (intent.ram) {
-      interpretation.extractedCriteria.push({
+      proposal.extractedCriteria.push({
         id: 'ram',
         name: 'Mémoire RAM',
         level: 'required',
         parameters: { minValue: intent.ram.minValue, unit: intent.ram.unit, unknownPolicy: 'pass' },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
       });
     }
 
     if (intent.color) {
-      interpretation.extractedCriteria.push({
+      proposal.extractedCriteria.push({
         id: 'color',
         name: 'Couleur',
         level: 'required',
         parameters: { preferredValues: intent.color.values, canonical: intent.color.canonical, unknownPolicy: 'pass' },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
       });
     }
 
     if (intent.searchContext) {
-      interpretation.extractedCriteria.push({
+      proposal.extractedCriteria.push({
         id: 'searchContext',
         name: 'Contexte de recherche',
         level: 'required',
         parameters: { value: intent.searchContext },
-        origin: 'ai_inferred',
-        createdAt: new Date(),
       });
     }
-
-    interpretation.confidence = intent.confidence;
-    interpretation.productType = intent.productType;
-    interpretation.location = intent.location;
-    interpretation.ingredients = intent.ingredients;
-    interpretation.budget = intent.budget;
-    interpretation.temporalConstraint = intent.temporalConstraint;
-    interpretation.fulfillmentMode = intent.fulfillmentMode;
-    interpretation.dietaryConstraints = intent.dietaryConstraints;
-    interpretation.category = intent.category;
-    interpretation.ram = intent.ram;
-    interpretation.color = intent.color;
-    interpretation.searchContext = intent.searchContext;
-    interpretation.suggestedSearchTerms = intent.suggestedSearchTerms;
   }
 
-  // Required by IRequestInterpreter but not used in async flow
-  async analyzeQuery(query: any): Promise<any> {
+  async analyzeQuery(query: UserQuery): Promise<QueryAnalysis> {
+    return {
+      queryId: query.id,
+      analysisTime: new Date(),
+      queryLength: query.text?.length ?? 0,
+      estimatedComplexity: 'simple',
+      isTimeConstrained: false,
+      detectedCategories: [],
+      ambiguityCount: 0,
+      averageAmbiguityConfidence: 0,
+      isRankable: true,
+      needsClarification: false,
+      estimatedClarificationQuestions: 0,
+    };
+  }
+
+  async validateQuery(query: UserQuery): Promise<QueryValidationResult> {
     return { queryId: query.id, isValid: true, errors: [], warnings: [], timeToValidate: 0 };
-  }
-
-  async validateQuery(query: any): Promise<any> {
-    return { isValid: true, errors: [], warnings: [] };
   }
 }

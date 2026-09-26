@@ -462,7 +462,7 @@ export class GroqProvider implements AIProvider {
       const e = await response.text().catch(() => '(no body)');
       throw new Error(`GroqProvider: HTTP ${response.status} — ${e.slice(0, 200)}`);
     }
-    const data = await response.json() as any;
+    const data = await response.json() as OpenRouterResponse;
     const content = data.choices?.[0]?.message?.content ?? '';
     return {
       content,

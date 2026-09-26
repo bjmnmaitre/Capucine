@@ -473,7 +473,7 @@ export async function detectDeviceCapabilities(): Promise<DeviceCapabilities> {
 
   // Detect screen reader (heuristic)
   const screenReaderLikelyActive =
-    (document as any).__a11ytest !== undefined || // Some SR extensions set this
+    (document as Document & { __a11ytest?: unknown }).__a11ytest !== undefined || // Some SR extensions set this
     document.body.getAttribute('role') === 'application'; // App-mode hint
 
   // Detect OS

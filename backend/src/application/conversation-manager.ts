@@ -78,6 +78,9 @@ export interface ConversationSession {
   /** Unique session ID — returned to the client so they can call /clarify */
   id: string;
 
+  /** Temporary (session-scoped) profile overrides added via addOverride(). */
+  overrides?: ProfileOverride[];
+
   /** User who owns this session (security scope) */
   userId: string;
 
@@ -651,10 +654,7 @@ export class ConversationManager {
     // For now, we'll just track it - the actual application happens in the engine
     // via the session's overrides field if we add one
     // For now, we store it in a way that can be retrieved
-    if (!('overrides' in session)) {
-      (session as any).overrides = [];
-    }
-    (session as any).overrides.push(override);
+    session.overrides = [...(session.overrides ?? []), override];
     session.updatedAt = new Date();
     session.expiresAt = new Date(Date.now() + this.TTL_MS);
     this.sessions.set(sessionId, session);

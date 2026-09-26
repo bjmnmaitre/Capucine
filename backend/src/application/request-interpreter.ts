@@ -560,7 +560,7 @@ export class BasicPatternInterpreter implements IRequestInterpreter {
   // ========================================================================
 
   private parseStructured(
-    structured: any,
+    structured: NonNullable<UserQuery['structured']>,
     interpretation: InterpretedRequest
   ): void {
     // Budget

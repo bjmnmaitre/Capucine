@@ -30,6 +30,7 @@ import { buildDefaultToolRegistry } from '../application/tools';
 import { detectWebSearchAdapters } from '../application/web-search-adapters';
 import type { WebSearchAdapter } from '../application/tools';
 import { buildAIOrchestrator, AIOrchestrator } from '../application/ai-providers';
+import { isProviderInCooldown } from '../application/ai-orchestrator';
 import { FileProfileStore } from '../application/profile-store';
 import { merchantExclusionsFromProfile, rankingPreferenceFromProfile, availabilityPreferenceFromProfile } from '../domain/profile';
 import { describeUsageContext } from '../domain/usage-context-mapping';
@@ -355,8 +356,8 @@ export function buildApp(options: BuildAppOptions = {}): express.Application {
    */
   app.get('/health', (_req: Request, res: Response) => {
     // Get AI orchestrator cooldown status
-    const groqCooldown = (global as any).__groqCooldownUntil ? Date.now() < (global as any).__groqCooldownUntil : false;
-    const openrouterCooldown = (global as any).__openrouterCooldownUntil ? Date.now() < (global as any).__openrouterCooldownUntil : false;
+    const groqCooldown = isProviderInCooldown('groq');
+    const openrouterCooldown = isProviderInCooldown('openrouter');
 
     // Get search cache stats
     const cacheStats = searchCache.getStats();

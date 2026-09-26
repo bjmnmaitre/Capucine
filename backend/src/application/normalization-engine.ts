@@ -286,7 +286,7 @@ export class NormalizationEngine {
         },
       };
     }
-    return numResult as any;
+    return { success: false, error: numResult.error };
   }
 
   private parseDuration(

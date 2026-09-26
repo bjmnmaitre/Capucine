@@ -257,6 +257,17 @@ export interface AIAuditEntry {
  * 3. Surfaced to the user for confirmation if significant
  * 4. Passed only to the INTERPRETATION layer, never the RANKING layer
  */
+/**
+ * Process-wide rate-limit cooldowns (provider name -> epoch ms until which it
+ * is skipped). Written by AIOrchestrator on HTTP 429, read by GET /health.
+ */
+export const providerCooldownUntil = new Map<string, number>();
+
+export function isProviderInCooldown(providerName: string, now: number = Date.now()): boolean {
+  const until = providerCooldownUntil.get(providerName);
+  return until !== undefined && now < until;
+}
+
 export class AIOrchestrator {
   private readonly providers: AIProvider[];
   private readonly config: OrchestratorConfig;
@@ -465,11 +476,7 @@ Return JSON array: [{"criterionId": "", "question": "", "priority": "high|medium
   private setCooldown(providerName: string, durationMs: number): void {
     const until = Date.now() + durationMs;
     this.providerCooldowns.set(providerName, until);
-    if (providerName === 'groq') {
-      (global as any).__groqCooldownUntil = until;
-    } else if (providerName === 'openrouter') {
-      (global as any).__openrouterCooldownUntil = until;
-    }
+    providerCooldownUntil.set(providerName, until);
   }
 
   private async callWithFallback(request: {
