@@ -1,17 +1,22 @@
 import { agentResultLine, temporaryExceptionLines, SEARCH_STEPS } from './agent';
 
-describe('agentResultLine — la voix de Capucine n’invente aucun chiffre', () => {
-  it('résumé complet', () => {
+describe('agentResultLine — la voix de Capucine n’affirme que ce que le backend garantit', () => {
+  it('offres écartées : pluriel / singulier', () => {
     expect(agentResultLine({ totalFound: 4, totalRejected: 3 }, 4))
-      .toBe('J’ai retenu 4 offres sur 7 examinées ; 3 écartées car elles ne respectaient pas un critère obligatoire.');
+      .toBe('J’ai écarté 3 offres qui ne respectaient pas un de vos critères obligatoires.');
+    expect(agentResultLine({ totalFound: 4, totalRejected: 1 }, 4))
+      .toBe('J’ai écarté 1 offre qui ne respectait pas un de vos critères obligatoires.');
   });
-  it('rien d’écarté, singulier', () => {
-    expect(agentResultLine({ totalFound: 1, totalRejected: 0 }, 1)).toBe('J’ai retenu 1 offre sur 1 examinée.');
+  it('rien d’écarté', () => {
+    expect(agentResultLine({ totalFound: 3, totalRejected: 0 }, 3))
+      .toBe('Toutes les offres trouvées respectent vos critères obligatoires.');
   });
-  it('données absentes ou nulles → rien (pas de phrase fabriquée)', () => {
+  it('ne prétend jamais avoir « examiné » un nombre d’offres (des offres peuvent être masquées à l’affichage)', () => {
+    expect(agentResultLine({ totalFound: 3, totalRejected: 0 }, 3)).not.toMatch(/examin/);
+  });
+  it('données absentes ou invalides → rien', () => {
     expect(agentResultLine(undefined, 3)).toBeNull();
-    expect(agentResultLine({ totalFound: 0, totalRejected: 0 }, 0)).toBeNull();
-    expect(agentResultLine({ totalFound: NaN, totalRejected: 1 } as never, 0)).toBeNull();
+    expect(agentResultLine({ totalFound: 1, totalRejected: NaN } as never, 0)).toBeNull();
   });
 });
 

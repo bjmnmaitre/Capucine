@@ -6,6 +6,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { HealthStatus } from '../api';
 import { Screen } from '../components/Screen';
+import { CapucineAvatar } from '../components/CapucineAvatar';
+import { SearchSteps } from '../components/SearchSteps';
 import { theme, cardStyle, inputStyle, primaryButtonStyle, textStyle } from '../theme';
 
 interface Props {
@@ -73,7 +75,8 @@ export function HomeScreen({
       >
         <View style={styles.container}>
           {/* Header — wordmark only, subtle */}
-          <View style={styles.header}>
+          <View style={[styles.header, styles.headerRow]}>
+            <CapucineAvatar size={26} />
             <Text style={styles.wordmark}>Capucine</Text>
           </View>
 
@@ -81,6 +84,7 @@ export function HomeScreen({
           <View style={styles.hero}>
             <Text style={styles.greeting} accessibilityRole="header">Bonjour.</Text>
             <Text style={styles.prompt}>Que puis-je trouver pour vous ?</Text>
+            <Text style={styles.signature}>Je cherche. Je trouve. Tu décides.</Text>
           </View>
 
           {/* Search input area — the hero component */}
@@ -130,6 +134,8 @@ export function HomeScreen({
               </Pressable>
             )}
           </View>
+
+          {loading ? <SearchSteps /> : null}
 
           {/* Error / status messages — honest, actionable, no technical details */}
           {error ? (
@@ -247,6 +253,11 @@ const styles = StyleSheet.create({
   header: {
     marginBottom: theme.space(4),
   },
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1) },
+  signature: {
+    fontSize: theme.font.small, color: theme.color.goldInk, fontWeight: theme.weight.semibold,
+    letterSpacing: 0.4, marginTop: theme.space(1.5),
+  },
   wordmark: {
     fontSize: theme.font.micro,
     fontWeight: theme.weight.bold,
@@ -314,13 +325,14 @@ const styles = StyleSheet.create({
     borderRadius: theme.radii.md,
     ...theme.shadow.subtle,
   },
-  goButtonDisabled: { opacity: theme.opacity.disabled },
+  // Disabled = light marine tint + muted text (4.9:1), never a washed-out marine.
+  goButtonDisabled: { backgroundColor: theme.color.accentSoft },
   goText: {
     color: theme.color.accentText,
     fontSize: theme.font.body,
     fontWeight: theme.weight.bold,
   },
-  goTextDisabled: { color: theme.color.unknown },
+  goTextDisabled: { color: theme.color.textMuted },
 
   notice: {
     marginTop: theme.space(2.5),

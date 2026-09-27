@@ -14,18 +14,22 @@ export const SEARCH_STEPS: readonly string[] = [
   'Je classe les offres',
 ];
 
-/** "J'ai retenu 4 offres sur 7 ; 3 écartées (critère obligatoire non respecté)." */
+/**
+ * Capucine's one-line account of what she discarded. Built ONLY from
+ * summary.totalRejected: "found/shown" counts are not used because offers can
+ * also be hidden at presentation time (merchant exclusions, result limit), so
+ * "N sur M examinées" would misstate what was examined.
+ */
 export function agentResultLine(
   summary: SearchResponse['summary'] | undefined,
-  shownCount: number,
+  _shownCount: number,
 ): string | null {
-  if (!summary || !Number.isFinite(summary.totalFound) || !Number.isFinite(summary.totalRejected)) return null;
-  const considered = summary.totalFound + summary.totalRejected;
-  if (considered <= 0) return null;
-  const s = (n: number) => (n > 1 ? 's' : '');
-  const kept = `J’ai retenu ${shownCount} offre${s(shownCount)} sur ${considered} examinée${s(considered)}`;
-  if (summary.totalRejected <= 0) return `${kept}.`;
-  return `${kept} ; ${summary.totalRejected} écartée${s(summary.totalRejected)} car elle${s(summary.totalRejected)} ne respectai${summary.totalRejected > 1 ? 'ent' : 't'} pas un critère obligatoire.`;
+  const rejected = summary?.totalRejected;
+  if (typeof rejected !== 'number' || !Number.isFinite(rejected) || rejected < 0) return null;
+  if (rejected === 0) return 'Toutes les offres trouvées respectent vos critères obligatoires.';
+  return rejected === 1
+    ? 'J’ai écarté 1 offre qui ne respectait pas un de vos critères obligatoires.'
+    : `J’ai écarté ${rejected} offres qui ne respectaient pas un de vos critères obligatoires.`;
 }
 
 /** One line per permanent preference suspended for this conversation only. */
