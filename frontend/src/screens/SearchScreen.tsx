@@ -372,7 +372,7 @@ const styles = StyleSheet.create({
   },
   offlineBox: {
     marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.unknown, backgroundColor: '#FBF1DC',
+    borderWidth: 1, borderColor: theme.color.unknown, backgroundColor: theme.color.unknownSoft,
   },
   offlineTitle: { color: theme.color.unknown, fontWeight: '700', fontSize: theme.font.body },
   offlineBody: {
@@ -387,7 +387,7 @@ const styles = StyleSheet.create({
   retryBtnText: { color: theme.color.accentText, fontWeight: '700', fontSize: theme.font.small },
   errorBox: {
     marginTop: theme.space(3), padding: theme.space(2), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
+    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: theme.color.dangerSoft,
     flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(1.5),
   },
   errorIconWrapper: {
@@ -453,7 +453,7 @@ const styles = StyleSheet.create({
     marginTop: theme.space(0.5),
     maxHeight: 200,
     zIndex: 10,
-    shadowColor: '#2A2109',
+    shadowColor: theme.color.text,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,

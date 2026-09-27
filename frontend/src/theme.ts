@@ -1,67 +1,81 @@
 import { Platform } from 'react-native';
 
 /**
- * CAPUCINE — Design System.
+ * CAPUCINE — Design System, charte « Le Prisme » (brand/Main.dc.html).
  *
  * Single source of truth for colour, type, spacing, radius, elevation, motion.
  * Screens never hard-code a hex value or a magic number.
  *
  * Principles:
- * - Warm, quiet, premium. Few borders, one accent, generous space.
- * - Strong type hierarchy carries meaning instead of colour and chrome.
- * - Contrast: every text colour >= 4.5:1 on background/surface.
+ * - Functional clarity first: the brand is carried by marine + or, never by
+ *   decoration that costs readability (no blur, no low-contrast glass).
+ * - Contrast: every text colour >= 4.5:1 on background AND surface — checked
+ *   by src/theme.contrast.test.ts, not merely claimed.
+ * - Or 500 (#C8A24A) is 2.1:1 on crème: decorative ONLY on light screens, or
+ *   on marine (6.5:1). Gold as text on light surfaces uses goldInk.
  * - Touch targets never below minTouch (44pt, Apple HIG).
- * - Honest states: unknown is its own colour, never the error colour.
+ * - Honest states: unknown is its own colour (burnt orange, deliberately NOT
+ *   the brand gold), never the error colour.
  */
 
 const palette = {
-  // Text hierarchy — warm near-black through muted
-  ink: '#15130F',           // primary text — 16.7:1 on paper
-  inkSoft: '#5B5750',       // secondary text — 7.0:1 on paper
-  inkFaint: '#736E65',      // captions, placeholders — 4.8:1 on paper
+  // Charte — Le Prisme
+  encre: '#071528',         // Encre 900 — primary text, 16.2:1 on crème
+  marine: '#0E2340',        // Marine 800 — primary action / brand surfaces, 14.0:1
+  marine700: '#16304F',     // raised marine surfaces, borders on marine
+  or500: '#C8A24A',         // Or 500 — brand gold, decorative / on marine (6.5:1)
+  or300: '#E6C97F',         // Or 300 — gold highlight on marine (9.8:1)
+  orInk: '#7A5C17',         // gold as TEXT on light surfaces — 5.5:1 on crème
+  orSoft: '#F6EDD5',        // gold-tinted light surface
+  creme: '#F4F1EA',         // Crème — app background
+
+  // Text hierarchy (slate derived from the charte's #6C819C, darkened for AA)
+  inkSoft: '#4E6078',       // secondary text — 5.7:1 on crème
+  inkFaint: '#5A6E88',      // captions, placeholders — 4.6:1 on crème
 
   // Surfaces
-  paper: '#FBF9F5',         // app background, warm off-white
-  card: '#FFFFFF',          // raised surfaces
-  cardAlt: '#F4F1EA',       // insets, pressed rows, skeletons
-  line: '#E7E2D8',          // hairlines
-  lineStrong: '#D8D2C4',    // stronger separators
-
-  // Accent — deep pine green, single brand colour
-  accent: '#1F5C4D',        // primary action — 6.6:1 on paper
-  accentText: '#FFFFFF',    // on accent
-  accentSoft: '#E6EFEB',    // accent-tinted surface
-  accentInk: '#174A3D',     // accent as text on accentSoft — 7.1:1
+  card: '#FFFFFF',
+  cardAlt: '#ECE7DC',
+  line: '#E0D9C8',
+  lineStrong: '#CFC6B1',
+  marineSoft: '#E3E8EF',    // marine-tinted light surface
 
   // Certainty semantics — UNKNOWN is its own colour, never the error colour
-  known: '#1C6B44',         // a fact we stand behind — 5.4:1 on paper
+  known: '#1C6B44',         // 5.8:1 on crème
   knownSoft: '#E4F1E7',
-  unknown: '#7A5200',       // unknown, NOT an error — 5.2:1 on paper
-  unknownSoft: '#F6EAD3',
-  danger: '#9B2C2C',        // destructive — 6.4:1 on paper
+  unknown: '#8F4300',       // burnt orange — 6.3:1 on crème, distinct from the gold
+  unknownSoft: '#FBE6D2',
+  danger: '#9B2C2C',        // 6.7:1 on crème
   dangerSoft: '#F7E4E1',
 
-  // Overlay
-  overlay: 'rgba(21,19,15,0.32)',
+  overlay: 'rgba(7,21,40,0.40)',
 };
 
 export const theme = {
   color: {
     // Semantic surface / text roles
-    background: palette.paper,
+    background: palette.creme,
     surface: palette.card,
     surfaceAlt: palette.cardAlt,
     border: palette.line,
     borderStrong: palette.lineStrong,
-    text: palette.ink,
+    text: palette.encre,
     textMuted: palette.inkSoft,
     textFaint: palette.inkFaint,
 
-    // Accent
-    accent: palette.accent,
-    accentText: palette.accentText,
-    accentSoft: palette.accentSoft,
-    accentInk: palette.accentInk,
+    // Primary action — marine, crème text
+    accent: palette.marine,
+    accentText: palette.creme,
+    accentSoft: palette.marineSoft,
+    accentInk: palette.marine,
+
+    // Brand gold
+    gold: palette.or500,
+    goldLight: palette.or300,
+    goldInk: palette.orInk,
+    goldSoft: palette.orSoft,
+    brandSurface: palette.marine,
+    brandSurfaceRaised: palette.marine700,
 
     // Certainty semantics
     known: palette.known,
@@ -118,15 +132,15 @@ export const theme = {
   /** Platform elevation — soft, warm shadows, never hard drops. */
   shadow: {
     card: Platform.select({
-      ios: { shadowColor: '#2A2109', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 16 },
+      ios: { shadowColor: '#071528', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 16 },
       default: { elevation: 2 },
     }) as object,
     raised: Platform.select({
-      ios: { shadowColor: '#2A2109', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.1, shadowRadius: 28 },
+      ios: { shadowColor: '#071528', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.1, shadowRadius: 28 },
       default: { elevation: 8 },
     }) as object,
     subtle: Platform.select({
-      ios: { shadowColor: '#2A2109', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8 },
+      ios: { shadowColor: '#071528', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8 },
       default: { elevation: 1 },
     }) as object,
   },

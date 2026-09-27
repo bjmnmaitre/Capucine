@@ -619,8 +619,8 @@ const styles = StyleSheet.create({
     ...theme.shadow.subtle,
   },
   cardPressed: { opacity: theme.opacity.pressed },
-  cardSelected: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: theme.color.accentSoft },
-  cardRecommended: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#F4F7FF' },
+  cardSelected: { borderColor: theme.color.gold, borderWidth: 2, backgroundColor: theme.color.accentSoft },
+  cardRecommended: { borderColor: theme.color.gold, borderWidth: 2, backgroundColor: theme.color.goldSoft },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1.5) },
   checkboxWrap: { width: 28, alignItems: 'center' },
   checkbox: { fontSize: 22, color: theme.color.textMuted },
@@ -639,9 +639,9 @@ const styles = StyleSheet.create({
 
   chrPill: {
     marginLeft: 'auto', paddingHorizontal: theme.space(1), paddingVertical: 2,
-    borderRadius: theme.radii.pill, backgroundColor: '#E8F5E9',
+    borderRadius: theme.radii.pill, backgroundColor: theme.color.accentSoft,
   },
-  chrPillText: { fontSize: theme.font.micro, fontWeight: '700', color: '#2E7D32' },
+  chrPillText: { fontSize: theme.font.micro, fontWeight: '700', color: theme.color.accentInk },
 
   totalSection: { marginTop: theme.space(1.5), marginBottom: theme.space(0.5) },
   totalLabel: { fontSize: theme.font.small, color: theme.color.textMuted },
@@ -695,14 +695,14 @@ const styles = StyleSheet.create({
   },
   chrSuggestion: {
     marginTop: theme.space(3), padding: theme.space(2),
-    backgroundColor: '#FFF3E0', borderRadius: theme.radii.md,
-    borderWidth: 1, borderColor: '#FFB74D',
+    backgroundColor: theme.color.unknownSoft, borderRadius: theme.radii.md,
+    borderWidth: 1, borderColor: theme.color.unknown,
   },
   chrSuggestionTitle: {
-    fontSize: theme.font.small, fontWeight: '700', color: '#E65100',
+    fontSize: theme.font.small, fontWeight: '700', color: theme.color.unknown,
   },
   chrSuggestionBody: {
-    fontSize: theme.font.small, color: '#BF360C', marginTop: theme.space(0.5), lineHeight: 20,
+    fontSize: theme.font.small, color: theme.color.unknown, marginTop: theme.space(0.5), lineHeight: 20,
   },
   footer: {
     fontSize: theme.font.micro, color: theme.color.textMuted,
