@@ -1,14 +1,21 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView,
-  StyleSheet, Text, TextInput, View,
+  StyleSheet, Text, View, Dimensions, Image,
 } from 'react-native';
-import { theme } from '../theme';
+import Animated, {
+  useSharedValue, useAnimatedStyle, withSpring, withTiming, withDelay,
+  interpolateColor, useAnimatedReaction, runOnJS
+} from 'react-native-reanimated';
+import { theme, textStyle, glassStyle, neuralGlassStyle, AgentChatBubbleProps } from '../theme.futuristic';
 import { HealthStatus } from '../api';
 import { suggest, SuggestResponse } from '../api';
 import {
   clearHistory, loadHistory, relativeTime, removeSearch, SearchHistoryEntry,
 } from '../history';
+import { NeuralSearchInput, HolographicButton, GlassCard, AgentChatBubble, NeuralStageProgress } from '../components';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const EXAMPLES = [
   'casque Sony WH-1000XM5',
@@ -28,8 +35,6 @@ interface Props {
   health?: HealthStatus;
   checkingHealth?: boolean;
   onRecheckHealth?: () => void;
-  /** Pré-remplit le champ — utilisé quand on revient ici pour reformuler une
-   *  recherche qui n'a rien trouvé, plutôt que de repartir d'un champ vide. */
   initialQuery?: string;
   onSearch: (query: string) => void;
   onOpenProfile: () => void;
@@ -42,33 +47,66 @@ export function SearchScreen({
   const [query, setQuery] = useState(initialQuery ?? '');
   const [touched, setTouched] = useState(false);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
+  const [agentMessages, setAgentMessages] = useState<AgentChatBubbleProps[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchStage, setSearchStage] = useState<'idle' | 'interpreting' | 'searching' | 'analyzing' | 'ranking' | 'complete'>('idle');
+  const [agentTyping, setAgentTyping] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Re-read on every mount: App re-mounts this screen each time the user comes
-  // back from results, so a search just made shows up without extra plumbing.
+  const styles = textStyle(theme);
+
+  // Animations
+  const headerOpacity = useSharedValue(0);
+  const headerTranslateY = useSharedValue(-30);
+  const inputOpacity = useSharedValue(0);
+  const inputTranslateY = useSharedValue(20);
+  const examplesOpacity = useSharedValue(0);
+  const examplesTranslateY = useSharedValue(20);
+  const searchProgress = useSharedValue(0);
+  const pulseAnim = useSharedValue(0);
+
+  // Entrance animations
+  useEffect(() => {
+    headerOpacity.value = withDelay(100, withSpring(1, theme.motion.spring.gentle));
+    headerTranslateY.value = withDelay(100, withSpring(0, theme.motion.spring.gentle));
+    inputOpacity.value = withDelay(300, withSpring(1, theme.motion.spring.gentle));
+    inputTranslateY.value = withDelay(300, withSpring(0, theme.motion.spring.gentle));
+    examplesOpacity.value = withDelay(500, withSpring(1, theme.motion.spring.gentle));
+    examplesTranslateY.value = withDelay(500, withSpring(0, theme.motion.spring.gentle));
+  }, []);
+
+  // Pulse animation for listening state
+  useEffect(() => {
+    if (searchStage === 'interpreting') {
+      pulseAnim.value = withTiming(1, { duration: 1000, easing: (t) => t }, () => {
+        pulseAnim.value = withTiming(0, { duration: 1000, easing: (t) => t });
+      });
+    }
+  }, [searchStage]);
+
+  // Load history on mount
   useEffect(() => {
     let alive = true;
     void loadHistory().then((h) => { if (alive) setHistory(h); });
     return () => { alive = false; };
   }, []);
 
-  async function onClearHistory() {
-    await clearHistory();
-    setHistory([]);
-  }
-
-  async function onRemoveRecent(query: string) {
-    setHistory(await removeSearch(query));
-  }
-
-  // Autocomplete suggestions state
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Initial agent greeting
+  useEffect(() => {
+    if (initialQuery) return;
+    setAgentMessages([
+      {
+        message: "Bonjour ! Je suis Capucine, votre agent d'achat intelligent. Dites-moi ce que vous cherchez et je comparerai les offres réelles pour vous.",
+        sender: 'agent',
+        timestamp: new Date(),
+        certainty: 'known',
+      },
+    ]);
+  }, [initialQuery]);
 
   const fetchSuggestions = useCallback(async (text: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (text.length < 3) {
-      setSuggestions([]);
       setShowSuggestions(false);
       return;
     }
@@ -76,14 +114,9 @@ export function SearchScreen({
       try {
         const response: SuggestResponse = await suggest(text);
         if (response.suggestions && response.suggestions.length > 0) {
-          setSuggestions(response.suggestions);
           setShowSuggestions(true);
-        } else {
-          setSuggestions([]);
-          setShowSuggestions(false);
         }
       } catch {
-        setSuggestions([]);
         setShowSuggestions(false);
       }
     }, 200);
@@ -92,381 +125,493 @@ export function SearchScreen({
   const trimmed = query.trim();
   const isEmpty = trimmed.length === 0;
 
-  function submit() {
+  const startSearch = async () => {
     setTouched(true);
     setShowSuggestions(false);
-    setSuggestions([]);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (isEmpty) return;
-    onSearch(trimmed);
-  }
 
-  function onQueryChange(text: string) {
+    setSearchStage('interpreting');
+    setAgentTyping(true);
+    setAgentMessages(prev => [...prev, {
+      message: trimmed,
+      sender: 'user',
+      timestamp: new Date(),
+    }]);
+
+    // Simulate agent thinking
+    setTimeout(() => {
+      setSearchStage('searching');
+      setAgentMessages(prev => [...prev, {
+        message: "J'analyse votre demande et je lance la recherche sur les sources disponibles...",
+        sender: 'agent',
+        timestamp: new Date(),
+        typing: true,
+      }]);
+    }, 800);
+
+    onSearch(trimmed);
+  };
+
+  const handleQueryChange = (text: string) => {
     setQuery(text);
     if (touched) setTouched(false);
     fetchSuggestions(text);
-  }
+  };
 
-  function selectSuggestion(suggestion: string) {
+  const selectSuggestion = (suggestion: string) => {
     setQuery(suggestion);
     setShowSuggestions(false);
-    setSuggestions([]);
-    onSearch(suggestion);
-  }
+    startSearch();
+  };
+
+  const clearHistoryHandler = async () => {
+    await clearHistory();
+    setHistory([]);
+  };
+
+  const removeRecent = async (q: string) => {
+    setHistory(await removeSearch(q));
+  };
+
+  // Animated styles
+  const headerAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: headerOpacity.value,
+    transform: [{ translateY: headerTranslateY.value }],
+  }));
+
+  const inputAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: inputOpacity.value,
+    transform: [{ translateY: inputTranslateY.value }],
+  }));
+
+  const examplesAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: examplesOpacity.value,
+    transform: [{ translateY: examplesTranslateY.value }],
+  }));
+
+  const pulseStyle = useAnimatedStyle(() => ({
+    opacity: interpolateColor(pulseAnim.value, [0, 0.5, 1], [0.3, 1, 0.3]),
+    transform: [{ scale: interpolateColor(pulseAnim.value, [0, 0.5, 1], [1, 1.05, 1]) }],
+  }));
+
+  const searchStages = useMemo(() => [
+    { id: 'interpreting', label: 'Interprétation', status: searchStage === 'interpreting' ? 'active' : searchStage === 'idle' ? 'pending' : 'complete' },
+    { id: 'searching', label: 'Recherche', status: searchStage === 'searching' ? 'active' : searchStage === 'interpreting' ? 'pending' : searchStage === 'idle' ? 'pending' : 'complete' },
+    { id: 'analyzing', label: 'Analyse', status: searchStage === 'analyzing' ? 'active' : searchStage === 'searching' ? 'pending' : searchStage === 'idle' ? 'pending' : 'complete' },
+    { id: 'ranking', label: 'Classement', status: searchStage === 'ranking' ? 'active' : searchStage === 'analyzing' ? 'pending' : searchStage === 'idle' ? 'pending' : 'complete' },
+    { id: 'complete', label: 'Terminé', status: searchStage === 'complete' ? 'complete' : 'pending' },
+  ], [searchStage]);
+
+  const isOffline = health && !health.reachable;
+  const isWebUnavailable = health?.reachable && health.webSearch && health.webSearch !== 'configured';
 
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title} accessibilityRole="header">Capucine</Text>
-        <Text style={styles.subtitle}>
-          Dites ce que vous cherchez. Capucine compare les offres réelles et leur coût total,
-          en distinguant ce qui est connu de ce qui ne l’est pas.
-        </Text>
-
-        {health && !health.reachable ? (
-          <View style={styles.offlineBox} accessibilityLiveRegion="polite">
-            <Text style={styles.offlineTitle}>
-              {health.configured
-                ? 'Connexion impossible'
-                : 'Capucine n’est pas encore configurée'}
-            </Text>
-            <Text style={styles.offlineBody}>
-              {health.configured
-                ? 'Capucine ne parvient pas à joindre son service. Vérifiez votre connexion, puis réessayez.'
-                : 'Sur cet appareil, Capucine ne sait pas encore où joindre son service. Relancez la session avec le tunnel de développement.'}
-            </Text>
-            {health.configured ? (
-              <Pressable
-                onPress={onRecheckHealth}
-                disabled={checkingHealth}
-                accessibilityRole="button"
-                accessibilityLabel="Réessayer la connexion"
-                accessibilityState={{ disabled: !!checkingHealth, busy: !!checkingHealth }}
-                style={({ pressed }) => [styles.retryBtn, (pressed || checkingHealth) && styles.buttonPressed]}
-              >
-                {checkingHealth
-                  ? <ActivityIndicator color={theme.color.accentText} />
-                  : <Text style={styles.retryBtnText}>Réessayer</Text>}
-              </Pressable>
-            ) : null}
-          </View>
-        ) : health?.reachable && health.webSearch && health.webSearch !== 'configured' ? (
-          // Service joignable mais AUCUNE vraie source Web : le dire franchement
-          // plutôt que de laisser l'utilisateur lancer une recherche qui ne
-          // remontera que le catalogue local (ou rien).
-          <View style={styles.offlineBox} accessibilityLiveRegion="polite">
-            <Text style={styles.offlineTitle}>Recherche Web indisponible</Text>
-            <Text style={styles.offlineBody}>
-              Le service répond, mais aucune source Web réelle n’est configurée
-              (SERPER_API_KEY). Les recherches ne remonteront pas d’offres réelles.
-            </Text>
-          </View>
-        ) : null}
-
-        <Text style={styles.label} nativeID="search-label">Votre recherche</Text>
-        <View style={styles.searchInputWrapper}>
-          <TextInput
-            style={[styles.input, touched && isEmpty && styles.inputError]}
-            value={query}
-            onChangeText={onQueryChange}
-            placeholder="Ex: four professionnel pizza La Rochelle, friteuse CHR, casque Sony…"
-            placeholderTextColor={theme.color.textMuted}
-            onSubmitEditing={submit}
-            returnKeyType="search"
-            editable={!loading}
-            accessibilityLabel="Votre recherche"
-            accessibilityLabelledBy="search-label"
-            accessibilityHint="Saisissez un produit, puis validez pour lancer la recherche"
-          />
-          {showSuggestions && suggestions.length > 0 && (
-            <View style={styles.suggestionsDropdown} accessibilityLabel="Suggestions de recherche">
-              {suggestions.map((suggestion, idx) => (
-                <Pressable
-                  key={idx}
-                  onPress={() => selectSuggestion(suggestion)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Rechercher : ${suggestion}`}
-                  style={styles.suggestionItem}
-                >
-                  <Text style={styles.suggestionText} numberOfLines={1}>{suggestion}</Text>
-                </Pressable>
-              ))}
-            </View>
-          )}
-        </View>
-        {touched && isEmpty ? (
-          <Text style={styles.fieldError} accessibilityLiveRegion="polite">
-            Saisissez un produit avant de lancer la recherche.
-          </Text>
-        ) : null}
-
-        <Pressable
-          onPress={submit}
-          disabled={loading}
-          accessibilityRole="button"
-          accessibilityLabel="Rechercher"
-          accessibilityState={{ disabled: loading, busy: loading }}
-          style={({ pressed }) => [styles.button, (pressed || loading) && styles.buttonPressed]}
-        >
-          {loading
-            ? <ActivityIndicator color={theme.color.accentText} />
-            : <Text style={styles.buttonText}>Rechercher</Text>}
-        </Pressable>
-
-        {loading ? (
-          <Text style={styles.loadingNote} accessibilityLiveRegion="polite">
-            Recherche en cours : interprétation, sources, coût réel, classement…
-          </Text>
-        ) : null}
-
-        {error ? (
-          <View style={styles.errorBox} accessibilityLiveRegion="assertive">
-            <View style={styles.errorIconWrapper}>
-              <Text style={styles.errorIcon}>⚠️</Text>
-            </View>
-            <View style={styles.errorContent}>
-              <Text style={styles.errorTitle}>Recherche indisponible</Text>
-              <Text style={styles.errorSubtitle}>Réessaie dans quelques instants.</Text>
-            </View>
-            <Pressable
-              onPress={onSearch.bind(null, query)}
-              disabled={loading}
-              accessibilityRole="button"
-              accessibilityLabel="Réessayer la recherche"
-              accessibilityState={{ disabled: loading, busy: loading }}
-              style={({ pressed }) => [styles.retryBtn, (pressed || loading) && styles.buttonPressed]}
-            >
-              {loading
-                ? <ActivityIndicator color={theme.color.accentText} />
-                : <Text style={styles.retryBtnText}>Réessayer</Text>}
-            </Pressable>
-          </View>
-        ) : null}
-
-        {history.length > 0 ? (
-          <View style={styles.examples}>
-            <View style={styles.recentHead}>
-              <Text style={styles.examplesTitle}>Recherches récentes</Text>
-              <Pressable
-                onPress={onClearHistory}
-                accessibilityRole="button"
-                accessibilityLabel="Effacer l’historique des recherches"
-                style={({ pressed }) => [styles.clearBtn, pressed && styles.examplePressed]}
-              >
-                <Text style={styles.clearBtnText}>Effacer</Text>
-              </Pressable>
-            </View>
-            {history.map((h) => (
-              <View key={`${h.query}-${h.at}`} style={styles.recentRow}>
-                <Pressable
-                  onPress={() => { setTouched(false); onSearch(h.query); }}
-                  disabled={loading}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    `Relancer : ${h.query}. ${h.resultCount} résultat${h.resultCount > 1 ? 's' : ''}, ${relativeTime(h.at)}`
-                  }
-                  style={({ pressed }) => [styles.example, styles.recentMain, pressed && styles.examplePressed]}
-                >
-                  <Text style={styles.exampleText} numberOfLines={1}>{h.query}</Text>
-                  <Text style={styles.recentMeta}>
-                    {h.resultCount} offre{h.resultCount > 1 ? 's' : ''} · {relativeTime(h.at)}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => onRemoveRecent(h.query)}
-                  disabled={loading}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Retirer « ${h.query} » de l’historique`}
-                  hitSlop={8}
-                  style={({ pressed }) => [styles.recentDelete, pressed && styles.examplePressed]}
-                >
-                  <Text style={styles.recentDeleteText}>✕</Text>
-                </Pressable>
+      <Animated.ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header with Agent Avatar */}
+        <Animated.View style={[styles.header, headerAnimatedStyle]}>
+          <View style={styles.agentAvatarWrapper}>
+            <Animated.View style={[
+              styles.agentAvatar,
+              pulseStyle,
+              { backgroundColor: theme.color.neuralSoft },
+            ]}>
+              <Image
+                source={require('../assets/agent-avatar.png')}
+                style={StyleSheet.absoluteFillObject}
+                resizeMode="cover"
+              />
+              <View style={StyleSheet.absoluteFillObject}>
+                <View style={[
+                  styles.avatarPulse,
+                  { borderColor: theme.color.neural },
+                ]} />
               </View>
-            ))}
+            </Animated.View>
           </View>
-        ) : null}
-
-        <View style={styles.examples}>
-          <Text style={styles.examplesTitle}>Exemples</Text>
-{EXAMPLES.map((ex) => (
-            <Pressable
-              key={ex}
-              onPress={() => { setQuery(ex); setTouched(false); }}
-              disabled={loading}
-              accessibilityRole="button"
-              accessibilityLabel={`Utiliser l'exemple : ${ex}`}
-              style={({ pressed }) => [styles.example, pressed && styles.examplePressed]}
-            >
-              <Text style={styles.exampleText}>{ex}</Text>
-            </Pressable>
-          ))}
-
-          <Text style={styles.examplesTitle}>Matériel CHR</Text>
-          {CHR_EXAMPLES.map((ex) => (
-            <Pressable
-              key={ex}
-              onPress={() => { setQuery(ex); setTouched(false); }}
-              disabled={loading}
-              accessibilityRole="button"
-              accessibilityLabel={`Utiliser l'exemple : ${ex}`}
-              style={({ pressed }) => [styles.example, pressed && styles.examplePressed]}
-            >
-              <Text style={styles.exampleText}>{ex}</Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <Pressable
-          onPress={onOpenProfile}
-          disabled={loading}
-          accessibilityRole="button"
-          accessibilityLabel="Ouvrir vos préférences permanentes"
-          style={({ pressed }) => [styles.profileLink, pressed && styles.examplePressed]}
-        >
-          <Text style={styles.profileLinkText}>Vos préférences permanentes ›</Text>
-        </Pressable>
-
-        {health?.reachable ? (
-          <Text style={styles.apiNote}>
-            {`Service connecté${health.webSearch === 'configured' ? ' · recherche Web active' : ''}`
-              + `${health.aiStatus === 'real' ? ' · IA activée' : ''}`}
+          <Text style={[styles.title, styles.mono]}>CAPUCINE</Text>
+          <Text style={styles.subtitle}>
+            Agent d'achat autonome · Recherche · Analyse · Décision
           </Text>
-        ) : null}
-      </ScrollView>
+        </Animated.View>
+
+        {/* Connection Status */}
+        {(isOffline || isWebUnavailable) && (
+          <Animated.View style={[styles.statusCard, inputAnimatedStyle]}>
+            <GlassCard variant={isOffline ? 'pulse' : 'neural'} style={styles.statusContent}>
+              <View style={styles.statusRow}>
+                <Text style={[
+                  styles.statusIcon,
+                  { color: isOffline ? theme.color.pulse : theme.color.neural },
+                ]}>
+                  {isOffline ? '⚠' : '🌐'}
+                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.statusTitle, { color: isOffline ? theme.color.pulse : theme.color.neural }]}>
+                    {isOffline
+                      ? (health?.configured ? 'Connexion impossible' : 'Service non configuré')
+                      : 'Recherche Web indisponible'}
+                  </Text>
+                  <Text style={styles.statusBody}>
+                    {isOffline
+                      ? (health?.configured
+                          ? 'Impossible de joindre le service. Vérifiez votre connexion.'
+                          : 'Aucun endpoint de service configuré. Relancez avec le tunnel de développement.')
+                      : 'Aucune source Web réelle configurée (SERPER_API_KEY). Résultats limités au catalogue local.'}
+                  </Text>
+                </View>
+                {isOffline && health?.configured && (
+                  <HolographicButton
+                    variant="pulse-ghost"
+                    size="sm"
+                    onPress={onRecheckHealth}
+                    disabled={checkingHealth}
+                  >
+                    {checkingHealth ? '⟳' : 'Réessayer'}
+                  </HolographicButton>
+                )}
+              </View>
+            </GlassCard>
+          </Animated.View>
+        )}
+
+        {/* Conversational Interface */}
+        {agentMessages.length > 0 && (
+          <Animated.View style={[styles.chatSection, inputAnimatedStyle]}>
+            <Text style={[styles.sectionTitle, styles.mono]}>CONVERSATION</Text>
+            <View style={styles.chatContainer}>
+              {agentMessages.map((msg, idx) => (
+                <AgentChatBubble
+                  key={`${msg.sender}-${idx}`}
+                  {...msg}
+                  animated={true}
+                />
+              ))}
+              {agentTyping && (
+                <AgentChatBubble
+                  key="typing"
+                  message=""
+                  sender="agent"
+                  typing={true}
+                  animated={true}
+                />
+              )}
+            </View>
+          </Animated.View>
+        )}
+
+        {/* Search Progress */}
+        {searchStage !== 'idle' && searchStage !== 'complete' && (
+          <Animated.View style={[styles.progressSection, inputAnimatedStyle]}>
+            <Text style={[styles.sectionTitle, styles.mono]}>PROGRESSION</Text>
+            <GlassCard variant="elevated" style={styles.progressCard}>
+              <NeuralStageProgress
+                stages={searchStages}
+                variant="neural"
+                showDetails={true}
+              />
+            </GlassCard>
+          </Animated.View>
+        )}
+
+        {/* Input Area */}
+        <Animated.View style={[styles.inputSection, inputAnimatedStyle]}>
+          <Text style={[styles.sectionTitle, styles.mono]}>RECHERCHE</Text>
+          <NeuralSearchInput
+            label="Votre recherche"
+            placeholder="Ex: four professionnel pizza La Rochelle, friteuse CHR, casque Sony…"
+            value={query}
+            onChangeText={handleQueryChange}
+            onSearch={startSearch}
+            loading={loading}
+            onVoiceSearch={() => { /* TODO: Voice search */ }}
+            suggestions={showSuggestions ? EXAMPLES.filter(e => e.toLowerCase().includes(query.toLowerCase())).slice(0, 5) : []}
+            onSuggestionPress={selectSuggestion}
+            disabled={loading}
+            error={touched && isEmpty ? 'Saisissez un produit avant de lancer la recherche.' : undefined}
+          />
+          {loading && searchStage !== 'idle' && (
+            <Text style={[styles.loadingNote, { color: theme.color.textMuted }]}>
+              Recherche en cours : interprétation, sources, coût réel, classement…
+            </Text>
+          )}
+        </Animated.View>
+
+        {/* Error Display */}
+        {error && (
+          <Animated.View style={[styles.errorSection, inputAnimatedStyle]}>
+            <GlassCard variant="pulse" style={styles.errorCard}>
+              <View style={styles.errorContent}>
+                <Text style={[styles.errorIcon, { color: theme.color.pulse }]}>⚠</Text>
+                <View>
+                  <Text style={[styles.errorTitle, { color: theme.color.pulse }]}>
+                    Recherche indisponible
+                  </Text>
+                  <Text style={[styles.errorSubtitle, { color: theme.color.textMuted }]}>
+                    {error}
+                  </Text>
+                </View>
+              </View>
+              <HolographicButton
+                variant="pulse"
+                size="sm"
+                onPress={() => startSearch()}
+                disabled={loading}
+              >
+                Réessayer
+              </HolographicButton>
+            </GlassCard>
+          </Animated.View>
+        )}
+
+        {/* History & Examples */}
+        {(history.length > 0 || !query) && (
+          <Animated.View style={[styles.examplesSection, examplesAnimatedStyle]}>
+            {history.length > 0 && (
+              <View style={styles.historyBlock}>
+                <View style={styles.historyHeader}>
+                  <Text style={[styles.sectionTitle, styles.mono]}>HISTORIQUE</Text>
+                  <HolographicButton
+                    variant="neural-ghost"
+                    size="sm"
+                    onPress={clearHistoryHandler}
+                    disabled={loading}
+                  >
+                    Effacer
+                  </HolographicButton>
+                </View>
+                {history.map((h) => (
+                  <Pressable
+                    key={`${h.query}-${h.at}`}
+                    onPress={() => { setTouched(false); onSearch(h.query); }}
+                    disabled={loading}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Relancer : ${h.query}. ${h.resultCount} résultat${h.resultCount > 1 ? 's' : ''}, ${relativeTime(h.at)}`}
+                    style={({ pressed }) => [styles.historyItem, pressed && styles.historyItemPressed]}
+                  >
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <Text style={[styles.historyQuery, { color: theme.color.text }]}>
+                        {h.query}
+                      </Text>
+                      <Text style={[styles.historyMeta, { color: theme.color.textMuted }]}>
+                        {h.resultCount} offre{h.resultCount > 1 ? 's' : ''} · {relativeTime(h.at)}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => removeRecent(h.query)}
+                      disabled={loading}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Retirer « ${h.query} » de l'historique`}
+                      hitSlop={10}
+                      style={styles.historyDelete}
+                    >
+                      <Text style={{ color: theme.color.textFaint, fontSize: 18 }}>✕</Text>
+                    </Pressable>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {!query && (
+              <>
+                <Text style={[styles.sectionTitle, styles.mono]}>EXEMPLES</Text>
+                <GlassCard variant="default" style={styles.examplesGrid}>
+                  {EXAMPLES.map((ex) => (
+                    <Pressable
+                      key={ex}
+                      onPress={() => { setQuery(ex); setTouched(false); }}
+                      disabled={loading}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Utiliser l'exemple : ${ex}`}
+                      style={({ pressed }) => [styles.exampleChip, pressed && styles.exampleChipPressed]}
+                    >
+                      <Text style={styles.exampleChipText}>{ex}</Text>
+                    </Pressable>
+                  ))}
+                </GlassCard>
+
+                <Text style={[styles.sectionTitle, styles.mono]}>MATÉRIEL CHR</Text>
+                <GlassCard variant="default" style={styles.examplesGrid}>
+                  {CHR_EXAMPLES.map((ex) => (
+                    <Pressable
+                      key={ex}
+                      onPress={() => { setQuery(ex); setTouched(false); }}
+                      disabled={loading}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Utiliser l'exemple : ${ex}`}
+                      style={({ pressed }) => [styles.exampleChip, pressed && styles.exampleChipPressed]}
+                    >
+                      <Text style={styles.exampleChipText}>{ex}</Text>
+                    </Pressable>
+                  ))}
+                </GlassCard>
+              </>
+            )}
+          </Animated.View>
+        )}
+
+        {/* Profile Link */}
+        <Animated.View style={[styles.profileSection, examplesAnimatedStyle]}>
+          <Pressable
+            onPress={onOpenProfile}
+            disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Ouvrir vos préférences permanentes"
+            style={({ pressed }) => [styles.profileLink, pressed && { opacity: 0.7 }]}
+          >
+            <HolographicButton
+              variant="neural-ghost"
+              size="md"
+              fullWidth
+              onPress={onOpenProfile}
+              disabled={loading}
+              iconLeft={<Text style={{ fontSize: 20 }}>⚙</Text>}
+            >
+              Vos préférences permanentes
+            </HolographicButton>
+          </Pressable>
+        </Animated.View>
+
+        {/* Footer Status */}
+        {health?.reachable && (
+          <Animated.View style={[styles.footer, examplesAnimatedStyle]}>
+            <Text style={styles.apiNote}>
+              {`Service connecté${health.webSearch === 'configured' ? ' · Recherche Web active' : ''}`}
+              {`${health.aiStatus === 'real' ? ' · IA activée' : ''}`}
+            </Text>
+          </Animated.View>
+        )}
+      </Animated.ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  container: { padding: theme.space(3), paddingBottom: theme.space(6) },
-  title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
-  subtitle: {
-    fontSize: theme.font.body, color: theme.color.textMuted,
-    marginTop: theme.space(1), lineHeight: 23,
+  flex: { flex: 1, backgroundColor: theme.color.background },
+  container: { padding: theme.space(4), paddingBottom: theme.space(8), gap: theme.space(4) },
+
+  // Header
+  header: { alignItems: 'center', paddingTop: theme.space(2), gap: theme.space(2) },
+  agentAvatarWrapper: { position: 'relative' },
+  agentAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    overflow: 'hidden',
+    ...theme.shadow.neuralGlow,
   },
-  label: {
-    fontSize: theme.font.small, fontWeight: '600', color: theme.color.text,
-    marginTop: theme.space(3), marginBottom: theme.space(1),
+  avatarPulse: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 40,
+    borderWidth: 2,
   },
-  input: {
-    minHeight: theme.minTouch + 6, borderWidth: 1, borderColor: theme.color.border,
-    borderRadius: theme.radius, paddingHorizontal: theme.space(2),
-    fontSize: theme.font.body, color: theme.color.text, backgroundColor: theme.color.surface,
-  },
-  inputError: { borderColor: theme.color.danger, borderWidth: 2 },
-  fieldError: { color: theme.color.danger, fontSize: theme.font.small, marginTop: theme.space(1) },
-  button: {
-    minHeight: theme.minTouch + 6, borderRadius: theme.radius,
-    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
-    marginTop: theme.space(2),
-  },
-  buttonPressed: { opacity: 0.8 },
-  buttonText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
-  loadingNote: {
-    marginTop: theme.space(2), fontSize: theme.font.small, color: theme.color.textMuted,
-  },
-  offlineBox: {
-    marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.unknown, backgroundColor: '#FBF1DC',
-  },
-  offlineTitle: { color: theme.color.unknown, fontWeight: '700', fontSize: theme.font.body },
-  offlineBody: {
-    color: theme.color.text, fontSize: theme.font.small,
-    marginTop: theme.space(0.5), lineHeight: 19,
-  },
-  retryBtn: {
-    minHeight: theme.minTouch, borderRadius: theme.radius, backgroundColor: theme.color.accent,
-    alignItems: 'center', justifyContent: 'center', marginTop: theme.space(1.5),
-    paddingHorizontal: theme.space(2), alignSelf: 'flex-start',
-  },
-  retryBtnText: { color: theme.color.accentText, fontWeight: '700', fontSize: theme.font.small },
-  errorBox: {
-    marginTop: theme.space(3), padding: theme.space(2), borderRadius: theme.radius,
-    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: '#FDF3F3',
-    flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(1.5),
-  },
-  errorIconWrapper: {
-    paddingTop: 2,
-  },
-  errorIcon: {
-    fontSize: theme.font.body,
-  },
-  errorContent: {
-    flex: 1,
-    marginTop: 1,
-  },
-  errorTitle: { color: theme.color.danger, fontWeight: '700', fontSize: theme.font.body },
-  errorSubtitle: { color: theme.color.textMuted, fontSize: theme.font.small, marginTop: theme.space(0.5) },
-  errorHint: { color: theme.color.textMuted, fontSize: theme.font.small, marginTop: theme.space(1) },
-  examples: { marginTop: theme.space(4) },
-  examplesTitle: {
-    fontSize: theme.font.small, fontWeight: '600',
-    color: theme.color.textMuted, marginBottom: theme.space(1),
-  },
-  recentHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  clearBtn: { minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1) },
-  clearBtnText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
-  recentMeta: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
-  recentRow: {
-    flexDirection: 'row', alignItems: 'stretch', gap: theme.space(1),
-    marginBottom: theme.space(1),
-  },
-  recentMain: { flex: 1, marginBottom: 0 },
-  recentDelete: {
-    width: theme.minTouch, minHeight: theme.minTouch, alignItems: 'center', justifyContent: 'center',
-    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
-    backgroundColor: theme.color.surface,
-  },
-  recentDeleteText: { fontSize: theme.font.body, color: theme.color.textMuted, fontWeight: '600' },
-  example: {
-    minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(2),
-    paddingVertical: theme.space(1),
-    borderRadius: theme.radius, borderWidth: 1, borderColor: theme.color.border,
-    backgroundColor: theme.color.surface, marginBottom: theme.space(1),
-  },
-  examplePressed: { opacity: 0.7 },
-  exampleText: { fontSize: theme.font.body, color: theme.color.text },
-  profileLink: {
-    minHeight: theme.minTouch, justifyContent: 'center', marginTop: theme.space(3),
-  },
-  profileLinkText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
-  apiNote: {
-    marginTop: theme.space(4), fontSize: 12, color: theme.color.textMuted, textAlign: 'center',
-  },
-  searchInputWrapper: {
-    position: 'relative',
-  },
-  suggestionsDropdown: {
-    position: 'absolute',
-    top: theme.minTouch + 14,
-    left: 0,
-    right: 0,
-    backgroundColor: theme.color.surface,
-    borderWidth: 1,
-    borderColor: theme.color.border,
-    borderRadius: theme.radius,
-    marginTop: theme.space(0.5),
-    maxHeight: 200,
-    zIndex: 10,
-    shadowColor: '#2A2109',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-    },
-    suggestionItem: {
-    paddingHorizontal: theme.space(2),
-    paddingVertical: theme.space(1.5),
-    borderBottomWidth: 1,
-    borderBottomColor: theme.color.border,
-  },
-  suggestionText: {
-    fontSize: theme.font.body,
+  title: {
+    fontSize: theme.font.display,
+    fontWeight: theme.weight.extrabold,
     color: theme.color.text,
+    letterSpacing: -1,
+  },
+  subtitle: {
+    fontSize: theme.font.small,
+    color: theme.color.textMuted,
+    textAlign: 'center',
+    maxWidth: 300,
+  },
+  mono: { fontFamily: 'SpaceMono, monospace' },
+
+  // Status Card
+  statusCard: { width: '100%' },
+  statusContent: { padding: theme.space(3) },
+  statusRow: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(3) },
+  statusIcon: { fontSize: 24, marginTop: 2 },
+  statusTitle: { fontSize: theme.font.body, fontWeight: theme.weight.semibold, marginBottom: theme.space(0.5) },
+  statusBody: { fontSize: theme.font.small, color: theme.color.textMuted, lineHeight: theme.leading.small },
+
+  // Chat Section
+  chatSection: { gap: theme.space(2) },
+  sectionTitle: {
+    fontSize: theme.font.label,
+    fontWeight: theme.weight.bold,
+    color: theme.color.textMuted,
+    letterSpacing: 0.8,
+  },
+  chatContainer: { gap: theme.space(2) },
+
+  // Progress Section
+  progressSection: { gap: theme.space(2) },
+  progressCard: { padding: theme.space(2) },
+
+  // Input Section
+  inputSection: { gap: theme.space(2) },
+  loadingNote: { fontSize: theme.font.small, textAlign: 'center' },
+
+  // Error Section
+  errorSection: { width: '100%' },
+  errorCard: { padding: theme.space(3) },
+  errorContent: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(2) },
+  errorIcon: { fontSize: 24, marginTop: 2 },
+  errorTitle: { fontSize: theme.font.body, fontWeight: theme.weight.bold, marginBottom: theme.space(0.5) },
+  errorSubtitle: { fontSize: theme.font.small, lineHeight: theme.leading.small },
+
+  // History & Examples
+  examplesSection: { gap: theme.space(4) },
+  historyBlock: { gap: theme.space(2) },
+  historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  historyItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: theme.space(3),
+    backgroundColor: theme.color.glass,
+    borderWidth: 1,
+    borderColor: theme.color.glassBorder,
+    borderRadius: theme.radii.md,
+    gap: theme.space(3),
+  },
+  historyItemPressed: { opacity: 0.7 },
+  historyQuery: { fontSize: theme.font.body, flex: 1 },
+  historyMeta: { fontSize: theme.font.small, marginTop: 2 },
+  historyDelete: { padding: theme.space(1) },
+
+  examplesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.space(2),
+    padding: theme.space(3),
+  },
+  exampleChip: {
+    paddingHorizontal: theme.space(3),
+    paddingVertical: theme.space(2),
+    borderRadius: theme.radii.pill,
+    backgroundColor: theme.color.glass,
+    borderWidth: 1,
+    borderColor: theme.color.glassBorder,
+    minHeight: theme.minTouch,
+    justifyContent: 'center',
+  },
+  exampleChipPressed: { opacity: 0.7, borderColor: theme.color.neural },
+  exampleChipText: { fontSize: theme.font.small, color: theme.color.text, fontWeight: theme.weight.medium },
+
+  // Profile Section
+  profileSection: { paddingTop: theme.space(2) },
+  profileLink: { width: '100%' },
+
+  // Footer
+  footer: { paddingTop: theme.space(4), alignItems: 'center' },
+  apiNote: {
+    fontSize: theme.font.micro,
+    color: theme.color.textFaint,
+    textAlign: 'center',
+    fontFamily: 'SpaceMono, monospace',
   },
 });
+
+export default SearchScreen;

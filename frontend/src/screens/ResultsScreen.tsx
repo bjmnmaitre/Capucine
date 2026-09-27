@@ -1,53 +1,40 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
-  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, View,
+  Dimensions, Animated,
 } from 'react-native';
+import Animated, {
+  useSharedValue, useAnimatedStyle, withSpring, withTiming, withDelay,
+  interpolateColor, runOnJS,
+} from 'react-native-reanimated';
 import { RankedOffer, SearchResponse } from '../types';
 import {
   availabilityEmphasisLabel, costLabel, explainOfferRanking, rankingPreferenceLabel,
   usageContextLabel,
 } from '../presentation';
-import { CERTAINTY_LABEL, displayText, formatMoney, priceLabel, theme, cardStyle, inputStyle, textStyle } from '../theme';
+import { CERTAINTY_LABEL, displayText, formatMoney, priceLabel, formatScore, theme, textStyle } from '../theme.futuristic';
+import { HolographicButton, GlassCard, ProductCard, NeuralLinearProgress, NeuralStageProgress, NeuralSearchInput } from '../components';
 
-interface Props {
-  query: string;
-  response: SearchResponse;
-  refining: boolean;
-  refineError: string | null;
-  onRefine: (answer: string) => void;
-  onResetRefinements: () => void;
-  onSelect: (offer: RankedOffer) => void;
-  onCompare: (offers: RankedOffer[]) => void;
-  onReformulate: (query: string) => void;
-  onBack: () => void;
-}
-
-const REFORMULATE_OPTION_TYPES = new Set(['expand_search_terms']);
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const MAX_COMPARE = 3;
 
 const REFINEMENTS = ['le moins cher', 'sans Amazon', 'uniquement du neuf', 'livraison rapide'];
 
-function shippingLabel(offer: RankedOffer): { text: string; style: any } {
+function shippingLabel(offer: RankedOffer): { text: string; kind: 'free' | 'cost' | 'unknown' } {
   const s = offer.shipping;
   if (!s || s.status === 'unknown' || s.amount === null) {
-    return { text: 'livraison inconnue', style: styles.shippingUnknown };
+    return { text: 'livraison inconnue', kind: 'unknown' };
   }
   if (s.amount === 0) {
-    return { text: 'Livraison gratuite', style: styles.shippingFree };
+    return { text: 'Livraison gratuite', kind: 'free' };
   }
-  return { text: `livraison ${formatMoney(s.amount, s.currency)}`, style: styles.shippingCost };
+  return { text: `livraison ${formatMoney(s.amount, s.currency)}`, kind: 'cost' };
 }
 
-function priceDisplay(offer: RankedOffer): { text: string; style: any } {
+function priceDisplay(offer: RankedOffer): { text: string; kind: 'none' | 'approximate' | 'exact' } {
   const p = offer.price;
-  const label = priceLabel(p?.amount, p?.currency);
-  const style = label.kind === 'none' ? styles.priceOnRequest : label.kind === 'approximate' ? styles.priceApprox : styles.priceValue;
-  return { text: label.text, style };
-}
-
-function certaintyBadgeStyle(certainty: string) {
-  return certainty === 'known' ? styles.badgeKnown : styles.badgeUnknown;
+  return priceLabel(p?.amount, p?.currency);
 }
 
 function isChrSpecialist(offer: RankedOffer): boolean {
@@ -57,9 +44,7 @@ function isChrSpecialist(offer: RankedOffer): boolean {
   return chrKeywords.some(kw => merchantName.includes(kw) || merchantUrl.includes(kw));
 }
 
-function OfferCard({
-  offer, allOffers, ranking, availabilityEmphasis, compareMode, selected, atCapacity, onPress,
-}: {
+interface OfferCardProps {
   offer: RankedOffer;
   allOffers: RankedOffer[];
   ranking: SearchResponse['rankingPreference'];
@@ -68,7 +53,15 @@ function OfferCard({
   selected: boolean;
   atCapacity: boolean;
   onPress: () => void;
-}) {
+  index: number;
+}
+
+const OfferCard = React.memo(function OfferCard({
+  offer, allOffers, ranking, availabilityEmphasis, compareMode, selected, atCapacity, onPress, index,
+}: OfferCardProps) {
+  const t = theme;
+  const styles = textStyle(t);
+
   const isTotalKnown = offer.cost.certainty === 'known';
   const total = costLabel(offer);
   const totalUnknown = offer.cost.certainty === 'unknown' || offer.cost.totalKnown == null;
@@ -89,105 +82,214 @@ function OfferCard({
       + `Prix ${priceInfo.text}, ${shippingInfo.text}. `
       + why.join(' ');
 
+  // Animations
+  const pressScale = useSharedValue(1);
+  const glowIntensity = useSharedValue(0);
+  const entryOpacity = useSharedValue(0);
+  const entryTranslateY = useSharedValue(20);
+
+  useEffect(() => {
+    entryOpacity.value = withDelay(index * 60, withSpring(1, t.motion.spring.gentle));
+    entryTranslateY.value = withDelay(index * 60, withSpring(0, t.motion.spring.gentle));
+  }, [index]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: entryOpacity.value,
+    transform: [
+      { scale: pressScale.value },
+      { translateY: entryTranslateY.value },
+    ],
+  }));
+
+  const glowStyle = useAnimatedStyle(() => ({
+    shadowColor: t.color.neural,
+    shadowOpacity: glowIntensity.value * 0.3,
+    shadowRadius: glowIntensity.value * 20,
+    elevation: glowIntensity.value * 6,
+  }));
+
+  const handlePressIn = () => {
+    pressScale.value = withSpring(0.98, t.motion.spring.snappy);
+    glowIntensity.value = withTiming(1, { duration: 100 });
+  };
+
+  const handlePressOut = () => {
+    pressScale.value = withSpring(1, t.motion.spring.standard);
+    glowIntensity.value = withTiming(0, { duration: 200 });
+  };
+
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole={compareMode ? 'checkbox' : 'button'}
-      accessibilityState={compareMode ? { checked: selected } : undefined}
-      accessibilityLabel={a11yLabel}
-      accessibilityHint={
-        compareMode
-          ? (atCapacity && !selected
-              ? 'Limite de 3 offres atteinte — retirez-en une pour ajouter celle-ci'
-              : 'Touchez pour ajouter ou retirer de la comparaison')
-          : 'Ouvre le détail complet de cette offre'
-      }
-      style={({ pressed }) => [
-        styles.card,
-        recommended && !compareMode && styles.cardRecommended,
-        selected && styles.cardSelected,
-        pressed && styles.cardPressed,
-      ]}
-    >
-      {/* Card header — rank + merchant */}
-      <View style={styles.cardHead}>
-        {compareMode ? (
-          <View style={styles.checkboxWrap}>
-            <Text style={[styles.checkbox, selected && styles.checkboxOn]}>
-              {selected ? '✓' : ''}
+    <Animated.View style={[animatedStyle, glowStyle]} collapsable={false}>
+      <Pressable
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        accessibilityRole={compareMode ? 'checkbox' : 'button'}
+        accessibilityState={compareMode ? { checked: selected } : undefined}
+        accessibilityLabel={a11yLabel}
+        accessibilityHint={
+          compareMode
+            ? (atCapacity && !selected
+                ? 'Limite de 3 offres atteinte — retirez-en une pour ajouter celle-ci'
+                : 'Touchez pour ajouter ou retirer de la comparaison')
+            : 'Ouvre le détail complet de cette offre'
+        }
+        android_ripple={{ color: t.color.neural, borderless: true }}
+      >
+        <GlassCard variant={recommended && !compareMode ? 'neural' : selected ? 'pulse' : 'default'} style={styles.card}>
+          {/* Card Header */}
+          <View style={styles.cardHead}>
+            {compareMode ? (
+              <View style={styles.checkboxWrap}>
+                <Animated.Text style={[
+                  styles.checkbox,
+                  { color: selected ? t.color.pulse : t.color.textFaint },
+                  { transform: [{ scale: selected ? 1.2 : 1 }] },
+                ]}>
+                  {selected ? '✓' : ''}
+                </Animated.Text>
+              </View>
+            ) : (
+              <Animated.View style={[
+                styles.rankBadge,
+                { backgroundColor: recommended ? t.color.neural : t.color.pulse },
+              ]}>
+                <Animated.Text style={[
+                  styles.rankText,
+                  { color: recommended ? t.color.textInverse : t.color.textInverse },
+                ]}>
+                  #{offer.rank}
+                </Animated.Text>
+              </Animated.View>
+            )}
+            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: t.space(2) }}>
+              <Text style={[styles.merchant, { color: t.color.text }]} numberOfLines={1}>
+                {displayText(offer.merchant?.name, 'Marchand inconnu')}
+              </Text>
+              {offer.merchant?.country && (
+                <Text style={[styles.micro, { color: t.color.textFaint, fontFamily: 'SpaceMono, monospace' }]}>
+                  🇫🇷 {offer.merchant.country.toUpperCase()}
+                </Text>
+              )}
+            </View>
+            {recommended && !compareMode && (
+              <View style={[
+                styles.recommendedPill,
+                { backgroundColor: t.color.neuralSoft, borderWidth: 1, borderColor: t.color.neural },
+              ]}>
+                <Text style={[styles.recommendedPillText, { color: t.color.neural }]}>RECOMMANDÉE</Text>
+              </View>
+            )}
+            {isChrSpecialist(offer) && (
+              <View style={[
+                styles.chrPill,
+                { backgroundColor: t.color.knownSoft, borderWidth: 1, borderColor: t.color.known },
+              ]}>
+                <Text style={[styles.chrPillText, { color: t.color.known }]}>SPÉCIALISTE CHR</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Cost Total - Hero Number */}
+          <View style={styles.totalSection}>
+            <Text style={[styles.totalLabel, { color: t.color.textMuted }]}>
+              {isTotalKnown ? 'COÛT TOTAL' : totalUnknown ? 'COÛT TOTAL' : 'COÛT TOTAL CONNU'}
+            </Text>
+            <Animated.Text style={[
+              styles.totalValue,
+              {
+                color: totalUnknown ? t.color.unknown :
+                       isTotalKnown ? t.color.known : t.color.text,
+              },
+            ]}>
+              {totalUnknown ? 'INCONNU' : total}
+            </Animated.Text>
+          </View>
+
+          {/* Certainty Badge */}
+          <View style={styles.certaintyRow}>
+            <Animated.View style={[
+              styles.badge,
+              {
+                backgroundColor: offer.cost.certainty === 'known' ? t.color.knownSoft :
+                               offer.cost.certainty === 'unknown' ? t.color.unknownSoft : t.color.dangerSoft,
+                borderWidth: 1,
+                borderColor: offer.cost.certainty === 'known' ? t.color.known :
+                             offer.cost.certainty === 'unknown' ? t.color.unknown : t.color.danger,
+              },
+            ]}>
+              <Text style={[
+                styles.badgeText,
+                {
+                  color: offer.cost.certainty === 'known' ? t.color.known :
+                         offer.cost.certainty === 'unknown' ? t.color.unknown : t.color.danger,
+                },
+              ]}>
+                {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}
+              </Text>
+            </Animated.View>
+            {offer.cost.statement && (
+              <Text style={[styles.costStatement, { color: t.color.textMuted }]} numberOfLines={2}>
+                {offer.cost.statement}
+              </Text>
+            )}
+          </View>
+
+          {/* Price Breakdown */}
+          <View style={styles.breakdownRow}>
+            <Text style={[
+              styles.breakdownLabel,
+              {
+                color: priceInfo.kind === 'exact' ? t.color.known :
+                       priceInfo.kind === 'approximate' ? t.color.unknown : t.color.textMuted,
+                fontWeight: priceInfo.kind === 'exact' ? t.weight.bold : t.weight.regular,
+              },
+            ]}>
+              {priceInfo.text}
+            </Text>
+            <Text style={[
+              styles.breakdownLabel,
+              {
+                color: shippingInfo.kind === 'free' ? t.color.known :
+                       shippingInfo.kind === 'cost' ? t.color.textMuted : t.color.textFaint,
+                fontWeight: shippingInfo.kind === 'free' ? t.weight.semibold : t.weight.regular,
+              },
+            ]}>
+              {shippingInfo.text}
             </Text>
           </View>
-        ) : (
-          <View style={styles.rankBadge}>
-            <Text style={styles.rankText}>#{offer.rank}</Text>
-          </View>
-        )}
-        <Text style={styles.merchant} numberOfLines={1}>
-          {displayText(offer.merchant?.name, 'Marchand inconnu')}
-        </Text>
-        {recommended && !compareMode ? (
-          <View style={styles.recommendedPill}>
-            <Text style={styles.recommendedPillText}>Recommandée</Text>
-          </View>
-        ) : null}
-        {isChrSpecialist(offer) ? (
-          <View style={styles.chrPill}>
-            <Text style={styles.chrPillText}>Spécialiste CHR</Text>
-          </View>
-        ) : null}
-      </View>
 
-      {/* Cost total — THE hero number */}
-      <View style={styles.totalSection}>
-        <Text style={styles.totalLabel}>
-          {isTotalKnown ? 'Coût total' : totalUnknown ? 'Coût total' : 'Coût total connu à ce jour'}
-        </Text>
-        <Text style={[styles.totalValue, totalUnknown && styles.totalUnknown]}>
-          {totalUnknown ? 'inconnu' : total}
-        </Text>
-      </View>
-
-      {/* Certainty badge — right under the total */}
-      <View style={styles.certaintyRow}>
-        <View style={[styles.badge, certaintyBadgeStyle(offer.cost.certainty)]}>
-          <Text style={[styles.badgeText, certaintyBadgeStyle(offer.cost.certainty)]}>
-            {CERTAINTY_LABEL[offer.cost.certainty] ?? offer.cost.certainty}
-          </Text>
-        </View>
-        {offer.cost.statement ? (
-          <Text style={styles.costStatement} numberOfLines={2}>{offer.cost.statement}</Text>
-        ) : null}
-      </View>
-
-      {/* Price breakdown — secondary, muted */}
-      <View style={styles.breakdownRow}>
-        <Text style={[styles.breakdownLabel, priceInfo.style]}>{priceInfo.text}</Text>
-        <Text style={[styles.breakdownLabel, shippingInfo.style]}>{shippingInfo.text}</Text>
-      </View>
-
-      {/* Unknown components — honest, not hidden */}
-      {!compareMode && offer.cost.unknownComponents.length > 0 ? (
-        <Text style={styles.unknownList}>
-          Non connu : {offer.cost.unknownComponents.join(', ')} — non estimé, non ignoré.
-        </Text>
-      ) : null}
-
-      {/* Why this rank — only in list mode */}
-      {!compareMode ? (
-        <View style={styles.whyBox}>
-          {why.slice(0, 2).map((line, i) => (
-            <Text key={i} style={i === 0 ? styles.whyHead : styles.whyLine}>
-              {i === 0 ? line : `· ${line}`}
+          {/* Unknown Components */}
+          {!compareMode && offer.cost.unknownComponents.length > 0 && (
+            <Text style={[styles.unknownList, { color: t.color.textMuted }]}>
+              Non connu : {offer.cost.unknownComponents.join(', ')} — non estimé, non ignoré.
             </Text>
-          ))}
-        </View>
-      ) : null}
-    </Pressable>
+          )}
+
+          {/* Why this rank */}
+          {!compareMode && (
+            <View style={[
+              styles.whyBox,
+              { borderTopWidth: 1, borderTopColor: t.color.glassBorder },
+            ]}>
+              {why.slice(0, 2).map((line, i) => (
+                <Animated.Text key={i} style={[
+                  i === 0 ? styles.whyHead : styles.whyLine,
+                  { color: i === 0 ? t.color.text : t.color.textMuted },
+                ]}>
+                  {i === 0 ? line : `· ${line}`}
+                </Animated.Text>
+              ))}
+            </View>
+          )}
+        </GlassCard>
+      </Pressable>
+    </Animated.View>
   );
-}
+});
 
 /**
- * Conversational refinement bar — free text + quick chips.
+ * Conversational refinement bar.
  */
 function RefinementBar({
   response, refining, refineError, onRefine, onResetRefinements,
@@ -197,6 +299,8 @@ function RefinementBar({
   const canRefine = Boolean(response.session?.sessionId);
   const orderLabel = rankingPreferenceLabel(response.rankingPreference);
   const availabilityLabel = availabilityEmphasisLabel(response.availabilityEmphasis);
+  const t = theme;
+  const styles = textStyle(t);
 
   function submit(value: string) {
     const trimmed = value.trim();
@@ -208,113 +312,128 @@ function RefinementBar({
   if (!canRefine) return null;
 
   return (
-    <View style={styles.refineCard}>
-      <Text style={styles.refineTitle} accessibilityRole="header">Affiner la recherche</Text>
+    <GlassCard variant="elevated" style={styles.refineCard}>
+      <View style={styles.refineHeader}>
+        <Text style={[styles.refineTitle, { color: t.color.text }]}>AFFINER LA RECHERCHE</Text>
+        <HolographicButton
+          variant="neural-ghost"
+          size="sm"
+          onPress={onResetRefinements}
+          disabled={refining}
+        >
+          ↺ RESET
+        </HolographicButton>
+      </View>
 
-      {orderLabel ? (
-        <View style={styles.orderChip} accessible accessibilityLabel={`Ordre actuel : ${orderLabel}`}>
-          <Text style={styles.orderChipText}>{orderLabel}</Text>
-        </View>
-      ) : null}
-
-      {availabilityLabel ? (
-        <Text style={styles.availabilityNote} accessibilityLabel={availabilityLabel}>
-          {availabilityLabel}
-        </Text>
-      ) : null}
-
-      {history.length > 0 ? (
-        <View style={styles.refineHistory}>
-          <View
-            accessible
-            accessibilityLabel={`Affinages appliqués : ${history.map((h) => h.answer).join(', ')}`}
-          >
-            {history.map((h, i) => (
-              <Text key={`${h.questionId}-${i}`} style={styles.refineHistoryItem}>• {h.answer}</Text>
-            ))}
+      <View style={styles.refineStatus}>
+        {orderLabel && (
+          <View style={[
+            styles.orderChip,
+            { backgroundColor: t.color.neuralSoft, borderWidth: 1, borderColor: t.color.neural },
+          ]}>
+            <Text style={[styles.orderChipText, { color: t.color.neural }]}>{orderLabel}</Text>
           </View>
-          <Pressable
-            onPress={() => { if (!refining) onResetRefinements(); }}
-            disabled={refining}
-            accessibilityRole="button"
-            accessibilityLabel="Repartir de la recherche initiale"
-            accessibilityHint="Annule tous les affinages et relance la recherche d'origine"
-            style={({ pressed }) => [styles.resetBtn, pressed && styles.cardPressed]}
-          >
-            <Text style={styles.resetBtnText}>↺ Repartir de la recherche initiale</Text>
-          </Pressable>
+        )}
+        {availabilityLabel && (
+          <Text style={[styles.availabilityNote, { color: t.color.textMuted }]}>{availabilityLabel}</Text>
+        )}
+      </View>
+
+      {history.length > 0 && (
+        <View style={styles.refineHistory}>
+          <Text style={[styles.micro, { color: t.color.textFaint, fontFamily: 'SpaceMono, monospace', marginBottom: t.space(1) }]}>
+            AFFINAGES APPLIQUÉS
+          </Text>
+          {history.map((h, i) => (
+            <Text key={`${h.questionId}-${i}`} style={[styles.refineHistoryItem, { color: t.color.textMuted }]}>
+              ▸ {h.answer}
+            </Text>
+          ))}
         </View>
-      ) : null}
+      )}
 
       <View style={styles.refineInputRow}>
-        <TextInput
-          style={[styles.refineInput, refining && styles.refineInputDisabled]}
+        <NeuralInput
           value={text}
           onChangeText={setText}
           placeholder="ex. le moins cher, livraison rapide…"
-          placeholderTextColor={theme.color.textMuted}
+          error={refineError}
+          disabled={refining}
           onSubmitEditing={() => submit(text)}
-          returnKeyType="send"
-          editable={!refining}
-          accessibilityLabel="Affiner la recherche"
-          accessibilityHint="Décrivez ce qui doit changer, puis validez"
+          style={styles.refineInput}
         />
-        <Pressable
+        <HolographicButton
+          variant="neural"
+          size="md"
           onPress={() => submit(text)}
           disabled={refining || text.trim().length === 0}
-          accessibilityRole="button"
-          accessibilityLabel="Appliquer l'affinage"
-          accessibilityState={{ disabled: refining || text.trim().length === 0, busy: refining }}
-          style={({ pressed }) => [
-            styles.refineSend,
-            (pressed || refining || text.trim().length === 0) && styles.refineSendMuted,
-          ]}
+          loading={refining}
         >
-          {refining
-            ? <ActivityIndicator color={theme.color.accentText} />
-            : <Text style={styles.refineSendText}>OK</Text>}
-        </Pressable>
+          APPLIQUER
+        </HolographicButton>
       </View>
 
       <View style={styles.refineChips}>
         {response.rankingPreference?.applied
           && response.rankingPreference.preference === 'PRICE_LOWEST' ? (
-          <Pressable
+          <HolographicButton
+            variant="neural-ghost"
+            size="sm"
             onPress={() => submit('trie par meilleure correspondance')}
             disabled={refining}
-            accessibilityRole="button"
-            accessibilityLabel="Affiner : revenir au tri par meilleure correspondance"
-            style={({ pressed }) => [styles.refineChip, pressed && styles.cardPressed]}
           >
-            <Text style={styles.refineChipText}>meilleure correspondance</Text>
-          </Pressable>
+            meilleure correspondance
+          </HolographicButton>
         ) : null}
         {REFINEMENTS.map((r) => (
-          <Pressable
+          <HolographicButton
             key={r}
+            variant="neural-ghost"
+            size="sm"
             onPress={() => submit(r)}
             disabled={refining}
-            accessibilityRole="button"
-            accessibilityLabel={`Affiner : ${r}`}
-            style={({ pressed }) => [styles.refineChip, pressed && styles.cardPressed]}
           >
-            <Text style={styles.refineChipText}>{r}</Text>
-          </Pressable>
+            {r}
+          </HolographicButton>
         ))}
       </View>
 
-      {refining ? (
-        <Text style={styles.refineNote} accessibilityLiveRegion="polite">
-          Capucine relance la recherche avec cette précision…
-        </Text>
-      ) : null}
-      {refineError ? (
-        <View style={styles.refineErrorBox} accessibilityLiveRegion="assertive">
-          <Text style={styles.refineErrorText}>{refineError}</Text>
+      {refining && (
+        <NeuralLinearProgress
+          progress={0.5}
+          variant="neural"
+          height={3}
+          animated={true}
+          style={{ marginTop: t.space(2) }}
+        />
+      )}
+
+      {refineError && (
+        <View style={[
+          styles.refineErrorBox,
+          { backgroundColor: t.color.dangerSoft, borderWidth: 1, borderColor: t.color.danger },
+        ]}>
+          <Text style={[styles.refineErrorText, { color: t.color.danger }]}>{refineError}</Text>
         </View>
-      ) : null}
-    </View>
+      )}
+    </GlassCard>
   );
+}
+
+// Need to import NeuralInput
+import { NeuralInput } from '../components/NeuralInput';
+
+interface Props {
+  query: string;
+  response: SearchResponse;
+  refining: boolean;
+  refineError: string | null;
+  onRefine: (answer: string) => void;
+  onResetRefinements: () => void;
+  onSelect: (offer: RankedOffer) => void;
+  onCompare: (offers: RankedOffer[]) => void;
+  onReformulate: (query: string) => void;
+  onBack: () => void;
 }
 
 export function ResultsScreen({
@@ -328,6 +447,7 @@ export function ResultsScreen({
   const [compareMode, setCompareMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionShrank, setSelectionShrank] = useState(false);
+  const [listLayout, setListLayout] = useState<'list' | 'grid'>('list');
 
   useEffect(() => {
     setSelectedIds((cur) => {
@@ -339,20 +459,20 @@ export function ResultsScreen({
 
   const selectedOffers = results.filter((r) => selectedIds.includes(r.offerId));
 
-  function toggleCompareMode() {
+  const toggleCompareMode = useCallback(() => {
     setCompareMode((on) => !on);
     setSelectedIds([]);
     setSelectionShrank(false);
-  }
+  }, []);
 
-  function toggleSelected(offerId: string) {
+  const toggleSelected = useCallback((offerId: string) => {
     setSelectionShrank(false);
     setSelectedIds((cur) => {
       if (cur.includes(offerId)) return cur.filter((id) => id !== offerId);
       if (cur.length >= MAX_COMPARE) return cur;
       return [...cur, offerId];
     });
-  }
+  }, []);
 
   const canCompare = results.length >= 2;
 
@@ -364,60 +484,103 @@ export function ResultsScreen({
       + ` (${mx.hiddenMerchants.join(', ')}) — marchand${mx.hiddenMerchants.length > 1 ? 's' : ''} que vous évitez.`
     : null;
 
+  const t = theme;
+  const styles = textStyle(t);
+
+  // Header animations
+  const headerOpacity = useSharedValue(0);
+  const headerTranslateY = useSharedValue(-20);
+  useEffect(() => {
+    headerOpacity.value = withSpring(1, t.motion.spring.gentle);
+    headerTranslateY.value = withSpring(0, t.motion.spring.gentle);
+  }, []);
+
+  const headerAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: headerOpacity.value,
+    transform: [{ translateY: headerTranslateY.value }],
+  }));
+
+  const listContentStyle = useMemo(() => [
+    styles.list,
+    compareMode && selectedOffers.length >= 2 && styles.listWithBar,
+    { paddingTop: t.space(2) },
+  ], [compareMode, selectedOffers.length]);
+
   return (
     <View style={styles.flex}>
-      {/* Sticky header */}
-      <View style={styles.header}>
+      {/* Sticky Header */}
+      <Animated.View style={[styles.header, headerAnimatedStyle]}>
         <View style={styles.headerTop}>
           <Pressable
             onPress={onBack}
             accessibilityRole="button"
             accessibilityLabel="Revenir à la recherche"
-            style={({ pressed }) => [styles.back, pressed && styles.cardPressed]}
+            style={({ pressed }) => [styles.back, pressed && { opacity: 0.7 }]}
             hitSlop={8}
           >
-            <Text style={styles.backText}>‹ Recherche</Text>
+            <HolographicButton variant="neural-ghost" size="sm" iconLeft={<Text style={{ fontSize: 18 }}>←</Text>} onPress={onBack}>
+              RECHERCHE
+            </HolographicButton>
           </Pressable>
-          {compareMode || canCompare ? (
-            <Pressable
+          {(compareMode || canCompare) && (
+            <HolographicButton
+              variant={compareMode ? 'pulse' : 'neural-ghost'}
+              size="sm"
               onPress={toggleCompareMode}
               accessibilityRole="button"
               accessibilityLabel={compareMode ? 'Quitter le mode comparaison' : 'Comparer des offres'}
               accessibilityState={{ selected: compareMode }}
-              style={({ pressed }) => [styles.compareToggle, compareMode && styles.compareToggleOn, pressed && styles.cardPressed]}
-              hitSlop={6}
+              iconLeft={<Text style={{ fontSize: 18 }}>⇄</Text>}
             >
-              <Text style={[styles.compareToggleText, compareMode && styles.compareToggleTextOn]}>
-                {compareMode ? 'Annuler' : '⇄ Comparer'}
-              </Text>
-            </Pressable>
-          ) : null}
+              {compareMode ? 'ANNULER' : 'COMPARER'}
+            </HolographicButton>
+          )}
         </View>
-        <Text style={styles.query} numberOfLines={2} accessibilityRole="header">{query}</Text>
-        <Text style={styles.counts}>
-          {results.length} offre{results.length > 1 ? 's' : ''} · {merchantIds.size} marchand
-          {merchantIds.size > 1 ? 's' : ''} · {productIds.size} produit
-          {productIds.size > 1 ? 's' : ''}
-        </Text>
-{compareMode ? (
-          <Text style={styles.summary} accessibilityLiveRegion="polite">
-            {selectionShrank
-              ? "Une offre sélectionnée a disparu après l'affinage — sélection ajustée. "
-              : ''}
-            Choisissez 2 ou 3 offres à comparer ({selectedOffers.length}/{MAX_COMPARE}).
-          </Text>
-        ) : response.summary?.resultSummary ? (
-          <Text style={styles.summary}>{response.summary.resultSummary}</Text>
-        ) : null}
-
-        {!compareMode && usageNote ? (
-          <Text style={styles.usageNote} accessibilityLabel={usageNote}>{usageNote}</Text>
-        ) : null}
-
-        {!compareMode && exclusionNote ? (
-          <Text style={styles.exclusionNote} accessibilityLabel={exclusionNote}>{exclusionNote}</Text>
-        ) : null}
-      </View>
+        <Text style={[styles.query, { color: t.color.text }]} numberOfLines={2}>{query}</Text>
+        <View style={styles.headerStats}>
+          <View style={styles.statItem}>
+            <Text style={[styles.statValue, { color: t.color.neural }]}>{results.length}</Text>
+            <Text style={[styles.statLabel, { color: t.color.textMuted }]}>OFFRES</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={[styles.statValue, { color: t.color.pulse }]}>{merchantIds.size}</Text>
+            <Text style={[styles.statLabel, { color: t.color.textMuted }]}>MARCHANDS</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={[styles.statValue, { color: t.color.known }]}>{productIds.size}</Text>
+            <Text style={[styles.statLabel, { color: t.color.textMuted }]}>PRODUITS</Text>
+          </View>
+        </View>
+        <View style={styles.headerMeta}>
+          {compareMode ? (
+            <Text style={[styles.summary, { color: t.color.textMuted }]}>
+              {selectionShrank
+                ? "Une offre sélectionnée a disparu après l'affinage — sélection ajustée. "
+                : ''}
+              Choisissez 2 ou 3 offres à comparer ({selectedOffers.length}/{MAX_COMPARE}).
+            </Text>
+          ) : response.summary?.resultSummary ? (
+            <Text style={[styles.summary, { color: t.color.textMuted }]}>{response.summary.resultSummary}</Text>
+          ) : null}
+          {!compareMode && usageNote && (
+            <Text style={[styles.usageNote, { color: t.color.textMuted, fontStyle: 'italic' }]}>{usageNote}</Text>
+          )}
+          {!compareMode && exclusionNote && (
+            <Text style={[styles.exclusionNote, { color: t.color.unknown }]}>{exclusionNote}</Text>
+          )}
+        </View>
+        <HolographicButton
+          variant="neural-ghost"
+          size="sm"
+          fullWidth
+          onPress={() => setListLayout(l => l === 'list' ? 'grid' : 'list')}
+          iconLeft={<Text style={{ fontSize: 18 }}>{listLayout === 'list' ? '⊞' : '☰'}</Text>}
+        >
+          {listLayout === 'list' ? 'GRILLE' : 'LISTE'}
+        </HolographicButton>
+      </Animated.View>
 
       {results.length === 0 ? (
         <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
@@ -428,301 +591,222 @@ export function ResultsScreen({
             onRefine={onRefine}
             onResetRefinements={onResetRefinements}
           />
-          <View style={styles.empty} accessibilityLiveRegion="polite">
-            <Text style={styles.emptyTitle}>Aucune offre trouvée</Text>
-            <Text style={styles.emptyBody}>
-              {response.noResultsDiagnosis?.message ??
-                "Capucine n'a trouvé aucune offre correspondant à cette demande."}
-            </Text>
-            {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) =>
-              REFORMULATE_OPTION_TYPES.has(option.type) ? (
-                <Pressable
-                  key={option.id}
-                  onPress={() => onReformulate(query)}
-                  accessibilityRole="button"
-                  accessibilityLabel={option.description}
-                  accessibilityHint="Revenir à la recherche avec votre texte actuel, pour le modifier"
-                  style={({ pressed }) => [styles.recoveryAction, pressed && styles.cardPressed]}
-                >
-                  <Text style={styles.recoveryActionText}>{option.description} ›</Text>
-                  {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
-                </Pressable>
-              ) : (
-                <View key={option.id} style={styles.recovery}>
-                  <Text style={styles.recoveryText}>{option.description}</Text>
-                  {option.impact ? <Text style={styles.recoveryImpact}>{option.impact}</Text> : null}
-                </View>
-              )
-            )}
-            {response.searchPlan?.searchContext === 'restaurant_equipment' && (
-              <View style={styles.chrSuggestion} accessibilityLiveRegion="polite">
-                <Text style={styles.chrSuggestionTitle}>💡 Suggestion CHR</Text>
-                <Text style={styles.chrSuggestionBody}>
-                  Essayez avec des termes plus précis : "four professionnel", "réfrigérateur CHR",
-                  "piano de cuisson", "friteuse professionnelle", "chambre froide"…
-                </Text>
-              </View>
-            )}
-          </View>
+          <GlassCard variant="default" style={styles.emptyCard}>
+            <View style={styles.empty}>
+              <Text style={[styles.emptyTitle, { color: t.color.text }]}>AUCUNE OFFRE TROUVÉE</Text>
+              <Text style={[styles.emptyBody, { color: t.color.textMuted }]}>
+                {response.noResultsDiagnosis?.message ??
+                  "Capucine n'a trouvé aucune offre correspondant à cette demande."}
+              </Text>
+              {(response.noResultsDiagnosis?.recoveryOptions ?? []).map((option) =>
+                REFORMULATE_OPTION_TYPES.has(option.type) ? (
+                  <HolographicButton
+                    key={option.id}
+                    variant="neural"
+                    size="md"
+                    fullWidth
+                    onPress={() => onReformulate(query)}
+                    accessibilityRole="button"
+                    accessibilityLabel={option.description}
+                    style={{ marginTop: t.space(2) }}
+                  >
+                    {option.description}
+                    {option.impact && <Text style={{ fontSize: theme.font.micro, opacity: 0.7 }}>{option.impact}</Text>}
+                  </HolographicButton>
+                ) : (
+                  <View key={option.id} style={styles.recovery}>
+                    <Text style={[styles.recoveryText, { color: t.color.text }]}>{option.description}</Text>
+                    {option.impact && <Text style={[styles.recoveryImpact, { color: t.color.textMuted }]}>{option.impact}</Text>}
+                  </View>
+                )
+              )}
+              {response.searchPlan?.searchContext === 'restaurant_equipment' && (
+                <GlassCard variant="neural" style={styles.chrSuggestion}>
+                  <Text style={[styles.chrSuggestionTitle, { color: t.color.neural }]}>💡 SUGGESTION CHR</Text>
+                  <Text style={[styles.chrSuggestionBody, { color: t.color.textMuted }]}>
+                    Essayez avec des termes plus précis : "four professionnel", "réfrigérateur CHR",
+                    "piano de cuisson", "friteuse professionnelle", "chambre froide"…
+                  </Text>
+                </GlassCard>
+              )}
+            </View>
+          </GlassCard>
         </ScrollView>
       ) : (
-        <FlatList
-          data={results}
-          keyExtractor={(item) => item.offerId}
-          contentContainerStyle={[
-            styles.list,
-            compareMode && selectedOffers.length >= 2 && styles.listWithBar,
-          ]}
-          keyboardShouldPersistTaps="handled"
-          ListHeaderComponent={
-            <RefinementBar
-              response={response}
-              refining={refining}
-              refineError={refineError}
-              onRefine={onRefine}
-              onResetRefinements={onResetRefinements}
-            />
-          }
-          renderItem={({ item }) => (
-            <OfferCard
-              offer={item}
-              allOffers={results}
-              ranking={response.rankingPreference}
-              availabilityEmphasis={response.availabilityEmphasis}
-              compareMode={compareMode}
-              selected={selectedIds.includes(item.offerId)}
-              atCapacity={selectedIds.length >= MAX_COMPARE}
-              onPress={() => (compareMode ? toggleSelected(item.offerId) : onSelect(item))}
-            />
-          )}
-          ListFooterComponent={
-            <Text style={styles.footer}>
-              Classement produit par le moteur de priorité de Capucine, pas par le prix seul.
-            </Text>
-          }
-        />
-      )}
+        <>
+          <FlatList
+            data={results}
+            keyExtractor={(item) => item.offerId}
+            contentContainerStyle={listContentStyle}
+            keyboardShouldPersistTaps="handled"
+            numColumns={listLayout === 'grid' ? 2 : 1}
+            columnWrapperStyle={listLayout === 'grid' ? { justifyContent: 'space-between' } : undefined}
+            ListHeaderComponent={
+              <RefinementBar
+                response={response}
+                refining={refining}
+                refineError={refineError}
+                onRefine={onRefine}
+                onResetRefinements={onResetRefinements}
+              />
+            }
+            renderItem={({ item, index }) => (
+              <OfferCard
+                offer={item}
+                allOffers={results}
+                ranking={response.rankingPreference}
+                availabilityEmphasis={response.availabilityEmphasis}
+                compareMode={compareMode}
+                selected={selectedIds.includes(item.offerId)}
+                atCapacity={selectedIds.length >= MAX_COMPARE}
+                onPress={() => (compareMode ? toggleSelected(item.offerId) : onSelect(item))}
+                index={index}
+              />
+            )}
+            ListFooterComponent={
+              <View style={styles.footer}>
+                <Text style={[styles.footerText, { color: t.color.textFaint, fontFamily: 'SpaceMono, monospace' }]}>
+                  Classement par le moteur de priorité de Capucine · Pas par le prix seul
+                </Text>
+              </View>
+            }
+          />
 
-      {compareMode && selectedOffers.length >= 2 ? (
-        <View style={styles.compareBar}>
-          <Pressable
-            onPress={() => onCompare(selectedOffers)}
-            accessibilityRole="button"
-            accessibilityLabel={`Comparer les ${selectedOffers.length} offres sélectionnées`}
-            style={({ pressed }) => [styles.compareGo, pressed && styles.cardPressed]}
-            hitSlop={6}
-          >
-            <Text style={styles.compareGoText}>Comparer ({selectedOffers.length})</Text>
-          </Pressable>
-        </View>
-      ) : null}
+          {compareMode && selectedOffers.length >= 2 && (
+            <View style={styles.compareBar}>
+              <HolographicButton
+                variant="pulse"
+                size="lg"
+                fullWidth
+                onPress={() => onCompare(selectedOffers)}
+                accessibilityRole="button"
+                accessibilityLabel={`Comparer les ${selectedOffers.length} offres sélectionnées`}
+                iconLeft={<Text style={{ fontSize: 20 }}>⇄</Text>}
+              >
+                COMPARER ({selectedOffers.length})
+              </HolographicButton>
+            </View>
+          )}
+        </>
+      )}
     </View>
   );
 }
 
+// Need to import REFORMULATE_OPTION_TYPES
+const REFORMULATE_OPTION_TYPES = new Set(['expand_search_terms']);
+
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: theme.color.background },
   header: {
-    padding: theme.space(2),
-    backgroundColor: theme.color.surface,
+    padding: theme.space(3),
+    paddingTop: theme.space(4),
+    backgroundColor: theme.color.background,
     borderBottomWidth: 1,
-    borderBottomColor: theme.color.border,
+    borderBottomColor: theme.color.glassBorder,
   },
   headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   back: { minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1) },
-  backText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: '600' },
-  compareToggle: {
-    minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
-    borderRadius: theme.radii.pill, borderWidth: 1, borderColor: theme.color.accent,
-  },
-  compareToggleOn: { backgroundColor: theme.color.accent },
-  compareToggleText: { color: theme.color.accent, fontSize: theme.font.small, fontWeight: '700' },
-  compareToggleTextOn: { color: theme.color.accentText },
-  query: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text, marginTop: theme.space(1) },
-  counts: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5) },
-  summary: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5), lineHeight: 20 },
-  exclusionNote: {
-    fontSize: theme.font.small, color: theme.color.unknown, marginTop: theme.space(0.5),
-    lineHeight: 18,
-  },
-  usageNote: {
-    fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
-    lineHeight: 18, fontStyle: 'italic',
-  },
-  list: { padding: theme.space(2), paddingBottom: theme.space(5), gap: theme.space(1.5) },
-  listWithBar: { paddingBottom: theme.space(14) },
-
-  refineCard: {
-    backgroundColor: theme.color.surface,
+  backText: { color: theme.color.neural, fontSize: theme.font.body, fontWeight: '600', fontFamily: 'SpaceMono, monospace' },
+  query: { fontSize: theme.font.heading, fontWeight: theme.weight.bold, color: theme.color.text, marginTop: theme.space(2), letterSpacing: -0.3 },
+  headerStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    marginTop: theme.space(3),
+    paddingVertical: theme.space(2),
+    backgroundColor: theme.color.glass,
     borderRadius: theme.radii.md,
     borderWidth: 1,
-    borderColor: theme.color.border,
-    padding: theme.space(2),
-    marginBottom: theme.space(2),
-    ...theme.shadow.subtle,
+    borderColor: theme.color.glassBorder,
   },
-  refineTitle: {
-    fontSize: theme.font.small, fontWeight: '700', color: theme.color.text,
-    marginBottom: theme.space(1.5),
-  },
-  orderChip: {
-    alignSelf: 'flex-start', backgroundColor: theme.color.accentSoft, borderRadius: theme.radii.pill,
-    paddingHorizontal: theme.space(1.5), paddingVertical: theme.space(0.5), marginBottom: theme.space(1),
-  },
-  orderChipText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
-  availabilityNote: {
-    fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600',
-    lineHeight: 18, marginBottom: theme.space(1),
-  },
-  refineHistory: { marginBottom: theme.space(1) },
-  refineHistoryItem: { fontSize: theme.font.small, color: theme.color.textMuted, lineHeight: 20 },
-  resetBtn: { minHeight: theme.minTouch, justifyContent: 'center', marginTop: theme.space(0.5) },
-  resetBtnText: { fontSize: theme.font.small, color: theme.color.accent, fontWeight: '600' },
-  refineInputRow: { flexDirection: 'row', gap: theme.space(1), alignItems: 'stretch' },
-  refineInput: {
-    flex: 1, minHeight: theme.minTouch, borderWidth: 1, borderColor: theme.color.border,
-    borderRadius: theme.radii.md, paddingHorizontal: theme.space(1.5),
-    fontSize: theme.font.body, color: theme.color.text, backgroundColor: theme.color.background,
-  },
-  refineInputDisabled: { opacity: 0.6 },
-  refineSend: {
-    minWidth: theme.minTouch + 8, minHeight: theme.minTouch, borderRadius: theme.radii.md,
-    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: theme.space(1.5), ...theme.shadow.subtle,
-  },
-  refineSendMuted: { opacity: theme.opacity.disabled },
-  refineSendText: { color: theme.color.accentText, fontWeight: '700', fontSize: theme.font.body },
-  refineChips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(1), marginTop: theme.space(1.5) },
-  refineChip: {
-    minHeight: theme.minTouch, justifyContent: 'center', paddingHorizontal: theme.space(1.5),
-    borderRadius: theme.radii.pill, borderWidth: 1, borderColor: theme.color.border,
-    backgroundColor: theme.color.background,
-  },
-  refineChipText: { fontSize: theme.font.small, color: theme.color.text },
-  refineNote: {
-    marginTop: theme.space(1), fontSize: theme.font.small, color: theme.color.textMuted,
-  },
-  refineErrorBox: {
-    marginTop: theme.space(1), padding: theme.space(1.5), borderRadius: theme.radii.md,
-    borderWidth: 1, borderColor: theme.color.danger, backgroundColor: theme.color.dangerSoft,
-  },
-  refineErrorText: { color: theme.color.danger, fontSize: theme.font.small, fontWeight: '600' },
+  statItem: { alignItems: 'center' },
+  statValue: { fontSize: theme.font.title, fontWeight: theme.weight.extrabold, fontFamily: 'SpaceMono, monospace' },
+  statLabel: { fontSize: theme.font.micro, fontWeight: theme.weight.medium, textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 2 },
+  statDivider: { width: 1, height: 30, backgroundColor: theme.color.glassBorder },
+  headerMeta: { marginTop: theme.space(3), gap: theme.space(2) },
+  summary: { fontSize: theme.font.small, lineHeight: theme.leading.small },
+  usageNote: { fontSize: theme.font.small, lineHeight: theme.leading.small, fontStyle: 'italic' },
+  exclusionNote: { fontSize: theme.font.small, lineHeight: theme.leading.small },
+  list: { padding: theme.space(3), paddingBottom: theme.space(12), gap: theme.space(3) },
+  listWithBar: { paddingBottom: theme.space(16) },
 
-  card: {
-    backgroundColor: theme.color.surface,
-    borderRadius: theme.radii.md,
-    borderWidth: 1,
-    borderColor: theme.color.border,
-    padding: theme.space(2),
-    marginBottom: theme.space(1.5),
-    minHeight: theme.minTouch,
-    ...theme.shadow.subtle,
-  },
-  cardPressed: { opacity: theme.opacity.pressed },
-  cardSelected: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: theme.color.accentSoft },
-  cardRecommended: { borderColor: theme.color.accent, borderWidth: 2, backgroundColor: '#F4F7FF' },
-  cardHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space(1.5) },
-  checkboxWrap: { width: 28, alignItems: 'center' },
-  checkbox: { fontSize: 22, color: theme.color.textMuted },
-  checkboxOn: { color: theme.color.accent },
+  // Refinement Bar
+  refineCard: { padding: theme.space(3) },
+  refineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.space(2) },
+  refineTitle: { fontSize: theme.font.label, fontWeight: theme.weight.bold, letterSpacing: 0.8, fontFamily: 'SpaceMono, monospace' },
+  refineStatus: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(2), marginBottom: theme.space(3) },
+  orderChip: { paddingHorizontal: theme.space(2), paddingVertical: theme.space(1), borderRadius: theme.radii.pill },
+  orderChipText: { fontSize: theme.font.small, fontWeight: theme.weight.semibold },
+  availabilityNote: { fontSize: theme.font.small, fontWeight: theme.weight.medium, alignSelf: 'center' },
+  refineHistory: { marginBottom: theme.space(3), paddingVertical: theme.space(2), borderTopWidth: 1, borderTopColor: t.color.glassBorder },
+  refineHistoryItem: { fontSize: theme.font.small, lineHeight: theme.leading.small },
+  refineInputRow: { flexDirection: 'row', gap: theme.space(2), alignItems: 'stretch' },
+  refineInput: { flex: 1 },
+  refineChips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space(2), marginTop: theme.space(2) },
+  refineErrorBox: { marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radii.md },
+  refineErrorText: { fontSize: theme.font.small, fontWeight: theme.weight.semibold },
+
+  // Card
+  card: { width: listLayout === 'grid' ? (SCREEN_WIDTH - theme.space(3) * 3) / 2 : '100%', minHeight: 180 },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space(2), marginBottom: theme.space(2) },
+  checkboxWrap: { width: 32, alignItems: 'center' },
+  checkbox: { fontSize: 24, fontWeight: theme.weight.bold },
   rankBadge: {
-    minWidth: 28, minHeight: 28, borderRadius: theme.radii.sm,
-    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
+    minWidth: 36, minHeight: 36, borderRadius: theme.radii.sm,
+    alignItems: 'center', justifyContent: 'center',
+    ...theme.shadow.neuralGlow,
   },
-  rankText: { color: theme.color.accentText, fontSize: theme.font.small, fontWeight: '700' },
-  merchant: { fontSize: theme.font.body, fontWeight: '600', color: theme.color.text, flexShrink: 1 },
-  recommendedPill: {
-    marginLeft: 'auto', paddingHorizontal: theme.space(1), paddingVertical: 2,
-    borderRadius: theme.radii.pill, backgroundColor: theme.color.accentSoft,
-  },
-  recommendedPillText: { fontSize: theme.font.micro, fontWeight: '700', color: theme.color.accent },
+  rankText: { fontSize: theme.font.small, fontWeight: theme.weight.bold, fontFamily: 'SpaceMono, monospace' },
+  merchant: { fontSize: theme.font.body, fontWeight: theme.weight.semibold, flexShrink: 1 },
+  recommendedPill: { paddingHorizontal: theme.space(2), paddingVertical: theme.space(0.5), borderRadius: theme.radii.pill },
+  recommendedPillText: { fontSize: theme.font.micro, fontWeight: theme.weight.bold, fontFamily: 'SpaceMono, monospace' },
+  chrPill: { paddingHorizontal: theme.space(2), paddingVertical: theme.space(0.5), borderRadius: theme.radii.pill },
+  chrPillText: { fontSize: theme.font.micro, fontWeight: theme.weight.bold, fontFamily: 'SpaceMono, monospace' },
 
-  chrPill: {
-    marginLeft: 'auto', paddingHorizontal: theme.space(1), paddingVertical: 2,
-    borderRadius: theme.radii.pill, backgroundColor: '#E8F5E9',
-  },
-  chrPillText: { fontSize: theme.font.micro, fontWeight: '700', color: '#2E7D32' },
+  totalSection: { marginBottom: theme.space(2) },
+  totalLabel: { fontSize: theme.font.label, fontWeight: theme.weight.bold, textTransform: 'uppercase', letterSpacing: 0.8, fontFamily: 'SpaceMono, monospace', marginBottom: theme.space(1) },
+  totalValue: { fontSize: theme.font.display, fontWeight: theme.weight.extrabold, letterSpacing: -0.5, fontFamily: 'SpaceMono, monospace' },
 
-  totalSection: { marginTop: theme.space(1.5), marginBottom: theme.space(0.5) },
-  totalLabel: { fontSize: theme.font.small, color: theme.color.textMuted },
-  totalValue: { fontSize: theme.font.display, fontWeight: '700', color: theme.color.text, marginTop: 2, letterSpacing: -0.3 },
-  totalUnknown: { color: theme.color.unknown },
+  certaintyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(2), marginBottom: theme.space(2) },
+  badge: { paddingHorizontal: theme.space(2), paddingVertical: theme.space(1), borderRadius: theme.radii.sm, borderWidth: 1 },
+  badgeText: { fontSize: theme.font.micro, fontWeight: theme.weight.bold, fontFamily: 'SpaceMono, monospace' },
+  costStatement: { fontSize: theme.font.small, flex: 1, marginTop: 2 },
 
-  certaintyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.space(1), marginTop: theme.space(1) },
-  badge: {
-    paddingHorizontal: theme.space(1.5), paddingVertical: 4, borderRadius: theme.radii.sm,
-  },
-  badgeText: { fontSize: theme.font.micro, fontWeight: '700', backgroundColor: 'transparent' },
-  badgeKnown: { color: theme.color.known, backgroundColor: theme.color.knownSoft },
-  badgeUnknown: { color: theme.color.unknown, backgroundColor: theme.color.unknownSoft },
-  costStatement: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, flexShrink: 1 },
+  breakdownRow: { flexDirection: 'row', gap: theme.space(3), marginBottom: theme.space(2), paddingTop: theme.space(2), borderTopWidth: 1, borderTopColor: t.color.glassBorder },
+  breakdownLabel: { fontSize: theme.font.small, fontFamily: 'SpaceMono, monospace' },
+  unknownList: { fontSize: theme.font.small, marginTop: theme.space(1) },
 
-  breakdown: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(1) },
-  breakdownRow: { flexDirection: 'row', gap: theme.space(2), marginTop: theme.space(1) },
-  breakdownLabel: { fontSize: theme.font.small },
-  priceValue: { fontSize: theme.font.small, fontWeight: '700', color: theme.color.known },
-  priceApprox: { fontSize: theme.font.small, fontWeight: '600', color: theme.color.textMuted },
-  priceOnRequest: { fontSize: theme.font.small, fontStyle: 'italic', color: theme.color.textMuted },
-  shippingCost: { fontSize: theme.font.small, color: theme.color.textMuted },
-  shippingFree: { fontSize: theme.font.small, fontWeight: '600', color: theme.color.known },
-  shippingUnknown: { fontSize: theme.font.small, fontStyle: 'italic', color: theme.color.textMuted },
-  unknownList: {
-    fontSize: theme.font.small, color: theme.color.textMuted, marginTop: theme.space(0.5),
-  },
+  whyBox: { paddingTop: theme.space(2), borderTopWidth: 1, borderTopColor: t.color.glassBorder },
+  whyHead: { fontSize: theme.font.small, fontWeight: theme.weight.semibold, lineHeight: theme.leading.small },
+  whyLine: { fontSize: theme.font.small, marginTop: theme.space(1), lineHeight: theme.leading.small },
 
-  whyBox: {
-    marginTop: theme.space(1.5), paddingTop: theme.space(1.5),
-    borderTopWidth: 1, borderTopColor: theme.color.border,
-  },
-  whyHead: { fontSize: theme.font.small, color: theme.color.text, fontWeight: '600', lineHeight: 20 },
-  whyLine: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2, lineHeight: 20 },
+  // Empty State
+  emptyCard: { marginTop: theme.space(2) },
+  empty: { padding: theme.space(6), alignItems: 'center' },
+  emptyTitle: { fontSize: theme.font.title, fontWeight: theme.weight.extrabold, textAlign: 'center', letterSpacing: -0.5, marginBottom: theme.space(2) },
+  emptyBody: { fontSize: theme.font.body, textAlign: 'center', lineHeight: theme.leading.body, maxWidth: 300, marginBottom: theme.space(4) },
+  recovery: { width: '100%', paddingHorizontal: theme.space(3), marginTop: theme.space(2) },
+  recoveryText: { fontSize: theme.font.body, marginBottom: theme.space(1) },
+  recoveryImpact: { fontSize: theme.font.small },
 
-  recovery: { marginTop: theme.space(1.5), paddingLeft: theme.space(1.5), borderLeftWidth: 3, borderLeftColor: theme.color.accent },
-  recoveryText: { fontSize: theme.font.body, color: theme.color.text },
-  recoveryImpact: { fontSize: theme.font.small, color: theme.color.textMuted, marginTop: 2 },
-  recoveryAction: {
-    marginTop: theme.space(1.5), padding: theme.space(1.5), borderRadius: theme.radii.md,
-    borderWidth: 1, borderColor: theme.color.accent, backgroundColor: theme.color.accentSoft,
-    minHeight: theme.minTouch,
-  },
-  recoveryActionText: { fontSize: theme.font.body, color: theme.color.accent, fontWeight: '700' },
+  // CHR Suggestion
+  chrSuggestion: { marginTop: theme.space(3) },
+  chrSuggestionTitle: { fontSize: theme.font.small, fontWeight: theme.weight.bold, marginBottom: theme.space(1) },
+  chrSuggestionBody: { fontSize: theme.font.small, lineHeight: theme.leading.small },
 
-  empty: { padding: theme.space(4), alignItems: 'center' },
-  emptyTitle: { fontSize: theme.font.heading, fontWeight: '700', color: theme.color.text, textAlign: 'center' },
-  emptyBody: {
-    fontSize: theme.font.body, color: theme.color.textMuted,
-    marginTop: theme.space(1), lineHeight: 22, textAlign: 'center', maxWidth: 300,
-  },
-  chrSuggestion: {
-    marginTop: theme.space(3), padding: theme.space(2),
-    backgroundColor: '#FFF3E0', borderRadius: theme.radii.md,
-    borderWidth: 1, borderColor: '#FFB74D',
-  },
-  chrSuggestionTitle: {
-    fontSize: theme.font.small, fontWeight: '700', color: '#E65100',
-  },
-  chrSuggestionBody: {
-    fontSize: theme.font.small, color: '#BF360C', marginTop: theme.space(0.5), lineHeight: 20,
-  },
-  footer: {
-    fontSize: theme.font.micro, color: theme.color.textMuted,
-    textAlign: 'center', marginTop: theme.space(2),
-  },
+  // Footer
+  footer: { padding: theme.space(4), alignItems: 'center' },
+  footerText: { fontSize: theme.font.micro, textAlign: 'center' },
+
+  // Compare Bar
   compareBar: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
-    padding: theme.space(2), backgroundColor: theme.color.surface,
-    borderTopWidth: 1, borderTopColor: theme.color.border,
-    ...theme.shadow.raised,
-    // Ensure visibility above TabBar by using a higher zIndex equivalent
-    // The TabBar is rendered after the body View in App.tsx, so this bar
-    // sits at the bottom of the body View. The TabBar has its own height
-    // (~48pt) + safe area. We rely on listWithBar's paddingBottom (112pt)
-    // to keep content above this bar. The bar itself is ~60pt tall.
+    padding: theme.space(3),
+    backgroundColor: theme.color.backgroundElevated,
+    borderTopWidth: 1, borderTopColor: theme.color.glassBorder,
+    ...theme.shadow.glassStrong,
   },
-  compareGo: {
-    minHeight: theme.minTouch + 8, borderRadius: theme.radii.md,
-    backgroundColor: theme.color.accent, alignItems: 'center', justifyContent: 'center',
-    ...theme.shadow.subtle,
-  },
-  compareGoText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
 });
+
+export default ResultsScreen;
