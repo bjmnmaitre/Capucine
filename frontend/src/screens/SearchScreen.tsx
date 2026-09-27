@@ -3,6 +3,8 @@ import {
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View,
 } from 'react-native';
+import { AgentMessage } from '../components/AgentMessage';
+import { SearchSteps } from '../components/SearchSteps';
 import { theme } from '../theme';
 import { HealthStatus } from '../api';
 import { suggest, SuggestResponse } from '../api';
@@ -121,10 +123,10 @@ export function SearchScreen({
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title} accessibilityRole="header">Capucine</Text>
-        <Text style={styles.subtitle}>
-          Dites ce que vous cherchez. Capucine compare les offres réelles et leur coût total,
-          en distinguant ce qui est connu de ce qui ne l’est pas.
-        </Text>
+        <Text style={styles.signature}>Je cherche. Je trouve. Tu décides.</Text>
+        <View style={styles.agentIntro}>
+          <AgentMessage text="Dites-moi ce que vous cherchez. Je compare les offres réelles et leur coût total, et je vous dis clairement ce que je sais et ce que je ne sais pas." />
+        </View>
 
         {health && !health.reachable ? (
           <View style={styles.offlineBox} accessibilityLiveRegion="polite">
@@ -216,11 +218,7 @@ export function SearchScreen({
             : <Text style={styles.buttonText}>Rechercher</Text>}
         </Pressable>
 
-        {loading ? (
-          <Text style={styles.loadingNote} accessibilityLiveRegion="polite">
-            Recherche en cours : interprétation, sources, coût réel, classement…
-          </Text>
-        ) : null}
+        {loading ? <SearchSteps /> : null}
 
         {error ? (
           <View style={styles.errorBox} accessibilityLiveRegion="assertive">
@@ -342,6 +340,11 @@ export function SearchScreen({
 }
 
 const styles = StyleSheet.create({
+  signature: {
+    fontSize: theme.font.small, color: theme.color.goldInk, fontWeight: theme.weight.medium,
+    letterSpacing: 0.4, marginTop: theme.space(0.5),
+  },
+  agentIntro: { marginTop: theme.space(2), marginBottom: theme.space(1) },
   flex: { flex: 1 },
   container: { padding: theme.space(3), paddingBottom: theme.space(6) },
   title: { fontSize: theme.font.title, fontWeight: '700', color: theme.color.text },
@@ -367,9 +370,6 @@ const styles = StyleSheet.create({
   },
   buttonPressed: { opacity: 0.8 },
   buttonText: { color: theme.color.accentText, fontSize: theme.font.body, fontWeight: '700' },
-  loadingNote: {
-    marginTop: theme.space(2), fontSize: theme.font.small, color: theme.color.textMuted,
-  },
   offlineBox: {
     marginTop: theme.space(2), padding: theme.space(2), borderRadius: theme.radius,
     borderWidth: 1, borderColor: theme.color.unknown, backgroundColor: theme.color.unknownSoft,

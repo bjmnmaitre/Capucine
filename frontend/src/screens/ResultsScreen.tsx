@@ -7,6 +7,8 @@ import {
   availabilityEmphasisLabel, costLabel, explainOfferRanking, rankingPreferenceLabel,
   usageContextLabel,
 } from '../presentation';
+import { AgentMessage } from '../components/AgentMessage';
+import { agentResultLine, temporaryExceptionLines } from '../agent';
 import { CERTAINTY_LABEL, displayText, formatMoney, priceLabel, theme, cardStyle, inputStyle, textStyle } from '../theme';
 
 interface Props {
@@ -357,6 +359,8 @@ export function ResultsScreen({
   const canCompare = results.length >= 2;
 
   const usageNote = usageContextLabel(response.usageContext);
+  const agentLine = agentResultLine(response.summary, results.length);
+  const exceptionLines = temporaryExceptionLines(response.temporaryOverrides);
 
   const mx = response.merchantExclusions;
   const exclusionNote = mx && mx.hiddenOfferCount > 0
@@ -406,6 +410,8 @@ export function ResultsScreen({
               : ''}
             Choisissez 2 ou 3 offres à comparer ({selectedOffers.length}/{MAX_COMPARE}).
           </Text>
+        ) : agentLine ? (
+          <View style={styles.agentLine}><AgentMessage text={agentLine} compact /></View>
         ) : response.summary?.resultSummary ? (
           <Text style={styles.summary}>{response.summary.resultSummary}</Text>
         ) : null}
@@ -416,6 +422,15 @@ export function ResultsScreen({
 
         {!compareMode && exclusionNote ? (
           <Text style={styles.exclusionNote} accessibilityLabel={exclusionNote}>{exclusionNote}</Text>
+        ) : null}
+
+        {!compareMode && exceptionLines.length > 0 ? (
+          <View style={styles.exceptionBanner} accessibilityLiveRegion="polite">
+            {exceptionLines.map((line) => (
+              <Text key={line} style={styles.exceptionText}>◆ {line}</Text>
+            ))}
+            <Text style={styles.exceptionFoot}>Votre profil n’est pas modifié.</Text>
+          </View>
         ) : null}
       </View>
 
@@ -521,6 +536,13 @@ export function ResultsScreen({
 }
 
 const styles = StyleSheet.create({
+  agentLine: { marginTop: theme.space(1) },
+  exceptionBanner: {
+    marginTop: theme.space(1), padding: theme.space(1.25), borderRadius: theme.radii.sm,
+    backgroundColor: theme.color.goldSoft, borderLeftWidth: 3, borderLeftColor: theme.color.gold,
+  },
+  exceptionText: { fontSize: theme.font.small, lineHeight: theme.leading.small, color: theme.color.goldInk, fontWeight: theme.weight.semibold },
+  exceptionFoot: { fontSize: theme.font.label, color: theme.color.textMuted, marginTop: theme.space(0.5) },
   flex: { flex: 1, backgroundColor: theme.color.background },
   header: {
     padding: theme.space(2),
